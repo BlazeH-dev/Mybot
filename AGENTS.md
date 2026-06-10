@@ -1,82 +1,91 @@
 This file provides guidance to AI coding agents working with this repository.
+**每次修改项目后，请同步更新此文件以保持最新。**
 
-## Project Overview
+## 项目概述
 
-nanobot is a lightweight, open-source AI agent framework written in Python with a React/TypeScript WebUI. It centers around a small agent loop that receives messages from chat channels, invokes an LLM provider, executes tools, and manages session memory.
+Mybot 是基于 [nanobot](https://github.com/HKUDS/nanobot) v0.2.1 二次开发的个人 AI 助手，
+使用 DeepSeek 模型 + WebSocket WebUI 交互，已精简为纯本地开发项目。
 
-## Development Commands
+## 开发命令
 
 ```bash
-# Python: run single test / lint
-pytest tests/test_openai_api.py::test_function -v
-ruff check nanobot/
-
-# WebUI: dev server (proxies API/WS to gateway :8765), build, test
-# Build outputs to ../nanobot/web/dist (bundled into the Python wheel)
-cd webui && bun run dev      # or NANOBOT_API_URL=... bun run dev
-cd webui && bun run build
-cd webui && bun run test
-
-# Gateway
+# 启动后端网关（生产模式，需先构建前端）
+source venv/bin/activate
 nanobot gateway
+
+# 前端开发（热更新）
+cd webui && bun run dev
+
+# 前端构建（输出到 ../nanobot/web/dist/）
+cd webui && bun run build
+
+# 测试 / 代码检查
+pytest tests/ -v
+ruff check nanobot/
 ```
 
-## High-Level Architecture
+## 项目结构
 
-### Core Data Flow
+```
+├── nanobot/               # 后端核心（基于 nanobot 二次开发）
+│   ├── agent/             # Agent 循环、工具、记忆
+│   ├── channels/          # 消息通道（仅启用 WebSocket）
+│   ├── providers/         # LLM 提供商
+│   ├── config/            # 配置管理（~/.nanobot/config.json）
+│   ├── cli/               # CLI 入口
+│   ├── api/               # OpenAI 兼容 API 服务
+│   └── ...
+├── webui/                 # 前端 React + Vite + Tailwind
+├── tests/                 # 测试
+├── pyproject.toml         # Python 项目配置
+├── hatch_build.py         # 构建钩子（含前端构建逻辑）
+├── README.md
+├── LICENSE                # MIT
+├── THIRD_PARTY_NOTICES.md
+└── AGENTS.md              # 本文件
+```
 
-Messages flow through an async `MessageBus` (`nanobot/bus/queue.py`) that decouples chat channels from the agent core:
+## 当前配置
 
-1. **Channels** (`nanobot/channels/`) receive messages from external platforms and publish `InboundMessage` events to the bus.
-2. **`AgentLoop`** (`nanobot/agent/loop.py`) consumes inbound messages, builds context, and coordinates the turn.
-3. **`AgentRunner`** (`nanobot/agent/runner.py`) handles the actual LLM conversation loop: send messages to the provider, receive tool calls, execute tools, and stream responses.
-4. Responses are published as `OutboundMessage` events back to the appropriate channel.
+- **模型**: DeepSeek (`deepseek-chat`, provider: deepseek, apiType: auto)
+- **通道**: 仅 WebSocket（`ws://127.0.0.1:8765/`，token 认证已关闭）
+- **前端地址**: `http://127.0.0.1:8765/webui`
+- **健康检查**: `http://127.0.0.1:18790/health`
+- **API Key**: 必须在 `~/.nanobot/config.json` 的 `providers.deepseek.apiKey` 中填写，网关不读取环境变量
 
-### Key Subsystems
+## 已做的精简（与原 nanobot 的区别）
 
-- **Agent Loop** (`nanobot/agent/loop.py`, `runner.py`): The core processing engine. `AgentLoop` manages session keys, hooks, and context building. `AgentRunner` executes the multi-turn LLM conversation with tool execution.
-- **LLM Providers** (`nanobot/providers/`): Provider implementations (Anthropic, OpenAI-compatible, OpenAI Responses API, Azure, Bedrock, GitHub Copilot, OpenAI Codex, etc.) built on a common base (`base.py`). Includes image generation (`image_generation.py`) and audio transcription (`transcription.py`). `factory.py` and `registry.py` handle instantiation and model discovery.
-- **Channels** (`nanobot/channels/`): Platform integrations (Telegram, Discord, Slack, Feishu, Matrix, WhatsApp, QQ, WeChat, WeCom, DingTalk, Email, MoChat, MS Teams, WebSocket). `manager.py` discovers and coordinates them. Channels are auto-discovered via `pkgutil` scan + entry-point plugins.
-- **Tools** (`nanobot/agent/tools/`): Agent capabilities exposed to the LLM: filesystem (read/write/edit/list), shell execution (with sandbox backends), web search/fetch, MCP servers, cron, notebook editing, subagent spawning, long-running tasks / sustained goals (`long_task.py`), image generation, and self-modification. Tools are auto-discovered via `pkgutil` scan + entry-point plugins.
-- **Memory** (`nanobot/agent/memory.py`): Session history persistence with Dream two-phase memory consolidation. Uses atomic writes with fsync for durability.
-- **Session Management** (`nanobot/session/`): Per-session history, context compaction, TTL-based auto-compaction (`manager.py`), and sustained goal state tracking (`goal_state.py`).
-- **Config** (`nanobot/config/schema.py`, `loader.py`): Pydantic-based configuration loaded from `~/.nanobot/config.json`. Supports camelCase aliases for JSON compatibility.
-- **Bridge** (`bridge/`): TypeScript services (e.g. WhatsApp bridge) bundled into the wheel via `pyproject.toml` `force-include`.
-- **WebUI** (`webui/`): Vite-based React SPA that talks to the gateway over a WebSocket multiplex protocol. The dev server proxies `/api`, `/webui`, `/auth`, and WebSocket traffic to the gateway.
-- **API Server** (`nanobot/api/server.py`): OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/models`) for programmatic access.
-- **Command Router** (`nanobot/command/`): Slash command routing and built-in command handlers.
-- **Heartbeat** (`nanobot/templates/HEARTBEAT.md`): Periodic task list checked via `cron` jobs (legacy dedicated service removed).
-- **Pairing** (`nanobot/pairing/`): DM sender approval store with persistent pairing codes per channel.
-- **Skills** (`nanobot/skills/`): Built-in skill definitions (long-goal, cron, github, image-generation, etc.) loaded into agent context.
-- **Security** (`nanobot/security/`): PTH file guard and other security measures activated at CLI entry.
+- ✅ 仅保留 WebSocket 通道，删除所有其他通道（Telegram/Discord/Slack/QQ/微信/飞书等）
+- ✅ 删除 Docker 相关（Dockerfile, docker-compose.yml, entrypoint.sh）
+- ✅ 删除非开发文件（docs/, images/, case/, desktop/, scripts/, bridge/ 等）
+- ✅ WebSocket 关闭 token 认证（`websocketRequiresToken: false`）
+- ✅ 模型固定为 DeepSeek
 
-### Entry Points
+## 核心架构（来自 nanobot）
 
-- **CLI**: `nanobot/cli/commands.py`
-- **Python SDK**: `nanobot/nanobot.py`
+消息通过异步 `MessageBus`（`nanobot/bus/queue.py`）解耦通道与 Agent 核心：
 
-## Project-Specific Notes
+1. **Channels** → 仅 WebSocket 通道，接收前端消息并发布 `InboundMessage`
+2. **AgentLoop** → 消费消息、构建上下文、协调处理
+3. **AgentRunner** → LLM 对话循环：发送消息、执行工具、流式响应
+4. 响应作为 `OutboundMessage` 返回 WebSocket 通道
 
-- Architecture constraints: [`.agent/design.md`](.agent/design.md)
-- Security boundaries: [`.agent/security.md`](.agent/security.md)
-- Common gotchas: [`.agent/gotchas.md`](.agent/gotchas.md)
+### 关键子系统
 
-## Contribution Flow
+- **LLM Providers**: 所有提供商实现，DeepSeek 使用 `openai_compat` 后端
+- **Tools**: 文件系统读写、Shell 执行、网页搜索、cron、子代理等
+- **Memory**: 会话历史持久化，Dream 两阶段记忆整合
+- **Config**: Pydantic 配置，JSON 格式，camelCase 别名
 
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for contribution flow and PR guidelines.
+## 代码风格
 
-## Code Style
+- Python 3.11+, asyncio
+- 行长度: 100
+- Lint: `ruff` (规则 E, F, I, N, W，忽略 E501)
+- pytest + `asyncio_mode = "auto"`
 
-- Python 3.11+, asyncio throughout.
-- Line length: 100.
-- Linting: `ruff` with rules E, F, I, N, W (E501 ignored).
-- pytest with `asyncio_mode = "auto"`.
+## 修改记录
 
-## Common File Locations
-
-- Config schema: `nanobot/config/schema.py`
-- Provider base / new provider template: `nanobot/providers/base.py`
-- Channel base / new channel template: `nanobot/channels/base.py`
-- Tool registry: `nanobot/agent/tools/registry.py`
-- WebUI dev proxy config: `webui/vite.config.ts`
-- Tests mirror the `nanobot/` package structure.
+| 日期 | 修改内容 |
+|------|----------|
+| 2026-06-10 | 初始化：精简通道为仅 WebSocket，配置 DeepSeek，删除 Docker/文档/示例 |
