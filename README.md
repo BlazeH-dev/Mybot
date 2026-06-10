@@ -47,25 +47,6 @@ nanobot gateway
 
 ## 与原 nanobot 的区别
 
-- ✅ 仅保留 WebSocket 通道，删除所有 IM 通道（Telegram/QQ/飞书等）
-- ✅ 删除 Docker 部署相关
-- ✅ 删除文档、示例、桌面端等非核心文件
-- ✅ 模型固定为 DeepSeek，WebSocket 关闭 token 认证
-- ✅ 精简为零依赖本地开发项目
-
-## 开发
-
-```bash
-# 后端
-source venv/bin/activate && nanobot gateway
-
-# 前端（热更新）
-cd webui && bun run dev
-
-# 测试
-pytest tests/ -v
-ruff check nanobot/
-```
 
 ## 许可证
 
