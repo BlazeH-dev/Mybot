@@ -85,6 +85,7 @@ def test_onboard_does_not_crash_with_legacy_memory_window(tmp_path, monkeypatch)
     monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda _workspace=None: workspace)
 
     from typer.testing import CliRunner
+
     from nanobot.cli.commands import app
     runner = CliRunner()
     result = runner.invoke(app, ["onboard"], input="n\n")
@@ -131,6 +132,7 @@ def test_onboard_refresh_backfills_missing_channel_fields(tmp_path, monkeypatch)
     )
 
     from typer.testing import CliRunner
+
     from nanobot.cli.commands import app
     runner = CliRunner()
     result = runner.invoke(app, ["onboard"], input="n\n")
@@ -244,3 +246,106 @@ def test_load_config_accepts_legacy_local_preview_access(tmp_path) -> None:
     config = load_config(config_path)
 
     assert config.tools.webui_allow_local_service_access is False
+
+
+def test_load_config_backfills_builtin_model_presets_for_existing_empty_config(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {
+                        "model": "deepseek-v4-pro",
+                        "provider": "deepseek",
+                    }
+                },
+                "model_presets": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.model_presets["deepseek-v4-flash"].model == "deepseek-v4-flash"
+    assert config.model_presets["mimo-v2-5-pro"].provider == "xiaomi_mimo"
+    assert "gpt-5-5" not in config.model_presets
+
+
+def test_load_config_removes_retired_builtin_gpt_model_preset(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "modelPresets": {
+                    "gpt-5-5": {
+                        "label": "GPT-5.5",
+                        "model": "gpt-5.5",
+                        "provider": "openai",
+                        "maxTokens": 8192,
+                        "contextWindowTokens": 128000,
+                        "temperature": 0.1,
+                        "reasoningEffort": "medium",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert "gpt-5-5" not in config.model_presets
+
+
+def test_load_config_keeps_user_modified_gpt_named_model_preset(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "modelPresets": {
+                    "gpt-5-5": {
+                        "label": "My GPT Alias",
+                        "model": "custom-gpt",
+                        "provider": "custom",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.model_presets["gpt-5-5"].label == "My GPT Alias"
+    assert config.model_presets["gpt-5-5"].provider == "custom"
+
+
+def test_load_config_keeps_user_model_preset_when_backfilling_builtins(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "modelPresets": {
+                    "deepseek-v4-flash": {
+                        "label": "My Flash",
+                        "model": "custom-flash",
+                        "provider": "custom",
+                    },
+                    "local": {
+                        "label": "Local",
+                        "model": "llama3.2",
+                        "provider": "ollama",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.model_presets["deepseek-v4-flash"].label == "My Flash"
+    assert config.model_presets["deepseek-v4-flash"].model == "custom-flash"
+    assert config.model_presets["local"].provider == "ollama"
+    assert config.model_presets["mimo-v2-5"].model == "mimo-v2.5"

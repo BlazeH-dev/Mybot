@@ -4,7 +4,7 @@ This file provides guidance to AI coding agents working with this repository.
 ## 项目概述
 
 Mybot 是基于 [nanobot](https://github.com/HKUDS/nanobot) v0.2.1 二次开发的个人 AI 助手，
-使用 DeepSeek 模型 + WebSocket WebUI 交互，已精简为纯本地开发项目。
+使用可切换 LLM 预设 + WebSocket WebUI 交互，已精简为纯本地开发项目。
 
 ## 开发命令
 
@@ -47,11 +47,18 @@ ruff check nanobot/
 
 ## 当前配置
 
-- **模型**: DeepSeek (`deepseek-chat`, provider: deepseek, apiType: auto)
+- **模型**: 默认 `deepseek-v4-pro`，内置可切换预设：
+  - `deepseek-v4-pro` → `deepseek-v4-pro` (provider: deepseek, base URL: `https://api.deepseek.com`)
+  - `deepseek-v4-flash` → `deepseek-v4-flash` (provider: deepseek, base URL: `https://api.deepseek.com`)
+  - `mimo-v2-5-pro` → `mimo-v2.5-pro` (provider: xiaomi_mimo, base URL: `https://api.xiaomimimo.com/v1`)
+  - `mimo-v2-5` → `mimo-v2.5` (provider: xiaomi_mimo, base URL: `https://api.xiaomimimo.com/v1`)
 - **通道**: 仅 WebSocket（`ws://127.0.0.1:8765/`，token 认证已关闭）
 - **前端地址**: `http://127.0.0.1:8765/webui`
 - **健康检查**: `http://127.0.0.1:18790/health`
-- **API Key**: 必须在 `~/.nanobot/config.json` 的 `providers.deepseek.apiKey` 中填写，网关不读取环境变量
+- **API Key**: 必须在 `~/.nanobot/config.json` 中填写对应 provider 的 key；网关不读取环境变量：
+  - DeepSeek: `providers.deepseek.apiKey`
+  - Xiaomi MiMo: `providers.xiaomiMimo.apiKey`
+- **模型切换**: WebUI 对话框右下角模型下拉通过 settings API 保存 `modelPreset`，不会发送聊天消息；聊天中仍可发送 `/model` 查看当前模型和可用预设，发送 `/model <preset>` 切换，例如 `/model mimo-v2-5-pro`
 
 ## 已做的精简（与原 nanobot 的区别）
 
@@ -59,7 +66,7 @@ ruff check nanobot/
 - ✅ 删除 Docker 相关（Dockerfile, docker-compose.yml, entrypoint.sh）
 - ✅ 删除非开发文件（docs/, images/, case/, desktop/, scripts/, bridge/ 等）
 - ✅ WebSocket 关闭 token 认证（`websocketRequiresToken: false`）
-- ✅ 模型固定为 DeepSeek
+- ✅ 内置 DeepSeek V4、Xiaomi MiMo V2.5 模型预设，支持 `/model` 与 WebUI 设置切换
 
 ## 核心架构（来自 nanobot）
 
@@ -88,4 +95,9 @@ ruff check nanobot/
 
 | 日期 | 修改内容 |
 |------|----------|
+| 2026-06-12 | 移除 GPT-5.5 内置模型预设；对话框右下角模型下拉改为调用 settings API，避免发送聊天消息并同步 Settings |
+| 2026-06-11 | 修复前端测试初始化在 `localStorage` 不可用时崩溃的问题 |
+| 2026-06-11 | 前端对话框右下角模型标识新增模型预设下拉，选择后通过 `/model <preset>` 切换 |
+| 2026-06-11 | 修复旧配置 `model_presets: {}` 覆盖内置模型预设的问题，加载配置时自动回填缺失的内置预设 |
+| 2026-06-11 | 新增内置模型预设：DeepSeek V4 Pro/Flash、Xiaomi MiMo V2.5 Pro/V2.5，并更新模型切换说明 |
 | 2026-06-10 | 初始化：精简通道为仅 WebSocket，配置 DeepSeek，删除 Docker/文档/示例 |

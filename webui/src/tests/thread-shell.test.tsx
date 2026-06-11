@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -275,9 +276,9 @@ describe("ThreadShell", () => {
             session={session("model-logo")}
             title="Model logo"
             onToggleSidebar={() => {}}
-            settingsSnapshot={modelSettings("openai-codex/gpt-5.5", "openai_codex")}
+            settingsSnapshot={modelSettings("openai-codex/codex-pro", "openai_codex")}
           />,
-          "openai-codex/gpt-5.5",
+          "openai-codex/codex-pro",
         ),
       );
     });
@@ -321,6 +322,85 @@ describe("ThreadShell", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Configure model" }));
     expect(onOpenModelSettings).toHaveBeenCalledTimes(2);
+    expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("switches composer model presets through settings without sending a chat message", async () => {
+    const user = userEvent.setup();
+    const client = makeClient();
+    const settings = modelSettings("deepseek-v4-pro", "deepseek");
+    settings.agent.model_preset = "deepseek-v4-pro";
+    settings.model_presets = [
+      {
+        name: "deepseek-v4-pro",
+        label: "DeepSeek V4 Pro",
+        active: true,
+        is_default: false,
+        model: "deepseek-v4-pro",
+        provider: "deepseek",
+        max_tokens: 8192,
+        context_window_tokens: 65536,
+        temperature: 0.1,
+        reasoning_effort: "high",
+      },
+      {
+        name: "deepseek-v4-flash",
+        label: "DeepSeek V4 Flash",
+        active: false,
+        is_default: false,
+        model: "deepseek-v4-flash",
+        provider: "deepseek",
+        max_tokens: 8192,
+        context_window_tokens: 65536,
+        temperature: 0.1,
+        reasoning_effort: null,
+      },
+    ];
+    const nextSettings: SettingsPayload = {
+      ...settings,
+      agent: {
+        ...settings.agent,
+        model: "deepseek-v4-flash",
+        model_preset: "deepseek-v4-flash",
+      },
+      model_presets: settings.model_presets.map((preset) => ({
+        ...preset,
+        active: preset.name === "deepseek-v4-flash",
+      })),
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings/update?model_preset=deepseek-v4-flash") {
+        return httpJson(nextSettings);
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("model-switch")}
+          title="Model switch"
+          onToggleSidebar={() => {}}
+          settingsSnapshot={settings}
+        />,
+        "deepseek-v4-pro",
+      ),
+    );
+
+    await user.click(await screen.findByRole("button", { name: /deepseek-v4-pro/i }));
+    await user.click(await screen.findByRole("menuitem", { name: /DeepSeek V4 Flash/i }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/settings/update?model_preset=deepseek-v4-flash",
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: "Bearer tok" }),
+        }),
+      ),
+    );
     expect(client.sendMessage).not.toHaveBeenCalled();
   });
 

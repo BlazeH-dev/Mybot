@@ -118,15 +118,55 @@ class ModelPresetConfig(Base):
         )
 
 
+def default_model_presets() -> dict[str, ModelPresetConfig]:
+    """Return Mybot's built-in model switch targets."""
+    return {
+        "deepseek-v4-pro": ModelPresetConfig(
+            label="DeepSeek V4 Pro",
+            model="deepseek-v4-pro",
+            provider="deepseek",
+            max_tokens=8192,
+            context_window_tokens=65_536,
+            temperature=0.1,
+            reasoning_effort="high",
+        ),
+        "deepseek-v4-flash": ModelPresetConfig(
+            label="DeepSeek V4 Flash",
+            model="deepseek-v4-flash",
+            provider="deepseek",
+            max_tokens=8192,
+            context_window_tokens=65_536,
+            temperature=0.1,
+            reasoning_effort=None,
+        ),
+        "mimo-v2-5-pro": ModelPresetConfig(
+            label="MiMo V2.5 Pro",
+            model="mimo-v2.5-pro",
+            provider="xiaomi_mimo",
+            max_tokens=8192,
+            context_window_tokens=65_536,
+            temperature=0.1,
+            reasoning_effort="medium",
+        ),
+        "mimo-v2-5": ModelPresetConfig(
+            label="MiMo V2.5",
+            model="mimo-v2.5",
+            provider="xiaomi_mimo",
+            max_tokens=8192,
+            context_window_tokens=65_536,
+            temperature=0.1,
+            reasoning_effort="medium",
+        ),
+    }
+
+
 class AgentDefaults(Base):
     """Default agent configuration."""
 
     workspace: str = "~/.nanobot/workspace"
     model_preset: str | None = None  # Active preset name — takes precedence over fields below
-    model: str = "anthropic/claude-opus-4-5"
-    provider: str = (
-        "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
-    )
+    model: str = "deepseek-v4-pro"
+    provider: str = "deepseek"
     max_tokens: int = 8192
     context_window_tokens: int = 65_536
     context_block_limit: int | None = None
@@ -331,7 +371,7 @@ class Config(BaseSettings):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     model_presets: dict[str, ModelPresetConfig] = Field(
-        default_factory=dict,
+        default_factory=default_model_presets,
         validation_alias=AliasChoices("modelPresets", "model_presets"),
     )
 

@@ -11,7 +11,7 @@ import { StreamErrorNotice } from "@/components/thread/StreamErrorNotice";
 import { ThreadViewport, type ThreadViewportHandle } from "@/components/thread/ThreadViewport";
 import { useNanobotStream, type SendImage, type SendOptions } from "@/hooks/useNanobotStream";
 import { useSessionHistory } from "@/hooks/useSessions";
-import { fetchCliApps, fetchMcpPresets, fetchSettings, listSlashCommands } from "@/lib/api";
+import { fetchCliApps, fetchMcpPresets, fetchSettings, listSlashCommands, updateSettings } from "@/lib/api";
 import {
   CLI_APPS_CHANGED_EVENT,
   installedCliAppsFromPayload,
@@ -92,6 +92,7 @@ interface ThreadShellProps {
   workspaceError?: string | null;
   onWorkspaceScopeChange?: (scope: WorkspaceScopePayload) => void;
   settingsSnapshot?: SettingsPayload | null;
+  onSettingsChange?: (payload: SettingsPayload) => void;
   onOpenModelSettings?: () => void;
 }
 
@@ -242,6 +243,7 @@ export function ThreadShell({
   workspaceError = null,
   onWorkspaceScopeChange,
   settingsSnapshot = null,
+  onSettingsChange,
   onOpenModelSettings,
 }: ThreadShellProps) {
   const { t } = useTranslation();
@@ -341,9 +343,10 @@ export function ThreadShell({
 
   const showHeroComposer = messages.length === 0 && !loading;
   const wasShowingHeroComposerRef = useRef(showHeroComposer);
+  const selectedModelName = settings?.agent.model ?? modelName;
   const modelBadge = useMemo(
-    () => toModelBadgeInfo(modelName, settings),
-    [modelName, settings],
+    () => toModelBadgeInfo(selectedModelName, settings),
+    [selectedModelName, settings],
   );
   const modelBadgeLabel = modelBadge.needsSetup
     ? t("thread.composer.modelNotConfigured", { defaultValue: "Model not configured" })
@@ -530,6 +533,21 @@ export function ThreadShell({
     [send, withWorkspaceScope],
   );
 
+  const handleModelPresetSelect = useCallback(
+    async (presetName: string) => {
+      const name = presetName.trim();
+      if (!name) return;
+      try {
+        const payload = await updateSettings(token, { modelPreset: name });
+        setSettings(payload);
+        onSettingsChange?.(payload);
+      } catch {
+        await refreshModelSettings();
+      }
+    },
+    [onSettingsChange, refreshModelSettings, token],
+  );
+
   const handleOpenFilePreview = useCallback((path: string) => {
     if (filePreviewCloseTimerRef.current !== null) {
       window.clearTimeout(filePreviewCloseTimerRef.current);
@@ -653,6 +671,8 @@ export function ThreadShell({
           modelProviderLabel={modelBadge.providerLabel}
           modelNeedsSetup={modelBadge.needsSetup}
           onModelBadgeClick={modelBadge.needsSetup ? onOpenModelSettings : undefined}
+          modelPresets={settings?.model_presets ?? []}
+          onModelPresetSelect={handleModelPresetSelect}
           variant={showHeroComposer ? "hero" : "thread"}
           slashCommands={slashCommands}
           cliApps={cliApps}
@@ -684,6 +704,8 @@ export function ThreadShell({
           modelProviderLabel={modelBadge.providerLabel}
           modelNeedsSetup={modelBadge.needsSetup}
           onModelBadgeClick={modelBadge.needsSetup ? onOpenModelSettings : undefined}
+          modelPresets={settings?.model_presets ?? []}
+          onModelPresetSelect={handleModelPresetSelect}
           variant="hero"
           slashCommands={slashCommands}
           cliApps={cliApps}

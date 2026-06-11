@@ -10,7 +10,7 @@ import pydantic
 from loguru import logger
 from pydantic import BaseModel
 
-from nanobot.config.schema import Config, _resolve_tool_config_refs
+from nanobot.config.schema import Config, _resolve_tool_config_refs, default_model_presets
 
 # Global variable to store current config path (for multi-instance support)
 _current_config_path: Path | None = None
@@ -154,6 +154,8 @@ def _env_replace(match: re.Match[str]) -> str:
 
 def _migrate_config(data: dict) -> dict:
     """Migrate old config formats to current."""
+    _backfill_builtin_model_presets(data)
+
     # Move tools.exec.restrictToWorkspace → tools.restrictToWorkspace
     tools = data.get("tools", {})
     exec_cfg = tools.get("exec", {})
@@ -175,3 +177,29 @@ def _migrate_config(data: dict) -> dict:
             tools.pop("mySet", None)
 
     return data
+
+
+def _backfill_builtin_model_presets(data: dict) -> None:
+    """Merge Mybot's built-in presets into existing config without overwriting users."""
+    key = "modelPresets" if "modelPresets" in data else "model_presets"
+    presets = data.setdefault(key, {})
+    if not isinstance(presets, dict):
+        return
+
+    _remove_retired_builtin_model_presets(presets)
+
+    for name, preset in default_model_presets().items():
+        presets.setdefault(name, preset.model_dump(mode="json", by_alias=True))
+
+
+def _remove_retired_builtin_model_presets(presets: dict) -> None:
+    """Drop retired built-in presets while preserving user-modified entries."""
+    retired_gpt = presets.get("gpt-5-5")
+    if not isinstance(retired_gpt, dict):
+        return
+    if (
+        retired_gpt.get("label") == "GPT-5.5"
+        and retired_gpt.get("model") == "gpt-5.5"
+        and retired_gpt.get("provider") == "openai"
+    ):
+        presets.pop("gpt-5-5", None)

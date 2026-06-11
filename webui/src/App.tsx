@@ -1528,6 +1528,7 @@ function Shell({
                 workspaceError={workspaceError}
                 onWorkspaceScopeChange={applyWorkspaceScope}
                 settingsSnapshot={settingsSnapshot}
+                onSettingsChange={setSettingsSnapshot}
                 onOpenModelSettings={onOpenModelSettings}
               />
             </div>

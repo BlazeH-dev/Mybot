@@ -23,6 +23,7 @@ import {
   ArrowUp,
   BookOpen,
   Brain,
+  Check,
   ChevronDown,
   ChevronUp,
   CircleHelp,
@@ -47,6 +48,12 @@ import {
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
   TooltipContent,
@@ -74,6 +81,7 @@ import type {
   OutboundCliAppMention,
   OutboundMcpPresetMention,
   SlashCommand,
+  SettingsPayload,
   WorkspaceScopePayload,
   WorkspacesPayload,
 } from "@/lib/types";
@@ -155,6 +163,8 @@ interface ThreadComposerProps {
   modelProviderLabel?: string | null;
   modelNeedsSetup?: boolean;
   onModelBadgeClick?: () => void;
+  modelPresets?: SettingsPayload["model_presets"];
+  onModelPresetSelect?: (presetName: string) => void;
   variant?: "thread" | "hero";
   slashCommands?: SlashCommand[];
   cliApps?: CliAppInfo[];
@@ -750,6 +760,8 @@ export function ThreadComposer({
   modelProviderLabel = null,
   modelNeedsSetup = false,
   onModelBadgeClick,
+  modelPresets = [],
+  onModelPresetSelect,
   variant = "thread",
   slashCommands = [],
   cliApps = [],
@@ -1755,6 +1767,8 @@ export function ThreadComposer({
                 needsSetup={modelNeedsSetup}
                 isHero={isHero}
                 onClick={modelNeedsSetup ? onModelBadgeClick : undefined}
+                presets={modelPresets}
+                onPresetSelect={onModelPresetSelect}
               />
             ) : null}
             {showVoiceButton ? (
@@ -2042,6 +2056,8 @@ function ComposerModelBadge({
   needsSetup,
   isHero,
   onClick,
+  presets = [],
+  onPresetSelect,
 }: {
   label: string;
   provider?: string | null;
@@ -2049,6 +2065,8 @@ function ComposerModelBadge({
   needsSetup?: boolean;
   isHero: boolean;
   onClick?: () => void;
+  presets?: SettingsPayload["model_presets"];
+  onPresetSelect?: (presetName: string) => void;
 }) {
   const inferredProvider = needsSetup ? null : provider || inferProviderFromModelName(label);
   const brand = providerBrand(inferredProvider);
@@ -2056,24 +2074,21 @@ function ComposerModelBadge({
   const logoUrl = brand?.logoUrls[logoIndex];
   const showLogo = !!logoUrl;
   const title = providerLabel ? `${label} · ${providerLabel}` : label;
-  const interactive = Boolean(onClick);
-  const Container = interactive ? "button" : "span";
+  const canChoosePreset = Boolean(onPresetSelect && presets.length > 1 && !needsSetup);
+  const interactive = Boolean(onClick || canChoosePreset);
 
   useEffect(() => setLogoIndex(0), [inferredProvider]);
 
-  return (
-    <Container
-      title={title}
-      type={interactive ? "button" : undefined}
-      onClick={onClick}
-      className={cn(
-        "inline-flex min-w-0 items-center rounded-full border border-border/55 bg-card font-medium text-foreground/82",
-        "shadow-[0_2px_8px_rgba(15,23,42,0.045)]",
-        interactive && "cursor-pointer hover:bg-accent/55 hover:text-foreground",
-        needsSetup && "border-amber-500/35 bg-amber-50/70 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200",
-        isHero ? "h-8 max-w-[12.5rem] gap-1.5 px-2 text-[11.5px]" : "h-9 max-w-[12rem] gap-2 px-2.5 text-[12px]",
-      )}
-    >
+  const badgeClassName = cn(
+    "inline-flex min-w-0 items-center rounded-full border border-border/55 bg-card font-medium text-foreground/82",
+    "shadow-[0_2px_8px_rgba(15,23,42,0.045)]",
+    interactive ? "cursor-pointer hover:bg-accent/55 hover:text-foreground" : "cursor-default",
+    needsSetup && "border-amber-500/35 bg-amber-50/70 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200",
+    isHero ? "h-8 max-w-[12.5rem] gap-1.5 px-2 text-[11.5px]" : "h-9 max-w-[12rem] gap-2 px-2.5 text-[12px]",
+  );
+
+  const badgeContent = (
+    <>
       <span
         data-testid={needsSetup ? "composer-model-setup-icon" : inferredProvider ? `composer-model-logo-${inferredProvider}` : "composer-model-logo"}
         className={cn(
@@ -2113,7 +2128,63 @@ function ComposerModelBadge({
         )}
       </span>
       <span className="truncate">{label}</span>
-    </Container>
+      {canChoosePreset ? (
+        <ChevronDown className={cn("shrink-0 text-muted-foreground", isHero ? "h-3 w-3" : "h-3.5 w-3.5")} />
+      ) : null}
+    </>
+  );
+
+  const badge = interactive ? (
+    <button
+      title={title}
+      type="button"
+      onClick={canChoosePreset ? undefined : onClick}
+      className={badgeClassName}
+    >
+      {badgeContent}
+    </button>
+  ) : (
+    <span title={title} className={badgeClassName}>
+      {badgeContent}
+    </span>
+  );
+
+  if (!canChoosePreset) return badge;
+
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>{badge}</DropdownMenuTrigger>
+      <DropdownMenuContent align="end" side="top" className="w-[min(22rem,calc(100vw-2rem))]">
+        {presets.map((preset) => {
+          const presetProvider = preset.is_default ? provider : preset.provider;
+          const rowBrand = providerBrand(presetProvider || inferProviderFromModelName(preset.model));
+          const rowLabel = preset.label || preset.name;
+          const selected = preset.active || preset.model === label || rowLabel === label;
+          return (
+            <DropdownMenuItem
+              key={preset.name}
+              onSelect={() => onPresetSelect?.(preset.name)}
+              className="justify-between gap-3"
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <span
+                  className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-[8px] font-semibold text-white"
+                  style={{ backgroundColor: rowBrand?.color ?? "#64748b" }}
+                  aria-hidden
+                >
+                  {(rowBrand?.initials || presetProvider || preset.name).slice(0, 2).toUpperCase()}
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate font-medium">{rowLabel}</span>
+                  <span className="block truncate text-[12px] text-muted-foreground">{preset.model}</span>
+                </span>
+              </span>
+              {selected ? <Check className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

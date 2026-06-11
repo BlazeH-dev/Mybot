@@ -3,6 +3,44 @@ import pytest
 from nanobot.config.schema import Config
 
 
+def test_builtin_model_presets_include_mybot_switch_targets() -> None:
+    config = Config()
+
+    assert config.agents.defaults.model == "deepseek-v4-pro"
+    assert config.agents.defaults.provider == "deepseek"
+
+    expected = {
+        "deepseek-v4-pro": ("DeepSeek V4 Pro", "deepseek-v4-pro", "deepseek"),
+        "deepseek-v4-flash": ("DeepSeek V4 Flash", "deepseek-v4-flash", "deepseek"),
+        "mimo-v2-5-pro": ("MiMo V2.5 Pro", "mimo-v2.5-pro", "xiaomi_mimo"),
+        "mimo-v2-5": ("MiMo V2.5", "mimo-v2.5", "xiaomi_mimo"),
+    }
+
+    assert set(expected).issubset(config.model_presets)
+    for name, (label, model, provider) in expected.items():
+        preset = config.model_presets[name]
+        assert preset.label == label
+        assert preset.model == model
+        assert preset.provider == provider
+
+
+def test_builtin_model_presets_resolve_provider_base_urls() -> None:
+    config = Config.model_validate({
+        "providers": {
+            "deepseek": {"apiKey": "deepseek-key"},
+            "xiaomiMimo": {"apiKey": "mimo-key"},
+        },
+    })
+
+    deepseek = config.resolve_preset("deepseek-v4-flash")
+    assert config.get_provider_name(deepseek.model, preset=deepseek) == "deepseek"
+    assert config.get_api_base(deepseek.model, preset=deepseek) == "https://api.deepseek.com"
+
+    mimo = config.resolve_preset("mimo-v2-5-pro")
+    assert config.get_provider_name(mimo.model, preset=mimo) == "xiaomi_mimo"
+    assert config.get_api_base(mimo.model, preset=mimo) == "https://api.xiaomimimo.com/v1"
+
+
 def test_resolve_preset_returns_defaults_when_no_preset() -> None:
     config = Config()
     resolved = config.resolve_preset()
@@ -64,7 +102,7 @@ def test_legacy_defaults_config_without_presets_still_resolves() -> None:
 
     resolved = config.resolve_preset()
     assert config.agents.defaults.model_preset is None
-    assert config.model_presets == {}
+    assert "deepseek-v4-flash" in config.model_presets
     assert resolved.model == "openai/gpt-4.1"
     assert resolved.provider == "openai"
     assert resolved.max_tokens == 4096
@@ -255,6 +293,7 @@ def test_transcription_only_provider_is_not_chat_fallback() -> None:
         "agents": {
             "defaults": {
                 "model": "assemblyai/universal-3-pro",
+                "provider": "auto",
             }
         },
     })

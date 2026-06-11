@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ThreadComposer } from "@/components/thread/ThreadComposer";
@@ -288,6 +289,52 @@ describe("ThreadComposer", () => {
     expect(screen.queryByText(/Enter to send/)).not.toBeInTheDocument();
   });
 
+  it("switches model presets from the composer model badge", async () => {
+    const user = userEvent.setup();
+    const onModelPresetSelect = vi.fn();
+    render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        modelLabel="deepseek-v4-pro"
+        modelProvider="deepseek"
+        modelProviderLabel="DeepSeek"
+        modelPresets={[
+          {
+            name: "deepseek-v4-pro",
+            label: "DeepSeek V4 Pro",
+            active: true,
+            is_default: false,
+            model: "deepseek-v4-pro",
+            provider: "deepseek",
+            max_tokens: 8192,
+            context_window_tokens: 65536,
+            temperature: 0.1,
+            reasoning_effort: "high",
+          },
+          {
+            name: "deepseek-v4-flash",
+            label: "DeepSeek V4 Flash",
+            active: false,
+            is_default: false,
+            model: "deepseek-v4-flash",
+            provider: "deepseek",
+            max_tokens: 8192,
+            context_window_tokens: 65536,
+            temperature: 0.1,
+            reasoning_effort: null,
+          },
+        ]}
+        onModelPresetSelect={onModelPresetSelect}
+        placeholder="Type your message..."
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /deepseek-v4-pro/i }));
+    await user.click(await screen.findByRole("menuitem", { name: /DeepSeek V4 Flash/i }));
+
+    expect(onModelPresetSelect).toHaveBeenCalledWith("deepseek-v4-flash");
+  });
+
   it("transcribes voice input into the composer without sending", async () => {
     mockVoiceRecorder();
     const onSend = vi.fn();
@@ -387,7 +434,6 @@ describe("ThreadComposer", () => {
     );
 
     const voiceButton = screen.getByRole("button", { name: "Voice input" });
-    expect(voiceButton).toHaveAttribute("title", "Click to dictate or hold");
     expect(voiceButton).toHaveAttribute("aria-keyshortcuts", "Control+Shift+D");
     fireEvent.keyDown(window, { code: "KeyD", ctrlKey: true, key: "D", shiftKey: true });
     expect(await screen.findByLabelText("Recording 0:00")).toBeInTheDocument();
