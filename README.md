@@ -49,7 +49,7 @@ nanobot gateway
 ```
 ├── nanobot/               # 后端核心
 │   ├── agent/             # Agent 循环、工具、记忆
-│   ├── channels/          # 消息通道（仅 WebSocket）
+│   ├── channels/          # 消息通道（默认仅启用 WebSocket，其他通道代码保留）
 │   ├── providers/         # LLM 提供商
 │   ├── config/            # 配置管理
 │   └── cli/               # CLI 入口

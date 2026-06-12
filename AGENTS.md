@@ -4,7 +4,8 @@ This file provides guidance to AI coding agents working with this repository.
 ## 项目概述
 
 Mybot 是基于 [nanobot](https://github.com/HKUDS/nanobot) v0.2.1 二次开发的个人 AI 助手，
-使用可切换 LLM 预设 + WebSocket WebUI 交互，已精简为纯本地开发项目。
+使用可切换 LLM 预设 + WebSocket WebUI 交互；默认仅启用 WebSocket 通道，
+其余通道代码保留但未启用。
 
 ## 开发命令
 
@@ -29,7 +30,7 @@ ruff check nanobot/
 ```
 ├── nanobot/               # 后端核心（基于 nanobot 二次开发）
 │   ├── agent/             # Agent 循环、工具、记忆
-│   ├── channels/          # 消息通道（仅启用 WebSocket）
+│   ├── channels/          # 消息通道（默认仅启用 WebSocket，其他通道代码保留）
 │   ├── providers/         # LLM 提供商
 │   ├── config/            # 配置管理（~/.nanobot/config.json）
 │   ├── cli/               # CLI 入口
@@ -62,7 +63,7 @@ ruff check nanobot/
 
 ## 已做的精简（与原 nanobot 的区别）
 
-- ✅ 仅保留 WebSocket 通道，删除所有其他通道（Telegram/Discord/Slack/QQ/微信/飞书等）
+- ✅ 默认仅启用 WebSocket 通道；其余通道代码保留，可按需启用
 - ✅ 删除 Docker 相关（Dockerfile, docker-compose.yml, entrypoint.sh）
 - ✅ 删除非开发文件（docs/, images/, case/, desktop/, scripts/, bridge/ 等）
 - ✅ WebSocket 关闭 token 认证（`websocketRequiresToken: false`）
@@ -95,6 +96,7 @@ ruff check nanobot/
 
 | 日期 | 修改内容 |
 |------|----------|
+| 2026-06-12 | 修正通道精简描述，使其与实际保留的通道代码一致；将 `.agent/` 内部笔记移出版本库 |
 | 2026-06-12 | 移除 GPT-5.5 内置模型预设；对话框右下角模型下拉改为调用 settings API，避免发送聊天消息并同步 Settings |
 | 2026-06-11 | 修复前端测试初始化在 `localStorage` 不可用时崩溃的问题 |
 | 2026-06-11 | 前端对话框右下角模型标识新增模型预设下拉，选择后通过 `/model <preset>` 切换 |

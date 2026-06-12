@@ -18,6 +18,9 @@ desktop/resources/nanobot-engine/
 docs/superpowers/
 docs/plans/
 
+# AI 开发内部笔记
+.agent/
+
 # webui (monorepo frontend)
 webui/node_modules/
 webui/dist/
