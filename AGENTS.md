@@ -65,7 +65,7 @@ ruff check nanobot/
 
 - ✅ 默认仅启用 WebSocket 通道；其余通道代码保留，可按需启用
 - ✅ 删除 Docker 相关（Dockerfile, docker-compose.yml, entrypoint.sh）
-- ✅ 删除非开发文件（docs/, images/, case/, desktop/, scripts/, bridge/ 等）
+- ✅ 删除原 nanobot 非开发示例/部署文件（旧 docs、images、case、desktop、scripts、bridge 等）
 - ✅ WebSocket 关闭 token 认证（`websocketRequiresToken: false`）
 - ✅ 内置 DeepSeek V4、Xiaomi MiMo V2.5 模型预设，支持 `/model` 与 WebUI 设置切换
 
@@ -96,6 +96,7 @@ ruff check nanobot/
 
 | 日期 | 修改内容 |
 |------|----------|
+| 2026-06-16 | 改进并扩展 Mybot 通用 Agent Runtime 与办公自动化 Skill Pack 方案，在适配当前 nanobot 二开架构的同时保留完整工程最佳实践 |
 | 2026-06-12 | 修正通道精简描述，使其与实际保留的通道代码一致；将 `.agent/` 内部笔记移出版本库 |
 | 2026-06-12 | 移除 GPT-5.5 内置模型预设；对话框右下角模型下拉改为调用 settings API，避免发送聊天消息并同步 Settings |
 | 2026-06-11 | 修复前端测试初始化在 `localStorage` 不可用时崩溃的问题 |
