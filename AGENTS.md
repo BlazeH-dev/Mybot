@@ -1,5 +1,5 @@
 This file provides guidance to AI coding agents working with this repository.
-**每次修改项目后，请同步更新此文件以保持最新。**
+**本文件只维护长期有效的项目协作说明；项目修改记录请写入 `docs/修改记录.md`。**
 
 ## 项目概述
 
@@ -91,16 +91,3 @@ ruff check nanobot/
 - 行长度: 100
 - Lint: `ruff` (规则 E, F, I, N, W，忽略 E501)
 - pytest + `asyncio_mode = "auto"`
-
-## 修改记录
-
-| 日期 | 修改内容 |
-|------|----------|
-| 2026-06-16 | 改进并扩展 Mybot 通用 Agent Runtime 与办公自动化 Skill Pack 方案，在适配当前 nanobot 二开架构的同时保留完整工程最佳实践 |
-| 2026-06-12 | 修正通道精简描述，使其与实际保留的通道代码一致；将 `.agent/` 内部笔记移出版本库 |
-| 2026-06-12 | 移除 GPT-5.5 内置模型预设；对话框右下角模型下拉改为调用 settings API，避免发送聊天消息并同步 Settings |
-| 2026-06-11 | 修复前端测试初始化在 `localStorage` 不可用时崩溃的问题 |
-| 2026-06-11 | 前端对话框右下角模型标识新增模型预设下拉，选择后通过 `/model <preset>` 切换 |
-| 2026-06-11 | 修复旧配置 `model_presets: {}` 覆盖内置模型预设的问题，加载配置时自动回填缺失的内置预设 |
-| 2026-06-11 | 新增内置模型预设：DeepSeek V4 Pro/Flash、Xiaomi MiMo V2.5 Pro/V2.5，并更新模型切换说明 |
-| 2026-06-10 | 初始化：精简通道为仅 WebSocket，配置 DeepSeek，删除 Docker/文档/示例 |
