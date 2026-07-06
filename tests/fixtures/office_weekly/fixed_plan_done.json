@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "goal": "Generate a grounded weekly sales report and review deck from Excel data and meeting notes.",
+  "constraints": {
+    "pptx_max_pages": 6,
+    "required_grounding": "All important numbers must reference verified_facts.json."
+  },
+  "steps": [
+    {
+      "id": "inspect_workbook",
+      "description": "Inspect workbook structure before selecting metrics.",
+      "expected_artifacts": ["workbook_schema.json"],
+      "depends_on": [],
+      "status": "done"
+    },
+    {
+      "id": "extract_verified_facts",
+      "description": "Compute deterministic metrics from the workbook.",
+      "expected_artifacts": ["verified_facts.json"],
+      "depends_on": ["inspect_workbook"],
+      "status": "done"
+    },
+    {
+      "id": "draft_dsl",
+      "description": "Create report and slide DSL files that reference verified facts.",
+      "expected_artifacts": ["report_dsl.json", "slide_dsl.json"],
+      "depends_on": ["extract_verified_facts"],
+      "status": "done"
+    },
+    {
+      "id": "validate",
+      "description": "Validate schema, fact references, constraints, and final artifacts.",
+      "expected_artifacts": ["quality_report.json"],
+      "depends_on": ["draft_dsl"],
+      "status": "done"
+    },
+    {
+      "id": "render",
+      "description": "Render deterministic Office artifacts.",
+      "expected_artifacts": ["weekly_report.docx", "weekly_review.pptx"],
+      "depends_on": ["validate"],
+      "status": "done"
+    }
+  ]
+}

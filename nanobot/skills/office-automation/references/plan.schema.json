@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mybot.local/schemas/office/plan.schema.json",
+  "title": "OfficeExecutionPlan",
+  "type": "object",
+  "required": ["schema_version", "goal", "constraints", "steps"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "constraints": {
+      "type": "object"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "description", "expected_artifacts", "depends_on", "status"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_artifacts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "enum": ["pending", "in_progress", "done", "skipped"]
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

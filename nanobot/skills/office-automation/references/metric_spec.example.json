@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "sheet": "sales_data",
+  "metrics": [
+    {
+      "fact_id": "total_gmv_cny",
+      "name": "GMV total",
+      "calculation": "sum",
+      "column": "gmv_cny",
+      "unit": "CNY",
+      "format": "currency_cny"
+    },
+    {
+      "fact_id": "total_orders",
+      "name": "Orders total",
+      "calculation": "sum",
+      "column": "orders",
+      "unit": "orders",
+      "format": "integer"
+    },
+    {
+      "fact_id": "total_visitors",
+      "name": "Visitors total",
+      "calculation": "sum",
+      "column": "visitors",
+      "unit": "visitors",
+      "format": "integer"
+    },
+    {
+      "fact_id": "conversion_rate",
+      "name": "Orders / visitors",
+      "calculation": "ratio",
+      "numerator_column": "orders",
+      "denominator_column": "visitors",
+      "unit": "ratio",
+      "format": "percent"
+    },
+    {
+      "fact_id": "average_order_value_cny",
+      "name": "GMV / orders",
+      "calculation": "ratio",
+      "numerator_column": "gmv_cny",
+      "denominator_column": "orders",
+      "unit": "CNY/order",
+      "format": "currency_cny"
+    },
+    {
+      "fact_id": "top_region_by_gmv",
+      "name": "Top region by GMV",
+      "calculation": "top_by_sum",
+      "group_by": "region",
+      "value_column": "gmv_cny",
+      "unit": "region",
+      "value_format": "currency_cny"
+    },
+    {
+      "fact_id": "top_channel_by_gmv",
+      "name": "Top channel by GMV",
+      "calculation": "top_by_sum",
+      "group_by": "channel",
+      "value_column": "gmv_cny",
+      "unit": "channel",
+      "value_format": "currency_cny"
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mybot.local/schemas/office/verified_facts.schema.json",
+  "title": "VerifiedFacts",
+  "type": "object",
+  "required": ["schema_version", "source_file", "facts"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "source_file": {
+      "type": "string"
+    },
+    "facts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "fact_id",
+          "name",
+          "value",
+          "display_value",
+          "unit",
+          "source",
+          "calculation",
+          "confidence"
+        ],
+        "properties": {
+          "fact_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "value": {},
+          "display_value": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object",
+            "required": ["workbook", "sheet", "columns", "rows"],
+            "properties": {
+              "workbook": {
+                "type": "string"
+              },
+              "sheet": {
+                "type": "string"
+              },
+              "columns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "rows": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": true
+          },
+          "calculation": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
