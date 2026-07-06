@@ -26,24 +26,23 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libolm-dev build-essential
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
 
       - name: Lint with ruff
-        run: uv run ruff check nanobot/
+        run: python -m ruff check nanobot/
 
       - name: Run tests
         # P0 starts with a deterministic smoke gate. The full upstream suite
         # currently includes network, API-key, local-port, and home-directory
         # dependent tests; broaden this command as runtime phases harden.
         run: >
-          uv run pytest
+          python -m pytest
           tests/fixtures/office_weekly/test_fixture.py
           tests/config/test_model_presets.py
           tests/command/test_model_command.py
