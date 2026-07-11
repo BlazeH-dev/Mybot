@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "provider": "officecli",
+  "default_backend": "officecli",
+  "validated_version": "1.0.135",
+  "release_url": "https://github.com/iOfficeAI/OfficeCLI/releases/tag/v1.0.135",
+  "license": "Apache-2.0",
+  "assets": {
+    "linux-alpine-arm64": {
+      "name": "officecli-linux-alpine-arm64",
+      "sha256": "aec1e921e35bc23a2088af53dd73a92cd636b3792a0b35728470a8d047442006"
+    },
+    "linux-alpine-x64": {
+      "name": "officecli-linux-alpine-x64",
+      "sha256": "9bb4c79543a6dcd8570fc99052ed6b1fb1dcae808a35622977ebf0b53b616694"
+    },
+    "linux-arm64": {
+      "name": "officecli-linux-arm64",
+      "sha256": "2ec0d5a455646647f798f723e62fd9c18e2e801f8460d4401d2554a6a1c6d5b0"
+    },
+    "linux-x64": {
+      "name": "officecli-linux-x64",
+      "sha256": "00028af3db48678fc9ff6c8f9e70fa4c150dcee2b43ed85254afc8f4a48e13eb"
+    },
+    "mac-arm64": {
+      "name": "officecli-mac-arm64",
+      "sha256": "0d2a32c7dd460e275ddd8c442be33a8221a32021d4d5f7957cd44a70b2d927dd"
+    },
+    "mac-x64": {
+      "name": "officecli-mac-x64",
+      "sha256": "77178c638ba5b12d21896f9b0091081079645089bc1d909e3b3097e1649bda5c"
+    },
+    "win-arm64": {
+      "name": "officecli-win-arm64.exe",
+      "sha256": "c818013023f83d3c9ec3dcba4dabaf824bdf861da6fa925d0557f508d3b11558"
+    },
+    "win-x64": {
+      "name": "officecli-win-x64.exe",
+      "sha256": "937db176b585e874aa5bff48d536bce78037665cd862b5deefe56e79977e6588"
+    }
+  },
+  "allowed_cli_commands": ["create", "batch", "close", "validate", "view:screenshot"],
+  "allowed_batch_operations": ["add", "set"],
+  "denied_operations": [
+    "raw",
+    "raw-set",
+    "add-part",
+    "plugins",
+    "mcp",
+    "watch",
+    "install",
+    "config",
+    "update"
+  ],
+  "runtime_environment": {
+    "OFFICECLI_SKIP_UPDATE": "1",
+    "OFFICECLI_RESIDENT_FLUSH": "each"
+  }
+}

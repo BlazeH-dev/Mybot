@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Any
 
 from _common import load_facts, read_json, render_text_value, replace_fact_placeholders
+from officecli_backend import render_with_officecli
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
@@ -84,7 +86,7 @@ def _write_notes(slide: Any, text: str, facts: dict[str, dict[str, Any]]) -> Non
     notes.text = replace_fact_placeholders(text, facts)
 
 
-def render_pptx(
+def render_pptx_legacy(
     *,
     dsl_path: Path,
     facts_path: Path,
@@ -134,6 +136,51 @@ def render_pptx(
     presentation.save(output_path)
 
 
+def render_pptx(
+    *,
+    dsl_path: Path,
+    facts_path: Path,
+    output_path: Path,
+    template_path: Path | None = None,
+    constraints_path: Path | None = None,
+    backend: str = "officecli",
+    officecli_bin: str | None = None,
+    allow_unverified_officecli: bool = False,
+    preview_dir: Path | None = None,
+) -> None:
+    dsl = read_json(dsl_path)
+    constraints = read_json(constraints_path) if constraints_path else None
+    slides_payload = dsl.get("slides", [])
+    max_pages = constraints.get("outputs", {}).get("pptx_max_pages") if constraints else None
+    if isinstance(max_pages, int) and len(slides_payload) > max_pages:
+        raise ValueError(f"slide count {len(slides_payload)} exceeds limit {max_pages}")
+
+    if backend == "python":
+        render_pptx_legacy(
+            dsl_path=dsl_path,
+            facts_path=facts_path,
+            output_path=output_path,
+            template_path=template_path,
+            constraints_path=constraints_path,
+        )
+        return
+
+    if template_path is not None:
+        raise ValueError(
+            "OfficeCLI template rendering is intentionally deferred to the dump/merge workflow; "
+            "use --backend python for the legacy template path."
+        )
+    render_with_officecli(
+        "pptx",
+        dsl_path=dsl_path,
+        facts_path=facts_path,
+        output_path=output_path,
+        binary=officecli_bin,
+        allow_unverified_version=allow_unverified_officecli,
+        preview_dir=preview_dir,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dsl", dest="dsl_path", required=True, type=Path)
@@ -141,6 +188,14 @@ def main() -> None:
     parser.add_argument("--template", dest="template_path", type=Path)
     parser.add_argument("--constraints", dest="constraints_path", type=Path)
     parser.add_argument("--out", dest="output_path", required=True, type=Path)
+    parser.add_argument(
+        "--backend",
+        choices=("officecli", "python"),
+        default=os.environ.get("MYBOT_OFFICE_BACKEND", "officecli"),
+    )
+    parser.add_argument("--officecli-bin")
+    parser.add_argument("--allow-unverified-officecli", action="store_true")
+    parser.add_argument("--preview-dir", type=Path)
     args = parser.parse_args()
 
     render_pptx(
@@ -149,6 +204,10 @@ def main() -> None:
         output_path=args.output_path,
         template_path=args.template_path,
         constraints_path=args.constraints_path,
+        backend=args.backend,
+        officecli_bin=args.officecli_bin,
+        allow_unverified_officecli=args.allow_unverified_officecli,
+        preview_dir=args.preview_dir,
     )
 
 

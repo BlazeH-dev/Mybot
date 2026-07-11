@@ -33,6 +33,7 @@ _SESSION_LIST_PREVIEW_MAX_RECORDS = 200
 _SESSION_LIST_PREVIEW_MAX_CHARS = 1_000_000
 _FORK_VOLATILE_METADATA_KEYS = {
     "goal_state",
+    "plan_state",
     "pending_user_turn",
     "runtime_checkpoint",
     "thread_goal",

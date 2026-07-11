@@ -21,6 +21,7 @@ import { AttachmentTile } from "@/components/AttachmentTile";
 import { CliAppMentionText } from "@/components/CliAppMentionText";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { MarkdownText, preloadMarkdownText } from "@/components/MarkdownText";
+import { OfficeArtifactsPanel } from "@/components/OfficeArtifactsPanel";
 import {
   Tooltip,
   TooltipContent,
@@ -210,6 +211,10 @@ export function MessageBubble({
           >
             {message.content}
           </MarkdownText>
+          <OfficeArtifactsPanel
+            content={message.content}
+            onOpenFilePreview={onOpenFilePreview}
+          />
           {media.length > 0 ? <MessageMedia media={media} align="left" /> : null}
           {showAssistantFooterRow ? (
             <TooltipProvider delayDuration={220} skipDelayDuration={80}>

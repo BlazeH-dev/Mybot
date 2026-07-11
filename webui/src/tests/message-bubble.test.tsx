@@ -133,6 +133,31 @@ describe("MessageBubble", () => {
     expect(screen.getByText("Time to drink water.")).toBeInTheDocument();
   });
 
+  it("renders office artifact summaries for assistant replies", () => {
+    const onOpenFilePreview = vi.fn();
+    const message: UIMessage = {
+      id: "a-office",
+      role: "assistant",
+      content: [
+        "Generated the weekly packet:",
+        ".nanobot-runtime/artifacts/task_weekly/plan.json",
+        ".nanobot-runtime/artifacts/task_weekly/quality_report.json",
+        ".nanobot-runtime/artifacts/task_weekly/weekly_report.docx",
+        ".nanobot-runtime/artifacts/task_weekly/weekly_review.pptx",
+      ].join("\n"),
+      createdAt: Date.now(),
+    };
+
+    render(<MessageBubble message={message} onOpenFilePreview={onOpenFilePreview} />);
+
+    expect(screen.getByTestId("office-artifacts-panel")).toBeInTheDocument();
+    expect(screen.getByText("Office outputs")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open weekly_review.pptx" }));
+    expect(onOpenFilePreview).toHaveBeenCalledWith(
+      ".nanobot-runtime/artifacts/task_weekly/weekly_review.pptx",
+    );
+  });
+
   it("renders structured CLI app attachments even without the installed catalog", () => {
     const message: UIMessage = {
       id: "u-cli-attached",

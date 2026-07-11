@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -65,6 +66,18 @@ def test_office_skill_is_discoverable_in_summary() -> None:
     assert "**office-automation**" in summary
     assert "Excel analysis" in summary
     assert str(SKILL_DIR / "SKILL.md") in summary
+
+
+def test_officecli_runtime_contract_is_pinned() -> None:
+    contract = _read_json(REFERENCES_DIR / "officecli-runtime.json")
+
+    assert contract["provider"] == "officecli"
+    assert contract["validated_version"] == "1.0.135"
+    assert contract["allowed_batch_operations"] == ["add", "set"]
+    assert {"raw-set", "plugins", "mcp", "watch", "install"}.issubset(
+        contract["denied_operations"]
+    )
+    assert all(len(asset["sha256"]) == 64 for asset in contract["assets"].values())
 
 
 def test_inspect_workbook_emits_compact_schema(tmp_path: Path) -> None:
@@ -233,6 +246,138 @@ def test_validate_catches_unknown_fact_and_slide_limit(tmp_path: Path) -> None:
     assert {"too_many_slides", "unknown_fact_ref"}.issubset(codes)
 
 
+def test_officecli_compiler_emits_bounded_replayable_commands(tmp_path: Path) -> None:
+    facts_path = _extract_fixture_facts(tmp_path)
+    report_batch = tmp_path / "report_batch.json"
+    slide_batch = tmp_path / "slide_batch.json"
+
+    _run_script(
+        "compile_officecli.py",
+        [
+            "--kind",
+            "docx",
+            "--dsl",
+            FIXTURE_DIR / "fixed_report_dsl.json",
+            "--facts",
+            facts_path,
+            "--out",
+            report_batch,
+        ],
+    )
+    _run_script(
+        "compile_officecli.py",
+        [
+            "--kind",
+            "pptx",
+            "--dsl",
+            FIXTURE_DIR / "fixed_slide_dsl.json",
+            "--facts",
+            facts_path,
+            "--out",
+            slide_batch,
+        ],
+    )
+
+    report_commands = _read_json(report_batch)
+    slide_commands = _read_json(slide_batch)
+    allowed_commands = {"add", "set"}
+    assert report_commands
+    assert slide_commands
+    assert {command["command"] for command in report_commands} <= allowed_commands
+    assert {command["command"] for command in slide_commands} <= allowed_commands
+    assert all(command["command"] not in {"raw-set", "add-part"} for command in slide_commands)
+
+    encoded = json.dumps([report_commands, slide_commands], ensure_ascii=False)
+    assert "{{fact:" not in encoded
+    assert "CNY 1,710,000" in encoded
+    assert "7.81%" in encoded
+
+
+def test_officecli_backend_real_binary(tmp_path: Path) -> None:
+    officecli_bin = os.environ.get("OFFICECLI_TEST_BIN")
+    if not officecli_bin:
+        import pytest
+
+        pytest.skip("set OFFICECLI_TEST_BIN to run the pinned OfficeCLI integration test")
+
+    facts_path = _extract_fixture_facts(tmp_path)
+    docx_path = tmp_path / "weekly_report.docx"
+    pptx_path = tmp_path / "weekly_review.pptx"
+    preview_dir = tmp_path / "previews"
+
+    _run_script(
+        "render_docx.py",
+        [
+            "--backend",
+            "officecli",
+            "--officecli-bin",
+            officecli_bin,
+            "--dsl",
+            FIXTURE_DIR / "fixed_report_dsl.json",
+            "--facts",
+            facts_path,
+            "--preview-dir",
+            preview_dir,
+            "--out",
+            docx_path,
+        ],
+    )
+    _run_script(
+        "render_pptx.py",
+        [
+            "--backend",
+            "officecli",
+            "--officecli-bin",
+            officecli_bin,
+            "--dsl",
+            FIXTURE_DIR / "fixed_slide_dsl.json",
+            "--facts",
+            facts_path,
+            "--constraints",
+            FIXTURE_DIR / "expected_constraints.json",
+            "--preview-dir",
+            preview_dir,
+            "--out",
+            pptx_path,
+        ],
+    )
+
+    assert docx_path.exists()
+    assert pptx_path.exists()
+    assert docx_path.with_suffix(".docx.officecli-batch.json").exists()
+    assert pptx_path.with_suffix(".pptx.officecli-batch.json").exists()
+    assert docx_path.with_suffix(".docx.officecli-validation.json").exists()
+    assert pptx_path.with_suffix(".pptx.officecli-validation.json").exists()
+    assert docx_path.with_suffix(".docx.officecli-run.json").exists()
+    assert pptx_path.with_suffix(".pptx.officecli-run.json").exists()
+    assert list(preview_dir.glob("weekly_report*.png"))
+    assert list(preview_dir.glob("weekly_review*.png"))
+
+    docx_run = _read_json(docx_path.with_suffix(".docx.officecli-run.json"))
+    pptx_run = _read_json(pptx_path.with_suffix(".pptx.officecli-run.json"))
+    assert docx_run["engine_version"] == "1.0.135"
+    assert pptx_run["engine_version"] == "1.0.135"
+    assert docx_run["batch_sha256"]
+    assert pptx_run["batch_sha256"]
+
+    document = Document(docx_path)
+    docx_text = "\n".join(
+        [paragraph.text for paragraph in document.paragraphs]
+        + [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+    )
+    deck = Presentation(pptx_path)
+    pptx_text = "\n".join(
+        shape.text
+        for slide in deck.slides
+        for shape in slide.shapes
+        if hasattr(shape, "text")
+    )
+    assert "CNY 1,710,000" in docx_text
+    assert "CNY 1,710,000" in pptx_text
+    assert "{{fact:" not in docx_text
+    assert "{{fact:" not in pptx_text
+
+
 def test_office_weekly_deterministic_artifact_chain(tmp_path: Path) -> None:
     artifact_root = tmp_path / ".nanobot-runtime" / "artifacts" / "task_office_weekly"
     artifact_root.mkdir(parents=True)
@@ -283,11 +428,22 @@ def test_office_weekly_deterministic_artifact_chain(tmp_path: Path) -> None:
     )
     _run_script(
         "render_docx.py",
-        ["--dsl", report_dsl, "--facts", facts_path, "--out", docx_path],
+        [
+            "--backend",
+            "python",
+            "--dsl",
+            report_dsl,
+            "--facts",
+            facts_path,
+            "--out",
+            docx_path,
+        ],
     )
     _run_script(
         "render_pptx.py",
         [
+            "--backend",
+            "python",
             "--dsl",
             slide_dsl,
             "--facts",

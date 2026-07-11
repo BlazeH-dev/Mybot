@@ -13,6 +13,7 @@ from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.apps.cli import utils as cli_app_utils
 from nanobot.bus.events import InboundMessage
 from nanobot.session.goal_state import goal_state_runtime_lines
+from nanobot.session.plan_state import plan_state_runtime_lines
 from nanobot.utils.helpers import (
     current_time_str,
     detect_image_mime,
@@ -201,6 +202,7 @@ class ContextBuilder:
         root = workspace or self.workspace
         extra = [
             *goal_state_runtime_lines(session_metadata),
+            *plan_state_runtime_lines(session_metadata),
         ]
         if runtime_state is not None and inbound_message is not None:
             extra.extend(runtime_lines(runtime_state, inbound_message, root, skip=skip_runtime_lines))

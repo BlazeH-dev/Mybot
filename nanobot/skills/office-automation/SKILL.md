@@ -12,7 +12,9 @@ Hard rules:
 - Do not invent or rewrite numbers. All important numbers must come from `verified_facts.json`.
 - Put numbers in prose or slides by using `fact_ref` fields or `{{fact:<fact_id>.display_value}}` placeholders.
 - Produce artifacts under `.nanobot-runtime/artifacts/<task_id>/`; do not overwrite the user's source files.
-- For tasks with at least three steps or at least two requested artifacts, create `plan.json`, show it to the user, and wait for explicit confirmation before running the workflow.
+- Use the pinned OfficeCLI backend for docx/pptx rendering. Do not install, update, configure, or expose OfficeCLI MCP/plugins during a task.
+- Never generate raw OfficeCLI shell commands or use `raw-set`/`add-part`. Compile the DSL to the bounded batch JSON through `compile_officecli.py` or the render scripts.
+- For tasks with at least three steps or at least two requested artifacts, use the statically registered `plan` tool. Create the plan, show the returned plan and hash, wait for explicit confirmation, then call `plan(action="confirm")` with the exact hash before running the workflow.
 - If DSL validation fails twice in a row, stop self-repair and ask the user how to proceed.
 
 ## Workflow
@@ -23,7 +25,9 @@ Set a short stable `task_id`, then create:
 .nanobot-runtime/artifacts/<task_id>/
 ```
 
-For complex tasks, first write `plan.json` using `references/plan.schema.json`. Steps should cover inspect, fact extraction, DSL drafting, validation, rendering, and final delivery checks. Show the plan and wait for the user to confirm before continuing.
+For complex tasks, first call the static `plan` tool with `action="create"`. Steps should cover inspect, fact extraction, DSL drafting, validation, rendering, and final delivery checks, with `expected_artifacts` matching the files below. The tool persists `.nanobot-runtime/artifacts/<task_id>/plan.json` and returns a stable `plan_hash`. Show the plan to the user and wait. Only after explicit confirmation call `plan(action="confirm", task_id=..., expected_plan_hash=...)`.
+
+The validated OfficeCLI version, release checksums, allowed command subset, and denied operations are declared in `references/officecli-runtime.json`. If the installed binary does not match that contract, stop and report the dependency mismatch instead of installing or silently using another renderer.
 
 1. Inspect the workbook:
 
@@ -60,28 +64,34 @@ venv/bin/python nanobot/skills/office-automation/scripts/validate.py \
 
 If validation fails, read `quality_report.json`, fix the DSL, and rerun validation. Do this at most twice before asking the user.
 
-5. Render the Word report:
+5. Compile and render the Word report through OfficeCLI:
 
 ```bash
 venv/bin/python nanobot/skills/office-automation/scripts/render_docx.py \
+  --backend officecli \
   --dsl .nanobot-runtime/artifacts/<task_id>/report_dsl.json \
   --facts .nanobot-runtime/artifacts/<task_id>/verified_facts.json \
+  --preview-dir .nanobot-runtime/artifacts/<task_id>/previews \
   --out .nanobot-runtime/artifacts/<task_id>/weekly_report.docx
 ```
 
-6. Render the PowerPoint deck:
+The renderer records a replayable batch, validation result, run metadata, and preview PNGs next to the output. OfficeCLI must already be installed at the validated project version; the task must not download it dynamically.
+
+6. Compile and render the PowerPoint deck through OfficeCLI:
 
 ```bash
 venv/bin/python nanobot/skills/office-automation/scripts/render_pptx.py \
+  --backend officecli \
   --dsl .nanobot-runtime/artifacts/<task_id>/slide_dsl.json \
   --facts .nanobot-runtime/artifacts/<task_id>/verified_facts.json \
   --constraints <constraints.json> \
+  --preview-dir .nanobot-runtime/artifacts/<task_id>/previews \
   --out .nanobot-runtime/artifacts/<task_id>/weekly_review.pptx
 ```
 
 7. Final delivery check.
 
-Update `plan.json` step statuses to `done`, rerun `validate.py` with `--plan` and `--artifact-root`, and confirm that these artifacts exist:
+Use `plan(action="update_step")` whenever a step starts or finishes. At delivery, rerun `validate.py` with `--plan` and `--artifact-root`, then call `plan(action="complete")`; the tool refuses completion while steps or expected artifacts are missing.
 
 - `plan.json`
 - `workbook_schema.json`
@@ -91,6 +101,15 @@ Update `plan.json` step statuses to `done`, rerun `validate.py` with `--plan` an
 - `quality_report.json`
 - `weekly_report.docx`
 - `weekly_review.pptx`
+- `weekly_report.docx.officecli-batch.json`
+- `weekly_report.docx.officecli-validation.json`
+- `weekly_report.docx.officecli-run.json`
+- `weekly_review.pptx.officecli-batch.json`
+- `weekly_review.pptx.officecli-validation.json`
+- `weekly_review.pptx.officecli-run.json`
+- `previews/*.png`
+
+The Python renderer remains available only as an explicit `--backend python` compatibility path for deterministic differential tests. It is not the default delivery backend.
 
 ## DSL Notes
 

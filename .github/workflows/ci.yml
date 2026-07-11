@@ -44,6 +44,8 @@ jobs:
         run: >
           python -m pytest
           tests/fixtures/office_weekly/test_fixture.py
+          tests/skills/test_office_weekly.py
+          tests/agent/tools/test_plan_tool.py
           tests/config/test_model_presets.py
           tests/command/test_model_command.py
           tests/webui/test_settings_api.py
