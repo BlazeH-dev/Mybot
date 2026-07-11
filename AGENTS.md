@@ -91,3 +91,8 @@ ruff check nanobot/
 - 行长度: 100
 - Lint: `ruff` (规则 E, F, I, N, W，忽略 E501)
 - pytest + `asyncio_mode = "auto"`
+
+## Git 工作流
+
+- 项目由个人维护，默认直接在 `main` 分支开发、提交并推送。
+- 除非用户明确要求，不创建功能分支或 Pull Request。
