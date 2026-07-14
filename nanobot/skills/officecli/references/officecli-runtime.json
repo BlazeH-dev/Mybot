@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "provider": "officecli",
-  "default_backend": "officecli",
+  "skill": "officecli",
   "validated_version": "1.0.135",
   "release_url": "https://github.com/iOfficeAI/OfficeCLI/releases/tag/v1.0.135",
   "license": "Apache-2.0",
@@ -39,9 +39,19 @@
       "sha256": "937db176b585e874aa5bff48d536bce78037665cd862b5deefe56e79977e6588"
     }
   },
-  "allowed_cli_commands": ["create", "batch", "close", "validate", "view:screenshot"],
-  "allowed_batch_operations": ["add", "set"],
-  "denied_operations": [
+  "capabilities": [
+    "help",
+    "create",
+    "view",
+    "get",
+    "query",
+    "add",
+    "set",
+    "remove",
+    "move",
+    "swap",
+    "batch",
+    "validate",
     "raw",
     "raw-set",
     "add-part",
@@ -52,6 +62,22 @@
     "config",
     "update"
   ],
+  "allowed_batch_operations": ["add", "set"],
+  "policy_hints": {
+    "allow": ["help", "view", "get", "query", "validate", "view:screenshot"],
+    "ask": [
+      "modify-existing-file",
+      "raw",
+      "raw-set",
+      "add-part",
+      "plugins",
+      "mcp",
+      "watch",
+      "install",
+      "config",
+      "update"
+    ]
+  },
   "runtime_environment": {
     "OFFICECLI_SKIP_UPDATE": "1",
     "OFFICECLI_RESIDENT_FLUSH": "each"

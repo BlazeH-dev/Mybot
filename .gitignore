@@ -14,11 +14,6 @@ desktop/node_modules/
 desktop/package-lock.json
 desktop/resources/nanobot-engine/
 
-# Claude / AI assistant artifacts
-docs/
-docs/superpowers/
-docs/plans/
-
 # AI 开发内部笔记
 .agent/
 

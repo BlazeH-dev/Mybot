@@ -16,14 +16,26 @@ from nanobot.agent.skills import SkillsLoader
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_DIR = ROOT / "tests" / "fixtures" / "office_weekly"
-SKILL_DIR = ROOT / "nanobot" / "skills" / "office-automation"
-SCRIPTS_DIR = SKILL_DIR / "scripts"
-REFERENCES_DIR = SKILL_DIR / "references"
+PYTHON_SKILL_DIR = ROOT / "nanobot" / "skills" / "office-automation"
+OFFICECLI_SKILL_DIR = ROOT / "nanobot" / "skills" / "officecli"
+SHARED_CORE_DIR = ROOT / "nanobot" / "skills" / "_shared" / "office_core"
+PYTHON_SCRIPTS_DIR = PYTHON_SKILL_DIR / "scripts"
+OFFICECLI_SCRIPTS_DIR = OFFICECLI_SKILL_DIR / "scripts"
+SHARED_SCRIPTS_DIR = SHARED_CORE_DIR / "scripts"
+PYTHON_REFERENCES_DIR = PYTHON_SKILL_DIR / "references"
+OFFICECLI_REFERENCES_DIR = OFFICECLI_SKILL_DIR / "references"
+SHARED_REFERENCES_DIR = SHARED_CORE_DIR / "references"
 
 
-def _run_script(script_name: str, args: list[str | Path], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run_script(
+    scripts_dir: Path,
+    script_name: str,
+    args: list[str | Path],
+    *,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
-        [sys.executable, str(SCRIPTS_DIR / script_name), *[str(arg) for arg in args]],
+        [sys.executable, str(scripts_dir / script_name), *[str(arg) for arg in args]],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -43,12 +55,13 @@ def _read_json(path: Path) -> Any:
 def _extract_fixture_facts(tmp_path: Path) -> Path:
     facts_path = tmp_path / "verified_facts.json"
     _run_script(
+        SHARED_SCRIPTS_DIR,
         "extract_facts.py",
         [
             "--in",
             FIXTURE_DIR / "sales_data.xlsx",
             "--spec",
-            REFERENCES_DIR / "metric_spec.example.json",
+            SHARED_REFERENCES_DIR / "metric_spec.example.json",
             "--out",
             facts_path,
         ],
@@ -56,27 +69,52 @@ def _extract_fixture_facts(tmp_path: Path) -> Path:
     return facts_path
 
 
-def test_office_skill_is_discoverable_in_summary() -> None:
+def test_independent_office_skills_are_discoverable_but_shared_core_is_not() -> None:
     loader = SkillsLoader(ROOT)
 
-    entries = loader.list_skills(filter_unavailable=True)
-    assert "office-automation" in {entry["name"] for entry in entries}
+    entries = loader.list_skills(filter_unavailable=False)
+    names = {entry["name"] for entry in entries}
+    assert {"office-automation", "officecli"}.issubset(names)
+    assert "_shared" not in names
 
     summary = loader.build_skills_summary()
     assert "**office-automation**" in summary
-    assert "Excel analysis" in summary
-    assert str(SKILL_DIR / "SKILL.md") in summary
+    assert "**officecli**" in summary
+    assert "original Python" in summary
+    assert "Default Office skill" in summary
+    assert str(PYTHON_SKILL_DIR / "SKILL.md") in summary
+    assert str(OFFICECLI_SKILL_DIR / "SKILL.md") in summary
+
+
+def test_office_skill_availability_and_switches_are_independent(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        "nanobot.agent.skills.shutil.which",
+        lambda command: None if command == "officecli" else f"/usr/bin/{command}",
+    )
+
+    loader = SkillsLoader(ROOT)
+    available_names = {entry["name"] for entry in loader.list_skills(filter_unavailable=True)}
+    assert "office-automation" in available_names
+    assert "officecli" not in available_names
+
+    disabled_loader = SkillsLoader(ROOT, disabled_skills={"office-automation"})
+    configured_names = {
+        entry["name"] for entry in disabled_loader.list_skills(filter_unavailable=False)
+    }
+    assert "office-automation" not in configured_names
+    assert "officecli" in configured_names
 
 
 def test_officecli_runtime_contract_is_pinned() -> None:
-    contract = _read_json(REFERENCES_DIR / "officecli-runtime.json")
+    contract = _read_json(OFFICECLI_REFERENCES_DIR / "officecli-runtime.json")
 
     assert contract["provider"] == "officecli"
     assert contract["validated_version"] == "1.0.135"
     assert contract["allowed_batch_operations"] == ["add", "set"]
     assert {"raw-set", "plugins", "mcp", "watch", "install"}.issubset(
-        contract["denied_operations"]
+        contract["capabilities"]
     )
+    assert "raw-set" in contract["policy_hints"]["ask"]
     assert all(len(asset["sha256"]) == 64 for asset in contract["assets"].values())
 
 
@@ -84,6 +122,7 @@ def test_inspect_workbook_emits_compact_schema(tmp_path: Path) -> None:
     output_path = tmp_path / "workbook_schema.json"
 
     _run_script(
+        SHARED_SCRIPTS_DIR,
         "inspect_workbook.py",
         [
             "--in",
@@ -145,6 +184,7 @@ def test_extract_facts_reports_missing_columns(tmp_path: Path) -> None:
     )
 
     result = _run_script(
+        SHARED_SCRIPTS_DIR,
         "extract_facts.py",
         [
             "--in",
@@ -194,6 +234,7 @@ def test_extract_facts_treats_empty_numeric_cells_as_zero(tmp_path: Path) -> Non
     facts_path = tmp_path / "facts.json"
 
     _run_script(
+        SHARED_SCRIPTS_DIR,
         "extract_facts.py",
         ["--in", workbook_path, "--spec", spec_path, "--out", facts_path],
     )
@@ -225,6 +266,7 @@ def test_validate_catches_unknown_fact_and_slide_limit(tmp_path: Path) -> None:
     report_path = tmp_path / "quality_report.json"
 
     result = _run_script(
+        PYTHON_SCRIPTS_DIR,
         "validate.py",
         [
             "--dsl",
@@ -252,6 +294,7 @@ def test_officecli_compiler_emits_bounded_replayable_commands(tmp_path: Path) ->
     slide_batch = tmp_path / "slide_batch.json"
 
     _run_script(
+        OFFICECLI_SCRIPTS_DIR,
         "compile_officecli.py",
         [
             "--kind",
@@ -265,6 +308,7 @@ def test_officecli_compiler_emits_bounded_replayable_commands(tmp_path: Path) ->
         ],
     )
     _run_script(
+        OFFICECLI_SCRIPTS_DIR,
         "compile_officecli.py",
         [
             "--kind",
@@ -306,10 +350,9 @@ def test_officecli_backend_real_binary(tmp_path: Path) -> None:
     preview_dir = tmp_path / "previews"
 
     _run_script(
+        OFFICECLI_SCRIPTS_DIR,
         "render_docx.py",
         [
-            "--backend",
-            "officecli",
             "--officecli-bin",
             officecli_bin,
             "--dsl",
@@ -323,10 +366,9 @@ def test_officecli_backend_real_binary(tmp_path: Path) -> None:
         ],
     )
     _run_script(
+        OFFICECLI_SCRIPTS_DIR,
         "render_pptx.py",
         [
-            "--backend",
-            "officecli",
             "--officecli-bin",
             officecli_bin,
             "--dsl",
@@ -378,6 +420,40 @@ def test_officecli_backend_real_binary(tmp_path: Path) -> None:
     assert "{{fact:" not in pptx_text
 
 
+def test_officecli_pptx_helper_enforces_slide_limit(tmp_path: Path) -> None:
+    facts_path = _extract_fixture_facts(tmp_path)
+    invalid_slide_dsl = tmp_path / "too_many_slides.json"
+    invalid_slide_dsl.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "type": "slides",
+                "slides": [{"title": f"Slide {index}"} for index in range(7)],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_script(
+        OFFICECLI_SCRIPTS_DIR,
+        "render_pptx.py",
+        [
+            "--dsl",
+            invalid_slide_dsl,
+            "--facts",
+            facts_path,
+            "--constraints",
+            FIXTURE_DIR / "expected_constraints.json",
+            "--out",
+            tmp_path / "too_many_slides.pptx",
+        ],
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "exceeds limit" in result.stderr
+
+
 def test_office_weekly_deterministic_artifact_chain(tmp_path: Path) -> None:
     artifact_root = tmp_path / ".nanobot-runtime" / "artifacts" / "task_office_weekly"
     artifact_root.mkdir(parents=True)
@@ -395,21 +471,24 @@ def test_office_weekly_deterministic_artifact_chain(tmp_path: Path) -> None:
     shutil.copyfile(FIXTURE_DIR / "fixed_plan_done.json", plan_path)
 
     _run_script(
+        SHARED_SCRIPTS_DIR,
         "inspect_workbook.py",
         ["--in", FIXTURE_DIR / "sales_data.xlsx", "--out", workbook_schema],
     )
     _run_script(
+        SHARED_SCRIPTS_DIR,
         "extract_facts.py",
         [
             "--in",
             FIXTURE_DIR / "sales_data.xlsx",
             "--spec",
-            REFERENCES_DIR / "metric_spec.example.json",
+            SHARED_REFERENCES_DIR / "metric_spec.example.json",
             "--out",
             facts_path,
         ],
     )
     _run_script(
+        PYTHON_SCRIPTS_DIR,
         "validate.py",
         [
             "--dsl",
@@ -427,10 +506,9 @@ def test_office_weekly_deterministic_artifact_chain(tmp_path: Path) -> None:
         ],
     )
     _run_script(
+        PYTHON_SCRIPTS_DIR,
         "render_docx.py",
         [
-            "--backend",
-            "python",
             "--dsl",
             report_dsl,
             "--facts",
@@ -440,10 +518,9 @@ def test_office_weekly_deterministic_artifact_chain(tmp_path: Path) -> None:
         ],
     )
     _run_script(
+        PYTHON_SCRIPTS_DIR,
         "render_pptx.py",
         [
-            "--backend",
-            "python",
             "--dsl",
             slide_dsl,
             "--facts",
@@ -455,6 +532,7 @@ def test_office_weekly_deterministic_artifact_chain(tmp_path: Path) -> None:
         ],
     )
     _run_script(
+        PYTHON_SCRIPTS_DIR,
         "validate.py",
         [
             "--dsl",

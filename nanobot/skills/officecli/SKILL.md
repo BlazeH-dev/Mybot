@@ -1,0 +1,54 @@
+---
+name: officecli
+description: Default Office skill for creating, inspecting, validating, and modifying docx, xlsx, and pptx with the pinned OfficeCLI capability. Use for general Office requests unless the user explicitly asks for the original Python office-automation skill.
+metadata:
+  nanobot:
+    requires:
+      bins: [officecli]
+---
+
+# OfficeCLI
+
+Use the pinned OfficeCLI capability for general Word, Excel, and PowerPoint work. This Skill is independent from `office-automation`; it may use OfficeCLI's own commands, help system, DOM paths, batch format, validation, previews, raw XML, MCP, plugins, and resident mode when appropriate.
+
+## Mybot rules
+
+- OfficeCLI is normally preferred for Office requests. If the user explicitly asks for the original Python workflow, use `office-automation` instead.
+- If this Skill is disabled or unavailable, do not install or enable it silently. Report the reason and use another enabled Skill only when that matches the request.
+- Before a data analysis or quantitative reporting task, run the shared Office core to create `workbook_schema.json` and `verified_facts.json`. Pure formatting, inspection, comments, or text extraction do not need an empty facts workflow.
+- Never invent quantitative claims. Values derived from user data must map to a fact id; numbers provided directly by the user should be recorded as user-provided facts when they become report claims.
+- Write new outputs under `.nanobot-runtime/artifacts/<task_id>/`. Modifying an existing user file is a high-risk operation and must pass Runtime Policy, approval, and file freshness checks.
+- OfficeCLI capabilities are not removed at the Skill layer. `raw`, MCP, plugins, install/update/config, watch, and existing-file mutation remain available but may require approval or be denied by hard workspace/network boundaries.
+- Consult `officecli help ...` instead of guessing command names or property values. The pinned binary help is authoritative for its version.
+- Check exit codes and structured JSON. Validate deliverables and use `view`/screenshot or HTML when visual verification matters.
+
+## Shared facts for quantitative tasks
+
+```bash
+venv/bin/python nanobot/skills/_shared/office_core/scripts/inspect_workbook.py \
+  --in <input.xlsx> \
+  --out .nanobot-runtime/artifacts/<task_id>/workbook_schema.json
+
+venv/bin/python nanobot/skills/_shared/office_core/scripts/extract_facts.py \
+  --in <input.xlsx> \
+  --spec nanobot/skills/_shared/office_core/references/metric_spec.example.json \
+  --out .nanobot-runtime/artifacts/<task_id>/verified_facts.json
+```
+
+Use an input snapshot supplied by the Runtime when P4 is available. Until then, never overwrite the source workbook.
+
+## OfficeCLI workflow
+
+1. For an existing file, orient with `view outline`, `view stats`, `view issues`, `get`, or `query`.
+2. For uncertain syntax, run `officecli help <format> [verb] [element] --json`.
+3. Create or modify the document using the highest practical layer: read/view first, DOM operations next, raw XML only when necessary.
+4. Use batch for repeatable groups of operations and inspect partial failures.
+5. Flush/close before non-OfficeCLI tools inspect the file.
+6. Run `officecli validate` and a visual view before delivery.
+7. Record the actual binary version, commands/batch, validation, previews, facts, and final files as artifacts.
+
+The existing `compile_officecli.py` and render helpers are an optional grounded-report compatibility path. They are not the only supported OfficeCLI workflow and do not require this Skill to share the Python Skill's DSL for other tasks.
+
+## Version source
+
+The project contract is `references/officecli-runtime.json`. The upstream capability baseline is documented in `references/upstream-snapshot.md`. Do not follow `latest` during a task.

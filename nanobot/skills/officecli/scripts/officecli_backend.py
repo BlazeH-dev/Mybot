@@ -12,7 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from _common import load_facts, read_json, render_text_value, replace_fact_placeholders, write_json
+from nanobot.skills._shared.office_core.common import (
+    load_facts,
+    read_json,
+    render_text_value,
+    replace_fact_placeholders,
+    write_json,
+)
 
 OFFICECLI_CONTRACT = read_json(
     Path(__file__).resolve().parent.parent / "references" / "officecli-runtime.json"
@@ -47,9 +53,8 @@ def _resolve_binary(explicit: str | None) -> str:
     resolved = shutil.which(candidate)
     if resolved is None:
         raise OfficeCliBackendError(
-            "OfficeCLI is required for the default Office renderer. Install the pinned "
-            f"version {SUPPORTED_OFFICECLI_VERSION}, set {OFFICECLI_BINARY_ENV}, or use "
-            "--backend python only for legacy compatibility testing."
+            "OfficeCLI is required for the officecli skill. Mybot must provide the pinned "
+            f"version {SUPPORTED_OFFICECLI_VERSION}, or set {OFFICECLI_BINARY_ENV}."
         )
     return resolved
 

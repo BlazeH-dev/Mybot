@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from _common import write_json
 from officecli_backend import compile_commands
+
+from nanobot.skills._shared.office_core.common import write_json
 
 
 def main() -> None:
