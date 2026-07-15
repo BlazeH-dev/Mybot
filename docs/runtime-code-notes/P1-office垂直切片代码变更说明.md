@@ -3,6 +3,7 @@
 > 对应计划：`docs/plans/runtime-steps/P1-office垂直切片.md`
 > 当前状态：双 Skill 边界、共享确定性事实层、Python 渲染链、OfficeCLI 独立能力包、静态 Plan Tool、pytest 回归与 WebUI artifact 面板均已落地。
 > 2026-07-14 修订：撤销“单 Skill + OfficeCLI 默认后端 + legacy Python 后端”的结构，改为两个地位独立、可分别启用或禁用的 Skill。
+> 2026-07-16：阶段计划仅合并重复背景与步骤，双 Skill、facts、路由、contract、测试和 plan 契约不变。
 
 ## 阶段目标
 
@@ -193,12 +194,17 @@ tests/agent/tools/test_plan_tool.py
 `plan` 工具固定提供 `create/get/confirm/update_step/complete`：
 
 - create 规范化计划并计算不可变 contract hash。
-- confirm 必须提交精确 hash，并记录确认消息 id。
+- 普通 WebUI 回合发送 `execution_mode=default`；复杂任务调用 create 后计划自动进入 active，模型可直接执行并持续更新步骤。
+- 输入框“计划”按钮发送 `execution_mode=plan_only`；AgentLoop 只暴露 plan、文件读取/搜索和网页读取工具，禁止 Shell、写文件、CLI、MCP 与其他副作用。
+- plan-only create 保持 `awaiting_confirmation`；同一回合禁止 confirm，必须由用户在后续回合确认。
+- confirm 必须提交精确 hash，并记录确认消息 id；计划卡片的“执行计划”按钮会发送带 task id 与 hash 的显式确认消息。
 - update_step 检查依赖顺序。
 - complete 核对计划产物与实际交付路径。
 - 完整计划写入 `.nanobot-runtime/artifacts/<task_id>/plan.json`，上下文只追加紧凑摘要。
 
-P3 会把高风险操作统一接入持久化 `pending_approval`；ask 必须结束当前 run，等待后续控制事件恢复，Runner 不原地无限等待。P4 checkpoint 只服务已经确认的计划任务。
+WebUI 新增 `PlanProgressCard`，直接消费现有结构化 tool progress event，因此实时流和 transcript 重放使用同一数据源。卡片只显示最新计划快照，展示 pending / in_progress / done / skipped，并在待确认状态提供执行按钮。
+
+P3 计划用持久化 `InteractionRequest` 承接通用问题、需要人工确认的 plan-only/手动计划、恢复决定和高风险审批：`required` 必须回答，`auto_resolve` 到 deadline 后按默认值或最佳判断继续，安全 approval 固定 `expire_and_deny`。普通 WebUI 自动激活计划不创建 plan confirmation，但其每个工具调用仍经过独立 policy/approval。等待时当前 LLM 调用已结束，task/turn 逻辑挂起并释放 Runner 资源；回答或 deadline 恢复同一执行链。P4 checkpoint 只服务 active/completed 且 `approved_plan_hash` 绑定当前 hash 的计划任务。
 
 ### 7. WebUI artifact 面板
 
@@ -207,8 +213,10 @@ P3 会把高风险操作统一接入持久化 `pending_approval`；ask 必须结
 ```text
 webui/src/components/OfficeArtifactsPanel.tsx
 webui/src/components/MessageBubble.tsx
+webui/src/components/thread/PlanProgressCard.tsx
 webui/src/tests/office-artifacts-panel.test.tsx
 webui/src/tests/message-bubble.test.tsx
+webui/src/tests/plan-progress-card.test.tsx
 ```
 
 面板从 assistant 文本中识别 `.nanobot-runtime/artifacts/<task_id>/...`，展示 plan、quality report、facts、DSL、docx、pptx、OfficeCLI batch/validation/run sidecar 和 preview。P1 不新增复杂后端协议；P4/P5 后再接正式 artifact/trace API。
@@ -279,13 +287,13 @@ skip 是未设置 `OFFICECLI_TEST_BIN` 时的真实 binary 集成 case；Python 
 
 ```bash
 source venv/bin/activate
-pytest tests/agent/tools/test_plan_tool.py -q
+pytest tests/agent/test_execution_mode.py tests/agent/tools/test_plan_tool.py -q
 ```
 
-2026-07-14 结果：
+覆盖 plan-only 工具收敛、默认 WebUI 自动激活、同回合禁止确认、hash 确认、依赖与 artifact 校验。
 
 ```text
-5 passed
+11 passed
 ```
 
 ### Lint
@@ -309,12 +317,17 @@ OFFICECLI_TEST_BIN=/absolute/path/to/officecli \
 
 ```bash
 cd webui
-bun run test -- src/tests/office-artifacts-panel.test.tsx src/tests/message-bubble.test.tsx
+bun run test -- \
+  src/tests/plan-progress-card.test.tsx \
+  src/tests/thread-composer-attach.test.tsx \
+  src/tests/nanobot-client.test.ts \
+  src/tests/useNanobotStream.test.tsx \
+  src/tests/i18n.test.tsx
 bun run lint
 bun run build
 ```
 
-本次双 Skill 拆分没有修改 WebUI 面板协议；涉及 artifact 分类或路径时仍需运行上述回归。
+计划 UI 复用结构化 tool event 与 transcript，不从 assistant 自然语言猜测步骤状态。
 
 ## 阶段验收情况
 
@@ -330,14 +343,15 @@ bun run build
 - Python deterministic artifact chain 通过。
 - OfficeCLI compiler、contract、约束和真实 binary 集成入口保留。
 - 静态 Plan Tool、artifact 面板和现有测试未回归。
+- WebUI 仅规划按钮、默认复杂任务自动 plan-and-execute、计划步骤卡片和执行入口已落地。
 
 后续阶段接续：
 
 - P2：为两个 Skill 增加正式 manifest/Registry；本地存在但无效的 manifest 必须 fail closed，缺失 manifest 保持兼容。
-- P3：实现参数级 allow/ask/deny、持久化 `pending_approval`、文件 fresh-read hash 和不可放宽的 workspace/network/sensitive 边界。
-- P4：实现不可变输入快照、artifact/lineage 和已确认计划任务的 checkpoint/resume；恢复状态使用 completed/pending/uncertain。
+- P3：实现参数级 allow/ask/deny、三档持久化 `InteractionRequest`、参数绑定 `expire_and_deny` approval、文件 fresh-read hash 和不可放宽的 workspace/network/sensitive 边界。
+- P4：实现不可变输入快照、artifact/lineage 和已激活、hash 绑定计划任务的 checkpoint/resume；恢复状态使用 completed/pending/uncertain。
 - P5：记录 Skill、引擎、facts、policy、artifact 和成本时长 trace，安全目标是“不可信内容无法诱导未授权副作用或泄漏”。
-- P8：支持最多 5 个直接子 Agent、禁止嵌套、权限只收紧、隔离上下文/产物、父 Agent 汇总事实与结果，并比较单 Agent 顺序执行和双 Agent 并行执行的成本与时长。
+- P8：支持最多 5 个直接子 Agent、禁止嵌套、权限只收紧、隔离上下文/产物、父 Agent 汇总事实与结果，并比较单 Agent 顺序执行和双 Agent 并行执行的成本与时长；共享 workspace 文件租约仅作选做增强。
 
 ## 维护约定
 

@@ -51,18 +51,20 @@ ruff check nanobot/
 
 ## 当前配置
 
-- **模型**: 默认 `deepseek-v4-pro`，内置可切换预设：
+- **模型**: 仓库无配置兜底为 `deepseek-v4-pro`，内置可切换预设：
   - `deepseek-v4-pro` → `deepseek-v4-pro` (provider: deepseek, base URL: `https://api.deepseek.com`)
   - `deepseek-v4-flash` → `deepseek-v4-flash` (provider: deepseek, base URL: `https://api.deepseek.com`)
-  - `mimo-v2-5-pro` → `mimo-v2.5-pro` (provider: xiaomi_mimo, base URL: `https://api.xiaomimimo.com/v1`)
-  - `mimo-v2-5` → `mimo-v2.5` (provider: xiaomi_mimo, base URL: `https://api.xiaomimimo.com/v1`)
+  - `gpt-5-6-sol` → `gpt-5.6-sol` (provider: openai, base URL: 由 `providers.openai.apiBase` 配置)
+  - `gpt-5-6-terra` → `gpt-5.6-terra` (provider: openai, base URL: 由 `providers.openai.apiBase` 配置)
+  - `gpt-5-6-luna` → `gpt-5.6-luna` (provider: openai, base URL: 由 `providers.openai.apiBase` 配置)
 - **通道**: 仅 WebSocket（`ws://127.0.0.1:8765/`，token 认证已关闭）
 - **前端地址**: `http://127.0.0.1:8765/webui`
 - **健康检查**: `http://127.0.0.1:18790/health`
 - **API Key**: 必须在 `~/.nanobot/config.json` 中填写对应 provider 的 key；网关不读取环境变量：
   - DeepSeek: `providers.deepseek.apiKey`
-  - Xiaomi MiMo: `providers.xiaomiMimo.apiKey`
-- **模型切换**: WebUI 对话框右下角模型下拉通过 settings API 保存 `modelPreset`，不会发送聊天消息；聊天中仍可发送 `/model` 查看当前模型和可用预设，发送 `/model <preset>` 切换，例如 `/model mimo-v2-5-pro`
+  - GPT-5.6 中转站: `providers.openai.apiKey` + `providers.openai.apiBase`
+  - Xiaomi MiMo 语音转写: `providers.xiaomiMimo.apiKey`
+- **模型管理**: WebUI 设置页使用模型配置列表管理新增、编辑、切换和自定义配置删除；输入框右下角菜单通过 settings API 快速切换，不发送聊天消息。聊天中仍可发送 `/model` 查看和切换，例如 `/model gpt-5-6-terra`
 
 ## 已做的精简（与原 nanobot 的区别）
 
@@ -70,7 +72,7 @@ ruff check nanobot/
 - ✅ 删除 Docker 相关（Dockerfile, docker-compose.yml, entrypoint.sh）
 - ✅ 删除原 nanobot 非开发示例/部署文件（旧 docs、images、case、desktop、scripts、bridge 等）
 - ✅ WebSocket 关闭 token 认证（`websocketRequiresToken: false`）
-- ✅ 内置 DeepSeek V4、Xiaomi MiMo V2.5 模型预设，支持 `/model` 与 WebUI 设置切换
+- ✅ 内置 DeepSeek V4、GPT-5.6 Sol/Terra/Luna 模型预设，支持 `/model` 与 WebUI 模型管理
 
 ## 核心架构（来自 nanobot）
 

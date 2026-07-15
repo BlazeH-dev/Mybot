@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from nanobot.agent.execution_mode import (
+    EXECUTION_MODE_DEFAULT,
+    EXECUTION_MODE_PLAN_ONLY,
+    execution_mode_from_metadata,
+)
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.context import ContextAware, RequestContext
 from nanobot.session.plan_state import PLAN_STATE_KEY, parse_plan_state, plan_state_raw
@@ -162,12 +167,12 @@ class PlanTool(Tool, ContextAware):
     @property
     def description(self) -> str:
         return (
-            "Static plan-mode tool for complex tasks (normally at least 3 steps or 2 requested "
-            "artifacts). Use create to persist a structured plan, "
-            "show the returned plan and hash to the user, and wait for explicit confirmation. "
-            "Only then call confirm with the exact hash. Keep progress current with update_step; "
-            "complete verifies every step and expected artifact. The schema is registered as a "
-            "stable built-in tool definition for prompt-cache-friendly reuse."
+            "Static plan tool for complex tasks (normally at least 3 steps or 2 requested "
+            "artifacts). Use create before complex work. In normal WebUI execution mode, create "
+            "activates the plan automatically so execution can start immediately; in plan-only "
+            "mode it persists an awaiting-confirmation plan and you must stop after presenting "
+            "it. Keep progress current with update_step; complete verifies every step and "
+            "expected artifact."
         )
 
     @property
@@ -317,26 +322,40 @@ class PlanTool(Tool, ContextAware):
             except ValueError as exc:
                 return f"Error: {exc}"
             now = _iso_now()
+            ctx = self._request_ctx.get()
+            execution_mode = execution_mode_from_metadata(ctx.metadata if ctx else None)
+            auto_activate = execution_mode == EXECUTION_MODE_DEFAULT
             plan: dict[str, Any] = {
                 "schema_version": 1,
                 "task_id": normalized_task_id,
                 "goal": str(goal or "").strip(),
                 "constraints": constraints or {},
                 "steps": normalized_steps,
-                "status": "awaiting_confirmation",
+                "status": "active" if auto_activate else "awaiting_confirmation",
                 "approved_plan_hash": None,
                 "approval": None,
                 "created_at": now,
                 "updated_at": now,
             }
             plan["plan_hash"] = _contract_hash(plan)
+            if auto_activate:
+                plan["approved_plan_hash"] = plan["plan_hash"]
+                plan["approval"] = {
+                    "confirmed_at": now,
+                    "message_id": ctx.message_id if ctx else None,
+                    "mode": "automatic",
+                }
             self._save(session, path, plan)
             return self._result(
                 path,
                 plan,
                 next_action=(
-                    "Show this plan to the user and wait. After explicit confirmation, call "
-                    "plan(action='confirm', task_id=..., expected_plan_hash=plan_hash)."
+                    "Begin execution and keep step status current."
+                    if auto_activate
+                    else (
+                        "Show this plan to the user and wait. After explicit confirmation, call "
+                        "plan(action='confirm', task_id=..., expected_plan_hash=plan_hash)."
+                    )
                 ),
             )
 
@@ -354,13 +373,18 @@ class PlanTool(Tool, ContextAware):
             return self._result(path, plan)
 
         if action == "confirm":
+            ctx = self._request_ctx.get()
+            if (
+                execution_mode_from_metadata(ctx.metadata if ctx else None)
+                == EXECUTION_MODE_PLAN_ONLY
+            ):
+                return "Error: plan-only mode cannot confirm or execute a plan in the same turn."
             actual_hash = str(plan.get("plan_hash") or "")
             if expected_plan_hash != actual_hash:
                 return (
                     "Error: plan hash mismatch; the plan changed or the confirmation is stale. "
                     f"Expected current hash {actual_hash}. Show the current plan and ask again."
                 )
-            ctx = self._request_ctx.get()
             plan["status"] = "active"
             plan["approved_plan_hash"] = actual_hash
             plan["approval"] = {

@@ -341,6 +341,19 @@
       "addConfiguration": "구성 추가",
       "newConfiguration": "새 모델 구성",
       "newConfigurationHelp": "제공자와 모델을 원클릭 옵션으로 저장합니다.",
+      "editConfiguration": "모델 구성 편집",
+      "editConfigurationHelp": "저장된 제공자, 모델 및 컨텍스트 창을 업데이트합니다.",
+      "configurations": "모델 구성",
+      "configurationsHelp": "새 응답에 사용할 모델을 전환, 편집 또는 추가합니다.",
+      "current": "현재",
+      "builtin": "내장",
+      "custom": "사용자 지정",
+      "use": "사용",
+      "edit": "편집",
+      "delete": "삭제",
+      "deleteTitle": "모델 구성을 삭제할까요?",
+      "deleteHelp": "저장된 구성을 삭제합니다. 나중에 다시 추가할 수 있습니다.",
+      "deleting": "삭제 중...",
       "configurationName": "구성 이름",
       "configurationNameHelp": "저장된 모델 구성의 이름을 변경합니다.",
       "configurationNamePlaceholder": "빠른 작성",
@@ -658,6 +671,11 @@
       "placeholderOpening": "새 채팅을 여는 중…",
       "placeholderStreaming": "모델이 응답 중입니다…",
       "inputAria": "메시지 입력",
+      "planMode": {
+        "label": "계획",
+        "toggle": "계획 전용 모드 전환",
+        "hint": "실행하지 않고 계획만 만듭니다"
+      },
       "sendHint": "Enter로 전송 · Shift+Enter로 줄바꿈",
       "runRuntimeTitle": "실행 중 · {{elapsed}}",
       "goalStateStrip": "목표 · {{label}}",
@@ -669,6 +687,7 @@
       "stop": "응답 중지",
       "modelNotConfigured": "모델이 설정되지 않음",
       "configureModel": "모델 설정",
+      "manageModels": "모델 관리",
       "queued": {
         "label": "대기 중인 안내",
         "guide": "안내",
@@ -821,6 +840,18 @@
     }
   },
   "message": {
+    "plan": {
+      "title": "계획",
+      "execute": "계획 실행",
+      "starting": "시작 중…",
+      "confirmPrompt": "계획 {{taskId}}(해시 {{planHash}})을 확인했습니다. 지금 실행하고 각 단계를 계속 업데이트하며 검증 후에만 완료하세요.",
+      "status": {
+        "creating": "작성 중",
+        "awaiting_confirmation": "준비됨",
+        "active": "진행 중",
+        "completed": "완료"
+      }
+    },
     "streaming": "생성 중",
     "assistantTyping": "도우미가 입력 중",
     "toolSingle": "도구 사용 중",

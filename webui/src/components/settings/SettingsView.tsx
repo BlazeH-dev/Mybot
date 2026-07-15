@@ -58,6 +58,16 @@ import { SkillsCatalogSettings } from "@/components/settings/SkillsCatalogSettin
 import { TokenUsageHeatmap } from "@/components/settings/TokenUsageHeatmap";
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -76,6 +86,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createModelConfiguration,
+  deleteModelConfiguration,
   fetchSettings,
   fetchSettingsUsage,
   fetchCliApps,
@@ -161,9 +172,11 @@ interface AgentSettingsDraft {
 }
 
 interface ModelConfigurationDraft {
+  name: string | null;
   label: string;
   provider: string;
   model: string;
+  contextWindowTokens: number;
 }
 
 type PendingRestartSection = "runtime" | "browser" | "image";
@@ -506,10 +519,16 @@ export function SettingsView({
   const [modelConfigurationOpen, setModelConfigurationOpen] = useState(false);
   const [modelConfigurationSaving, setModelConfigurationSaving] = useState(false);
   const [modelConfigurationForm, setModelConfigurationForm] = useState<ModelConfigurationDraft>({
+    name: null,
     label: "",
     provider: "",
     model: "",
+    contextWindowTokens: 65_536,
   });
+  const [modelPresetAction, setModelPresetAction] = useState<string | null>(null);
+  const [pendingModelDelete, setPendingModelDelete] = useState<
+    SettingsPayload["model_presets"][number] | null
+  >(null);
   const [cliAppsAction, setCliAppsAction] = useState<string | null>(null);
   const [mcpPresetAction, setMcpPresetAction] = useState<string | null>(null);
   const [providerSaving, setProviderSaving] = useState<string | null>(null);
@@ -714,23 +733,6 @@ export function SettingsView({
     });
   }, [settings]);
 
-  const modelDirty = useMemo(() => {
-    if (!settings) return false;
-    const activePresetName = modelPresetValue(settings);
-    const selectedPreset = settings.model_presets.find((preset) => preset.name === form.modelPreset);
-    if (!selectedPreset) return form.modelPreset !== activePresetName;
-    const selectedProvider = selectedPreset.is_default
-      ? editableDefaultProvider(settings)
-      : selectedPreset.provider;
-    return (
-      form.modelPreset !== activePresetName ||
-      form.model !== selectedPreset.model ||
-      form.provider !== selectedProvider ||
-      form.contextWindowTokens !== normalizeContextWindowTokens(selectedPreset.context_window_tokens) ||
-      (!selectedPreset.is_default && form.presetLabel.trim() !== selectedPreset.label)
-    );
-  }, [form, settings]);
-
   const runtimeDirty = useMemo(() => {
     if (!settings) return false;
     return (
@@ -846,47 +848,6 @@ export function SettingsView({
     [applyPayload, onNativeEngineRestart, settings],
   );
 
-  const saveModelSettings = async () => {
-    if (!settings || !modelDirty || saving) return;
-    setSaving(true);
-    try {
-      const selectedPreset = settings.model_presets.find((preset) => preset.name === form.modelPreset);
-      let payload: SettingsPayload;
-      if (selectedPreset && !selectedPreset.is_default) {
-        payload = await updateModelConfiguration(token, {
-          name: selectedPreset.name,
-          label: form.presetLabel.trim(),
-          model: form.model,
-          provider: form.provider,
-          ...(form.contextWindowTokens !== selectedPreset.context_window_tokens
-            ? { contextWindowTokens: form.contextWindowTokens }
-            : {}),
-        });
-      } else {
-        const defaultModel = defaultPreset(settings)?.model ?? settings.agent.model;
-        const defaultProvider = editableDefaultProvider(settings);
-        const defaultContextWindowTokens = normalizeContextWindowTokens(
-          defaultPreset(settings)?.context_window_tokens ?? settings.agent.context_window_tokens,
-        );
-        payload = await updateSettings(token, {
-          modelPreset: form.modelPreset,
-          ...(form.model !== defaultModel ? { model: form.model } : {}),
-          ...(form.provider !== defaultProvider ? { provider: form.provider } : {}),
-          ...(form.contextWindowTokens !== defaultContextWindowTokens
-            ? { contextWindowTokens: form.contextWindowTokens }
-            : {}),
-        });
-      }
-      applyPayload(payload);
-      onModelNameChange(payload.agent.model || null);
-      setError(null);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const openModelConfigurationDialog = () => {
     if (!settings) return;
     const currentProvider = settings.agent.provider;
@@ -895,14 +856,29 @@ export function SettingsView({
       configuredModelProviderOptions[0]?.name ??
       "";
     setModelConfigurationForm({
+      name: null,
       label: "",
       provider,
       model: "",
+      contextWindowTokens: normalizeContextWindowTokens(settings.agent.context_window_tokens),
     });
     setModelConfigurationOpen(true);
   };
 
-  const handleCreateModelConfiguration = async () => {
+  const openEditModelConfigurationDialog = (
+    preset: SettingsPayload["model_presets"][number],
+  ) => {
+    setModelConfigurationForm({
+      name: preset.name,
+      label: preset.label,
+      provider: preset.is_default ? editableDefaultProvider(settings!) : preset.provider,
+      model: preset.model,
+      contextWindowTokens: normalizeContextWindowTokens(preset.context_window_tokens),
+    });
+    setModelConfigurationOpen(true);
+  };
+
+  const handleSaveModelConfiguration = async () => {
     if (modelConfigurationSaving) return;
     const label = modelConfigurationForm.label.trim();
     const provider = modelConfigurationForm.provider.trim();
@@ -910,11 +886,30 @@ export function SettingsView({
     if (!label || !provider || !model) return;
     setModelConfigurationSaving(true);
     try {
-      const payload = await createModelConfiguration(token, {
-        label,
-        provider,
-        model,
-      });
+      let payload: SettingsPayload;
+      if (modelConfigurationForm.name === "default") {
+        payload = await updateSettings(token, {
+          modelPreset: "default",
+          model,
+          provider,
+          contextWindowTokens: modelConfigurationForm.contextWindowTokens,
+        });
+      } else if (modelConfigurationForm.name) {
+        payload = await updateModelConfiguration(token, {
+          name: modelConfigurationForm.name,
+          label,
+          provider,
+          model,
+          contextWindowTokens: modelConfigurationForm.contextWindowTokens,
+        });
+      } else {
+        payload = await createModelConfiguration(token, {
+          label,
+          provider,
+          model,
+          contextWindowTokens: modelConfigurationForm.contextWindowTokens,
+        });
+      }
       applyPayload(payload);
       onModelNameChange(payload.agent.model || null);
       setModelConfigurationOpen(false);
@@ -923,6 +918,38 @@ export function SettingsView({
       setError((err as Error).message);
     } finally {
       setModelConfigurationSaving(false);
+    }
+  };
+
+  const handleActivateModelPreset = async (name: string) => {
+    if (modelPresetAction) return;
+    setModelPresetAction(`activate:${name}`);
+    try {
+      const payload = await updateSettings(token, { modelPreset: name });
+      applyPayload(payload);
+      onModelNameChange(payload.agent.model || null);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setModelPresetAction(null);
+    }
+  };
+
+  const handleDeleteModelConfiguration = async () => {
+    const preset = pendingModelDelete;
+    if (!preset || preset.is_default || preset.is_builtin || modelPresetAction) return;
+    setModelPresetAction(`delete:${preset.name}`);
+    try {
+      const payload = await deleteModelConfiguration(token, preset.name);
+      applyPayload(payload);
+      onModelNameChange(payload.agent.model || null);
+      setPendingModelDelete(null);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setModelPresetAction(null);
     }
   };
 
@@ -1343,16 +1370,12 @@ export function SettingsView({
         return (
           <div className="space-y-8">
             <ModelsSettings
-              token={token}
-              form={form}
-              setForm={setForm}
               settings={settings}
-              dirty={modelDirty}
-              saving={saving}
               showBrandLogos={localPrefs.brandLogos}
-              providerSaving={providerSaving}
-              onProviderOAuthLogin={(provider) => runProviderOAuth(provider, "login")}
-              onSave={saveModelSettings}
+              actionKey={modelPresetAction}
+              onActivate={handleActivateModelPreset}
+              onEdit={openEditModelConfigurationDialog}
+              onDelete={setPendingModelDelete}
               onCreateConfiguration={openModelConfigurationDialog}
             />
             <ProvidersSettings
@@ -1542,16 +1565,56 @@ export function SettingsView({
         />
       ) : null}
 
-      <NewModelConfigurationDialog
+      <ModelConfigurationDialog
         open={modelConfigurationOpen}
         draft={modelConfigurationForm}
+        token={token}
+        settings={settings}
         providers={configuredModelProviderOptions}
         saving={modelConfigurationSaving}
         showProviderLogos={localPrefs.brandLogos}
         onOpenChange={setModelConfigurationOpen}
         onChangeDraft={setModelConfigurationForm}
-        onSave={handleCreateModelConfiguration}
+        onSave={handleSaveModelConfiguration}
       />
+
+      <AlertDialog
+        open={pendingModelDelete !== null}
+        onOpenChange={(open) => {
+          if (!open && !modelPresetAction?.startsWith("delete:")) setPendingModelDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {text("settings.models.deleteTitle", "Delete model configuration?")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {text(
+                "settings.models.deleteHelp",
+                "This removes the saved configuration. You can add it again later.",
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={Boolean(modelPresetAction)}>
+              {text("settings.actions.cancel", "Cancel")}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={Boolean(modelPresetAction)}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleDeleteModelConfiguration();
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {modelPresetAction?.startsWith("delete:")
+                ? text("settings.models.deleting", "Deleting...")
+                : text("settings.models.delete", "Delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <main className="min-w-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
         <div
@@ -1972,9 +2035,11 @@ function AppearanceSettings({
   );
 }
 
-function NewModelConfigurationDialog({
+function ModelConfigurationDialog({
   open,
   draft,
+  token,
+  settings,
   providers,
   saving,
   showProviderLogos,
@@ -1984,6 +2049,8 @@ function NewModelConfigurationDialog({
 }: {
   open: boolean;
   draft: ModelConfigurationDraft;
+  token: string;
+  settings: SettingsPayload | null;
   providers: Array<{ name: string; label: string }>;
   saving: boolean;
   showProviderLogos: boolean;
@@ -1994,6 +2061,7 @@ function NewModelConfigurationDialog({
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
   const canSave = Boolean(draft.label.trim() && draft.provider.trim() && draft.model.trim());
+  const editing = draft.name !== null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -2006,10 +2074,14 @@ function NewModelConfigurationDialog({
         >
           <DialogHeader className="border-b border-border/45 px-5 py-4 text-left">
             <DialogTitle className="text-[18px] font-semibold tracking-[-0.01em]">
-              {tx("settings.models.newConfiguration", "New model configuration")}
+              {editing
+                ? tx("settings.models.editConfiguration", "Edit model configuration")
+                : tx("settings.models.newConfiguration", "New model configuration")}
             </DialogTitle>
             <DialogDescription className="text-[12.5px] leading-5">
-              {tx("settings.models.newConfigurationHelp", "Save a provider and model as a one-click option.")}
+              {editing
+                ? tx("settings.models.editConfigurationHelp", "Update the saved provider, model, and context window.")
+                : tx("settings.models.newConfigurationHelp", "Save a provider and model as a one-click option.")}
             </DialogDescription>
           </DialogHeader>
 
@@ -2021,6 +2093,7 @@ function NewModelConfigurationDialog({
               <Input
                 autoFocus
                 value={draft.label}
+                disabled={draft.name === "default"}
                 placeholder={tx("settings.models.configurationNamePlaceholder", "Fast writing")}
                 onChange={(event) =>
                   onChangeDraft((prev) => ({ ...prev, label: event.target.value }))
@@ -2034,14 +2107,16 @@ function NewModelConfigurationDialog({
                 <span className="mb-1.5 block text-[12px] font-medium text-muted-foreground">
                   {tx("settings.rows.model", "Model")}
                 </span>
-                <Input
-                  value={draft.model}
-                  placeholder="openai/gpt-4.1"
-                  onChange={(event) =>
-                    onChangeDraft((prev) => ({ ...prev, model: event.target.value }))
-                  }
-                  className="h-10 rounded-full px-4 text-[14px]"
-                />
+                {settings ? (
+                  <ModelIdPicker
+                    token={token}
+                    settings={settings}
+                    provider={draft.provider}
+                    value={draft.model}
+                    showProviderLogos={showProviderLogos}
+                    onChange={(model) => onChangeDraft((prev) => ({ ...prev, model }))}
+                  />
+                ) : null}
               </label>
               <div className="block">
                 <span className="mb-1.5 block text-[12px] font-medium text-muted-foreground">
@@ -2053,10 +2128,32 @@ function NewModelConfigurationDialog({
                   emptyLabel={tx("settings.byok.noConfiguredProviders", "No configured providers")}
                   showProviderLogos={showProviderLogos}
                   onChange={(provider) =>
-                    onChangeDraft((prev) => ({ ...prev, provider }))
+                    onChangeDraft((prev) => ({
+                      ...prev,
+                      provider,
+                      model: provider === prev.provider ? prev.model : "",
+                    }))
                   }
                 />
               </div>
+            </div>
+            <div>
+              <span className="mb-1.5 block text-[12px] font-medium text-muted-foreground">
+                {tx("settings.rows.contextWindow", "Context window")}
+              </span>
+              <SegmentedControl
+                value={String(draft.contextWindowTokens)}
+                options={CONTEXT_WINDOW_TOKEN_OPTIONS.map((tokens) => ({
+                  value: String(tokens),
+                  label: tokens === 262_144 ? "256K" : "64K",
+                }))}
+                onChange={(value) =>
+                  onChangeDraft((prev) => ({
+                    ...prev,
+                    contextWindowTokens: normalizeContextWindowTokens(Number(value)),
+                  }))
+                }
+              />
             </div>
           </div>
 
@@ -2089,189 +2186,133 @@ function NewModelConfigurationDialog({
 }
 
 function ModelsSettings({
-  token,
-  form,
-  setForm,
   settings,
-  dirty,
-  saving,
   showBrandLogos,
-  providerSaving,
-  onProviderOAuthLogin,
-  onSave,
+  actionKey,
+  onActivate,
+  onEdit,
+  onDelete,
   onCreateConfiguration,
 }: {
-  token: string;
-  form: AgentSettingsDraft;
-  setForm: Dispatch<SetStateAction<AgentSettingsDraft>>;
   settings: SettingsPayload;
-  dirty: boolean;
-  saving: boolean;
   showBrandLogos: boolean;
-  providerSaving: string | null;
-  onProviderOAuthLogin: (provider: string) => void;
-  onSave: () => void;
+  actionKey: string | null;
+  onActivate: (name: string) => void;
+  onEdit: (preset: SettingsPayload["model_presets"][number]) => void;
+  onDelete: (preset: SettingsPayload["model_presets"][number]) => void;
   onCreateConfiguration: () => void;
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
-  const configuredProviders = settings.providers.filter((provider) => provider.configured);
-  const showAutoProvider = defaultPreset(settings)?.provider === "auto" || form.provider === "auto";
-  const selectableProviders = uniqueProviders(configuredProviders);
-  const providerOptions = showAutoProvider
-    ? [{ name: "auto", label: tx("settings.values.auto", "Auto") }, ...selectableProviders]
-    : selectableProviders;
-  const providerValue = providerOptions.some((provider) => provider.name === form.provider)
-    ? form.provider
-    : "";
-  const selectedPreset =
-    settings.model_presets.find((preset) => preset.name === form.modelPreset) ?? null;
-  const selectedProvider = settings.providers.find((provider) => provider.name === form.provider);
-  const selectedProviderNeedsSignIn =
-    selectedProvider?.auth_type === "oauth" && !selectedProvider.configured;
-  const selectedProviderSigningIn = providerSaving === selectedProvider?.name;
-  const selectedProviderConfigured = settingsProviderConfigured(settings, form.provider);
-  const modelFieldsMissing =
-    !form.model.trim() ||
-    !form.provider.trim() ||
-    Boolean(selectedPreset && !selectedPreset.is_default && !form.presetLabel.trim());
   return (
     <div className="space-y-7">
       <section>
-        <SettingsGroup>
-          <SettingsRow
-            title={tx("settings.rows.currentModel", "Current configuration")}
-            description={tx("settings.help.currentModel", "Used for new replies.")}
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <SettingsSectionTitle>
+              {tx("settings.models.configurations", "Model configurations")}
+            </SettingsSectionTitle>
+            <p className="mt-1 text-[12.5px] text-muted-foreground">
+              {tx("settings.models.configurationsHelp", "Switch, edit, or add models used for new replies.")}
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0 rounded-full"
+            onClick={onCreateConfiguration}
           >
-            <ModelPresetPicker
-              presets={settings.model_presets}
-              value={form.modelPreset}
-              settings={settings}
-              draftModel={form.model}
-              draftProvider={form.provider}
-              providerConfigured={selectedProviderConfigured}
-              showProviderLogos={showBrandLogos}
-              onChange={(modelPreset) => {
-                const nextPreset = settings.model_presets.find((preset) => preset.name === modelPreset);
-                setForm((prev) => ({
-                  ...prev,
-                  modelPreset,
-                  model: nextPreset?.model ?? prev.model,
-                  provider: nextPreset?.is_default
-                    ? editableDefaultProvider(settings)
-                    : nextPreset?.provider ?? prev.provider,
-                  presetLabel: nextPreset?.label ?? modelPreset,
-                  contextWindowTokens: normalizeContextWindowTokens(
-                    nextPreset?.context_window_tokens ?? prev.contextWindowTokens,
-                  ),
-                }));
-              }}
-              onCreateConfiguration={onCreateConfiguration}
-            />
-          </SettingsRow>
-          {selectedPreset && !selectedPreset.is_default ? (
-            <SettingsRow
-              title={tx("settings.models.configurationName", "Configuration name")}
-              description={tx("settings.models.configurationNameHelp", "Rename this saved model configuration.")}
-            >
-              <Input
-                value={form.presetLabel}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, presetLabel: event.target.value }))
-                }
-                className="h-8 w-[min(280px,70vw)] rounded-full text-[13px]"
-              />
-            </SettingsRow>
-          ) : null}
-          <SettingsRow
-            title={t("settings.rows.provider")}
-            description={t("settings.help.provider")}
-          >
-            <ProviderPicker
-              providers={providerOptions}
-              value={providerValue}
-              emptyLabel={t("settings.byok.noConfiguredProviders")}
-              showProviderLogos={showBrandLogos}
-              onChange={(provider) =>
-                setForm((prev) => ({
-                  ...prev,
-                  provider,
-                  model: provider === prev.provider ? prev.model : "",
-                }))
-              }
-            />
-          </SettingsRow>
-          {selectedProviderNeedsSignIn ? (
-            <SettingsRow
-              title={tx("settings.oauth.signInRequired", "Sign in required")}
-              description={tx(
-                "settings.oauth.signInBeforeSaving",
-                "Sign in before saving this OAuth provider as the active model provider.",
-              )}
-            >
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => selectedProvider && onProviderOAuthLogin(selectedProvider.name)}
-                disabled={!selectedProvider?.oauth_login_supported || selectedProviderSigningIn}
-                className="rounded-full"
+            <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+            {tx("settings.models.addConfiguration", "Add configuration")}
+          </Button>
+        </div>
+        <div className="space-y-2">
+          {settings.model_presets.map((preset) => {
+            const provider = preset.is_default
+              ? editableDefaultProvider(settings)
+              : preset.provider;
+            const configured = settingsProviderConfigured(settings, provider);
+            const activating = actionKey === `activate:${preset.name}`;
+            const canDelete = !preset.is_default && !preset.is_builtin;
+            return (
+              <article
+                key={preset.name}
+                className={cn(
+                  "flex flex-col gap-3 rounded-[18px] border px-4 py-3 sm:flex-row sm:items-center",
+                  preset.active
+                    ? "border-primary/25 bg-primary/[0.045]"
+                    : "border-border/55 bg-card/70",
+                )}
               >
-                {selectedProviderSigningIn ? (
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
-                ) : null}
-                {selectedProviderSigningIn
-                  ? tx("settings.oauth.signingIn", "Signing in...")
-                  : tx("settings.oauth.signIn", "Sign in")}
-              </Button>
-            </SettingsRow>
-          ) : null}
-          <SettingsRow
-            title={t("settings.rows.model")}
-            description={t("settings.help.model")}
-          >
-            <ModelIdPicker
-              token={token}
-              settings={settings}
-              provider={form.provider}
-              value={form.model}
-              showProviderLogos={showBrandLogos}
-              onChange={(model) => setForm((prev) => ({ ...prev, model }))}
-            />
-          </SettingsRow>
-          <SettingsRow
-            title={tx("settings.rows.contextWindow", "Context window")}
-            description={tx(
-              "settings.help.contextWindow",
-              "Choose the default context budget for this model configuration.",
-            )}
-          >
-            <SegmentedControl
-              value={String(form.contextWindowTokens)}
-              options={CONTEXT_WINDOW_TOKEN_OPTIONS.map((tokens) => ({
-                value: String(tokens),
-                label: tokens === 262_144 ? "256K" : "64K",
-              }))}
-              onChange={(value) =>
-                setForm((prev) => ({
-                  ...prev,
-                  contextWindowTokens: normalizeContextWindowTokens(Number(value)),
-                }))
-              }
-            />
-          </SettingsRow>
-          <SettingsFooter
-            dirty={dirty}
-            saving={saving}
-            saved={false}
-            disabled={selectedProviderNeedsSignIn || modelFieldsMissing}
-            message={
-              selectedProviderNeedsSignIn
-                ? tx("settings.oauth.signInBeforeSaving", "Sign in before saving this OAuth provider as the active model provider.")
-                : undefined
-            }
-            onSave={onSave}
-          />
-        </SettingsGroup>
+                <div className="min-w-0 flex-1">
+                  <ModelPresetOptionContent
+                    preset={preset}
+                    settings={settings}
+                    draftModel={preset.model}
+                    draftProvider={provider}
+                    forceUnconfigured={!configured}
+                    showProviderLogos={showBrandLogos}
+                  />
+                  <div className="mt-2 flex flex-wrap gap-1.5 pl-8 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">
+                    {preset.active ? (
+                      <span className="rounded-full bg-primary/10 px-2 py-0.5 text-primary">
+                        {tx("settings.models.current", "Current")}
+                      </span>
+                    ) : null}
+                    <span className="rounded-full bg-muted px-2 py-0.5">
+                      {preset.is_default || preset.is_builtin
+                        ? tx("settings.models.builtin", "Built-in")
+                        : tx("settings.models.custom", "Custom")}
+                    </span>
+                    <span className="rounded-full bg-muted px-2 py-0.5">
+                      {preset.context_window_tokens === 262_144 ? "256K" : "64K"}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center justify-end gap-1.5">
+                  {!preset.active ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 rounded-full px-3 text-[12px]"
+                      disabled={!configured || Boolean(actionKey)}
+                      onClick={() => onActivate(preset.name)}
+                    >
+                      {activating ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                      {tx("settings.models.use", "Use")}
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    aria-label={tx("settings.models.edit", "Edit")}
+                    className="h-8 w-8 rounded-full"
+                    disabled={Boolean(actionKey)}
+                    onClick={() => onEdit(preset)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" aria-hidden />
+                  </Button>
+                  {canDelete ? (
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      aria-label={tx("settings.models.delete", "Delete")}
+                      className="h-8 w-8 rounded-full text-muted-foreground hover:text-destructive"
+                      disabled={Boolean(actionKey)}
+                      onClick={() => onDelete(preset)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                    </Button>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })}
+        </div>
       </section>
     </div>
   );
@@ -5112,17 +5153,6 @@ function orderUnconfiguredProviders(
     .map(({ provider }) => provider);
 }
 
-function uniqueProviders(
-  providers: SettingsPayload["providers"],
-): SettingsPayload["providers"] {
-  const seen = new Set<string>();
-  return providers.filter((provider) => {
-    if (seen.has(provider.name)) return false;
-    seen.add(provider.name);
-    return true;
-  });
-}
-
 function providerVisibilityRank(provider: SettingsPayload["providers"][number]): number {
   const localRank = LOCAL_UNCONFIGURED_PROVIDER_ORDER.get(provider.name);
   if (localRank !== undefined) return localRank;
@@ -5467,110 +5497,6 @@ function ReadOnlyRow({
   );
 }
 
-function ModelPresetPicker({
-  presets,
-  value,
-  settings,
-  draftModel,
-  draftProvider,
-  providerConfigured,
-  showProviderLogos,
-  onChange,
-  onCreateConfiguration,
-}: {
-  presets: SettingsPayload["model_presets"];
-  value: string;
-  settings: SettingsPayload;
-  draftModel: string;
-  draftProvider: string;
-  providerConfigured: boolean;
-  showProviderLogos: boolean;
-  onChange: (preset: string) => void;
-  onCreateConfiguration: () => void;
-}) {
-  const { t } = useTranslation();
-  const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
-  const selectedPreset = presets.find((preset) => preset.name === value) ?? presets[0] ?? null;
-
-  return (
-    <DropdownMenu modal={false}>
-      <DropdownMenuTrigger asChild disabled={!presets.length}>
-        <Button
-          type="button"
-          variant="outline"
-          aria-label={tx("settings.rows.currentModel", "Current configuration")}
-          disabled={!presets.length}
-          className={cn(
-            "h-12 w-[min(430px,72vw)] justify-between rounded-full border-input bg-background px-3.5 text-[13px] font-normal shadow-none",
-            "hover:bg-accent/55 focus-visible:ring-2 focus-visible:ring-ring",
-          )}
-        >
-          {selectedPreset ? (
-            <ModelPresetOptionContent
-              preset={selectedPreset}
-              settings={settings}
-              draftModel={draftModel}
-              draftProvider={draftProvider}
-              forceUnconfigured={selectedPreset?.is_default ? !providerConfigured : undefined}
-              showProviderLogos={showProviderLogos}
-              compact
-            />
-          ) : (
-            <span className="truncate text-muted-foreground">
-              {tx("settings.models.selectModel", "Select model")}
-            </span>
-          )}
-          <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        className="max-h-[20rem] w-[430px] max-w-[calc(100vw-2rem)] overflow-y-auto scrollbar-thin scrollbar-track-transparent"
-      >
-        {presets.map((preset) => {
-          const selected = preset.name === value;
-          return (
-            <DropdownMenuItem
-              key={preset.name}
-              onSelect={() => onChange(preset.name)}
-              className={cn(
-                "flex cursor-default items-center justify-between gap-3 rounded-[12px] px-2.5 py-2 text-[13px]",
-                "focus:bg-muted/85 focus:text-foreground",
-                selected && "bg-muted/80 text-foreground focus:bg-muted",
-              )}
-            >
-              <ModelPresetOptionContent
-                preset={preset}
-                settings={settings}
-                draftModel={draftModel}
-                draftProvider={draftProvider}
-                showProviderLogos={showProviderLogos}
-              />
-              {selected ? <Check className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
-            </DropdownMenuItem>
-          );
-        })}
-        <div className="mt-1 border-t border-border/55 pt-1">
-          <DropdownMenuItem
-            onSelect={() => {
-              window.setTimeout(onCreateConfiguration, 0);
-            }}
-            className={cn(
-              "flex cursor-default items-center gap-2 rounded-[12px] px-2.5 py-2 text-[13px] font-medium",
-              "text-foreground focus:bg-muted/85 focus:text-foreground",
-            )}
-          >
-            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
-              <Plus className="h-3.5 w-3.5" aria-hidden />
-            </span>
-            <span>{tx("settings.models.addConfiguration", "Add configuration")}</span>
-          </DropdownMenuItem>
-        </div>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
 function ModelPresetOptionContent({
   preset,
   settings,
@@ -5717,44 +5643,6 @@ function RestartSettingsFooter({
           disabled={!dirty || disabled || saving}
           className="rounded-full"
         >
-          {saving ? t("settings.actions.saving") : t("settings.actions.save")}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function SettingsFooter({
-  dirty,
-  saving,
-  saved,
-  disabled = false,
-  message,
-  onSave,
-}: {
-  dirty: boolean;
-  saving: boolean;
-  saved: boolean;
-  disabled?: boolean;
-  message?: string;
-  onSave: () => void;
-}) {
-  const { t } = useTranslation();
-  const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
-  const statusMessage = message ?? (dirty
-    ? t("settings.status.unsaved")
-    : saved
-      ? t("settings.status.savedRestart")
-      : tx("settings.status.upToDate", "Up to date."));
-  return (
-    <div className="flex min-h-[58px] flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-      <div className="text-[13px] text-muted-foreground">
-        <SettingsStatusMessage tone={disabled ? "danger" : dirty || saved ? "accent" : undefined}>
-          {statusMessage}
-        </SettingsStatusMessage>
-      </div>
-      <div className="flex justify-end">
-        <Button size="sm" variant="outline" onClick={onSave} disabled={!dirty || disabled || saving} className="rounded-full">
           {saving ? t("settings.actions.saving") : t("settings.actions.save")}
         </Button>
       </div>

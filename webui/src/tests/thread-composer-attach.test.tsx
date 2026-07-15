@@ -171,3 +171,25 @@ describe("ThreadComposer — image attachments", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 });
+
+describe("ThreadComposer — plan mode", () => {
+  it("sends one plan-only turn and resets the toggle", () => {
+    const onSend = vi.fn();
+    render(<ThreadComposer onSend={onSend} />);
+
+    const planButton = screen.getByRole("button", { name: "Toggle plan-only mode" });
+    fireEvent.click(planButton);
+    expect(planButton).toHaveAttribute("aria-pressed", "true");
+
+    const textarea = screen.getByLabelText(/message input/i);
+    fireEvent.change(textarea, { target: { value: "Design this feature" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    expect(onSend).toHaveBeenCalledWith(
+      "Design this feature",
+      undefined,
+      { executionMode: "plan_only" },
+    );
+    expect(planButton).toHaveAttribute("aria-pressed", "false");
+  });
+});

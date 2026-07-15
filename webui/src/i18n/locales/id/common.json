@@ -341,6 +341,19 @@
       "addConfiguration": "Tambah konfigurasi",
       "newConfiguration": "Konfigurasi model baru",
       "newConfigurationHelp": "Simpan penyedia dan model sebagai opsi sekali klik.",
+      "editConfiguration": "Edit konfigurasi model",
+      "editConfigurationHelp": "Perbarui penyedia, model, dan jendela konteks yang tersimpan.",
+      "configurations": "Konfigurasi model",
+      "configurationsHelp": "Ganti, edit, atau tambahkan model untuk balasan baru.",
+      "current": "Saat ini",
+      "builtin": "Bawaan",
+      "custom": "Kustom",
+      "use": "Gunakan",
+      "edit": "Edit",
+      "delete": "Hapus",
+      "deleteTitle": "Hapus konfigurasi model?",
+      "deleteHelp": "Konfigurasi tersimpan akan dihapus dan dapat ditambahkan lagi nanti.",
+      "deleting": "Menghapus...",
       "configurationName": "Nama konfigurasi",
       "configurationNameHelp": "Ganti nama konfigurasi model tersimpan ini.",
       "configurationNamePlaceholder": "Menulis cepat",
@@ -658,6 +671,11 @@
       "placeholderOpening": "Membuka obrolan baru…",
       "placeholderStreaming": "Model sedang merespons…",
       "inputAria": "Input pesan",
+      "planMode": {
+        "label": "Rencana",
+        "toggle": "Alihkan mode hanya rencana",
+        "hint": "Buat rencana tanpa menjalankannya"
+      },
       "sendHint": "Enter untuk kirim · Shift+Enter untuk baris baru",
       "runRuntimeTitle": "Berjalan · {{elapsed}}",
       "goalStateStrip": "Tujuan · {{label}}",
@@ -669,6 +687,7 @@
       "stop": "Hentikan respons",
       "modelNotConfigured": "Model belum dikonfigurasi",
       "configureModel": "Konfigurasi model",
+      "manageModels": "Kelola model",
       "queued": {
         "label": "Panduan antrean",
         "guide": "Pandu",
@@ -821,6 +840,18 @@
     }
   },
   "message": {
+    "plan": {
+      "title": "Rencana",
+      "execute": "Jalankan rencana",
+      "starting": "Memulai…",
+      "confirmPrompt": "Saya mengonfirmasi rencana {{taskId}} dengan hash {{planHash}}. Jalankan sekarang, perbarui setiap langkah, dan selesaikan hanya setelah verifikasi.",
+      "status": {
+        "creating": "Membuat",
+        "awaiting_confirmation": "Siap",
+        "active": "Berjalan",
+        "completed": "Selesai"
+      }
+    },
     "streaming": "sedang mengalir",
     "assistantTyping": "Asisten sedang mengetik",
     "toolSingle": "Menggunakan sebuah alat",

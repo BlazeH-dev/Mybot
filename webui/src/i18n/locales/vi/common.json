@@ -341,6 +341,19 @@
       "addConfiguration": "Thêm cấu hình",
       "newConfiguration": "Cấu hình mô hình mới",
       "newConfigurationHelp": "Lưu nhà cung cấp và mô hình thành một lựa chọn nhanh.",
+      "editConfiguration": "Chỉnh sửa cấu hình mô hình",
+      "editConfigurationHelp": "Cập nhật nhà cung cấp, mô hình và cửa sổ ngữ cảnh đã lưu.",
+      "configurations": "Cấu hình mô hình",
+      "configurationsHelp": "Chuyển đổi, chỉnh sửa hoặc thêm mô hình dùng cho phản hồi mới.",
+      "current": "Hiện tại",
+      "builtin": "Tích hợp",
+      "custom": "Tùy chỉnh",
+      "use": "Sử dụng",
+      "edit": "Chỉnh sửa",
+      "delete": "Xóa",
+      "deleteTitle": "Xóa cấu hình mô hình?",
+      "deleteHelp": "Thao tác này xóa cấu hình đã lưu. Bạn có thể thêm lại sau.",
+      "deleting": "Đang xóa...",
       "configurationName": "Tên cấu hình",
       "configurationNameHelp": "Đổi tên cấu hình mô hình đã lưu này.",
       "configurationNamePlaceholder": "Viết nhanh",
@@ -658,6 +671,11 @@
       "placeholderOpening": "Đang mở cuộc trò chuyện mới…",
       "placeholderStreaming": "Mô hình đang trả lời…",
       "inputAria": "Ô nhập tin nhắn",
+      "planMode": {
+        "label": "Kế hoạch",
+        "toggle": "Bật chế độ chỉ lập kế hoạch",
+        "hint": "Tạo kế hoạch mà chưa thực thi"
+      },
       "sendHint": "Enter để gửi · Shift+Enter để xuống dòng",
       "runRuntimeTitle": "Đang chạy · {{elapsed}}",
       "goalStateStrip": "Mục tiêu · {{label}}",
@@ -669,6 +687,7 @@
       "stop": "Dừng phản hồi",
       "modelNotConfigured": "Chưa cấu hình mô hình",
       "configureModel": "Cấu hình mô hình",
+      "manageModels": "Quản lý mô hình",
       "queued": {
         "label": "Hướng dẫn đang chờ",
         "guide": "Hướng dẫn",
@@ -821,6 +840,18 @@
     }
   },
   "message": {
+    "plan": {
+      "title": "Kế hoạch",
+      "execute": "Thực thi kế hoạch",
+      "starting": "Đang bắt đầu…",
+      "confirmPrompt": "Tôi xác nhận kế hoạch {{taskId}} với mã băm {{planHash}}. Hãy thực thi ngay, cập nhật từng bước và chỉ hoàn tất sau khi xác minh.",
+      "status": {
+        "creating": "Đang tạo",
+        "awaiting_confirmation": "Sẵn sàng",
+        "active": "Đang thực hiện",
+        "completed": "Hoàn tất"
+      }
+    },
     "streaming": "đang truyền",
     "assistantTyping": "Trợ lý đang nhập",
     "toolSingle": "Đang dùng một công cụ",

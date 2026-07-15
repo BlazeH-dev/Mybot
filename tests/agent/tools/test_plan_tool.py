@@ -12,7 +12,10 @@ from nanobot.session.manager import SessionManager
 from nanobot.session.plan_state import PLAN_STATE_KEY, plan_state_runtime_lines
 
 
-def _make_tool(tmp_path: Path) -> tuple[PlanTool, SessionManager]:
+def _make_tool(
+    tmp_path: Path,
+    metadata: dict | None = None,
+) -> tuple[PlanTool, SessionManager]:
     sessions = SessionManager(tmp_path)
     tool = PlanTool(tmp_path, sessions)
     tool.set_context(
@@ -21,9 +24,49 @@ def _make_tool(tmp_path: Path) -> tuple[PlanTool, SessionManager]:
             chat_id="chat-plan",
             message_id="msg-1",
             session_key="websocket:chat-plan",
+            metadata=metadata or {},
         )
     )
     return tool, sessions
+
+
+async def test_webui_default_mode_auto_activates_plan(tmp_path: Path) -> None:
+    tool, _ = _make_tool(tmp_path, {"execution_mode": "default"})
+
+    created = json.loads(
+        await tool.execute(
+            action="create",
+            task_id="task_auto",
+            goal="Implement the feature",
+            steps=_steps(),
+        )
+    )
+
+    assert created["plan"]["status"] == "active"
+    assert created["plan"]["approved_plan_hash"] == created["plan"]["plan_hash"]
+    assert created["plan"]["approval"]["mode"] == "automatic"
+    assert created["next_action"].startswith("Begin execution")
+
+
+async def test_plan_only_mode_waits_and_cannot_confirm_same_turn(tmp_path: Path) -> None:
+    tool, _ = _make_tool(tmp_path, {"execution_mode": "plan_only"})
+
+    created = json.loads(
+        await tool.execute(
+            action="create",
+            task_id="task_plan_only",
+            goal="Propose the implementation",
+            steps=_steps(),
+        )
+    )
+
+    assert created["plan"]["status"] == "awaiting_confirmation"
+    blocked = await tool.execute(
+        action="confirm",
+        task_id="task_plan_only",
+        expected_plan_hash=created["plan"]["plan_hash"],
+    )
+    assert blocked.startswith("Error: plan-only mode cannot confirm")
 
 
 def _steps() -> list[dict]:

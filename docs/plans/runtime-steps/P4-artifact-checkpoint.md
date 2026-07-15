@@ -1,37 +1,23 @@
-# P4 Input Snapshot + Artifact Lineage + Durable Checkpoint — 详细步骤
+# P4 Input Snapshot、Artifact Lineage 与 Durable Checkpoint
 
-> 所属：`docs/plans/Mybot通用AgentRuntime与办公自动化SkillPack整合方案.md`
-> 状态：仅规划，未执行。2026-07-14 移除冻结前白盒记忆主线，聚焦可重放输入、产物血缘和安全恢复。
-> 阶段出口：已确认计划任务拥有不可变输入快照、可查询产物血缘和 completed/pending/uncertain 恢复语义。
+> 状态：待执行。白盒记忆、artifact delta/staging 为选做。
+> 出口：输入和产物可追踪；已激活且 hash 绑定的计划可安全 kill→resume；uncertain 副作用不自动重试。
 
----
+## 1. 不可变输入
 
-## S4.1 不可变输入快照
-
-任务开始时把实际使用的输入复制到：
+任务实际使用的输入复制到：
 
 ```text
 .nanobot-runtime/artifacts/<task_id>/inputs/
 ```
 
-metadata 记录原路径、snapshot 路径、SHA-256、大小、时间与复制状态。后续 facts、DSL、OfficeCLI 命令和最终产物引用 snapshot，不再直接读取会变化的源文件。
+记录原路径、snapshot 路径、SHA-256、大小、时间和复制状态。后续 facts、DSL/命令和成品引用 snapshot，不再直接依赖变化的源文件。
 
-无法或不允许复制的大文件可使用 `reference_only`：
+无法复制时允许 `reference_only`：保存路径与 checksum，标记 `replayable:false`；变化后必须创建新任务/输入版本，不计入可重放率。
 
-- 仍记录路径与 checksum。
-- 标记 `replayable: false`。
-- 不计入 100% 可重放指标。
-- 文件变化后必须重新创建任务或输入版本。
+## 2. Artifact Store
 
-## S4.2 通用 Artifact Store
-
-新增 `nanobot/runtime/artifacts.py`：
-
-- `register(path, task_id, skill, type, source_artifacts, tool_calls, status, child_id=None)`。
-- 计算 checksum，写 sidecar metadata。
-- `get/list/lineage`。
-- 路径必须位于 workspace 与任务 artifact 根内。
-- `plan.json` 与输入 snapshot 都是一等 artifact。
+`runtime/artifacts.py` 提供 `register/get/list/lineage`，路径必须位于 workspace 与 task artifact 根内。
 
 最小 metadata：
 
@@ -45,84 +31,58 @@ metadata 记录原路径、snapshot 路径、SHA-256、大小、时间与复制�
   "path": "...",
   "checksum": "...",
   "source_artifacts": ["input_snapshot", "verified_facts"],
+  "tool_calls": ["tool_005"],
   "status": "validated",
   "replayable": true
 }
 ```
 
-## S4.3 双 Office Skill 接入
+- plan、输入、facts、Skill 中间产物、验证报告和成品都是一等 artifact。
+- 两个 Office Skill 可以有不同中间表示，但都回溯到输入和 facts。
+- 经 P3 approval 修改用户已有文件后登记新版本，不能把覆盖后的路径伪装成不可变产物。
 
-- `office-automation` 登记 shared facts、自有 DSL、quality report、docx/pptx。
-- `officecli` 登记 shared facts（数据任务）、自有命令/batch、engine version、validation、run metadata、preview 与成品。
-- 两个 Skill 不要求相同中间 artifact，但都必须回溯到输入 snapshot 和 verified facts。
-- 用户已有文件只有经 P3 approval 修改后才登记新版本；不把覆盖后的同一路径伪装成不可变产物。
+## 3. Checkpoint 范围
 
-## S4.4 Checkpoint 落盘
+`runtime/checkpoint.py` 复用 Runner checkpoint callback，仅对同时满足以下条件的任务落 durable checkpoint：
 
-复用 `AgentRunSpec.checkpoint_callback` 的 awaiting_tools/tools_completed/final_response 阶段，在 `nanobot/runtime/checkpoint.py` 落盘。
+- 已创建 plan；
+- plan 状态为 active/completed，且 `approved_plan_hash` 等于当前 plan hash；激活来源为自动或显式确认；
+- task id 与 artifact 根已建立。
 
-只为以下任务启用：
+普通问答不落完整 checkpoint；其待处理问题由 P3 InteractionRequest 自身持久化。
 
-- 已创建 `plan.json`。
-- plan hash 已由用户确认。
-- task_id 与 artifact 根已建立。
+checkpoint 保存 task/plan/step、assistant tool call、completed/pending/uncertain 集合、InteractionRequest 引用与 deadline、input/artifact checksum、P8 child 摘要和 state hash。
 
-普通问答和短任务不产生 durable checkpoint。
+## 4. 恢复语义
 
-checkpoint 至少包含：
+- `completed`：结果已持久化，恢复时跳过。
+- `pending`：尚未执行，或有幂等键/可验证产物，可安全重放。
+- `uncertain`：外部副作用可能发生但状态未知，进入 `awaiting_recovery_decision(required)`。
 
-- task/plan/step 状态。
-- assistant message 与工具调用。
-- completed/pending/uncertain 调用集合。
-- pending approval 引用。
-- input/artifact checksum 引用。
-- 父子 Agent 状态摘要（P8 接入后）。
-- state hash 与恢复说明。
+合法 suspension 单独表示：
 
-## S4.5 安全恢复语义
+- `awaiting_question`：required 或 auto_resolve。
+- `awaiting_approval`：expire_and_deny。
+- `awaiting_plan_confirmation`：只用于 plan-only/手动计划，不得超时自动确认。
+- `awaiting_recovery_decision`：默认 required。
 
-不宣称通用 exactly-once。
+等待期 LLM token 为 0；回答/deadline 原子恢复同一 task/turn。恢复保持原 assistant tool call 和 tool_call_id，将回答或超时结果作为匹配 tool result，不能补成普通 interrupted error。
 
-- `completed`：结果与 checkpoint 已持久化，恢复时跳过。
-- `pending`：尚未执行，或具备幂等键/可验证产物，可安全执行或重放。
-- `uncertain`：外部副作用可能已发生但未持久化完成状态，必须暂停并让用户决定。
+邮件、消息、删除和无幂等键远程写不能仅凭 tool_call id 自动重试；Office 生成可用 checksum、validation sidecar 和 run metadata 判断完成状态。不宣称 exactly-once。
 
-Office 生成可通过目标 checksum、validation sidecar 和 run metadata 判断是否已完成。邮件、消息、删除和无幂等键远程写操作不能仅凭 tool_call id 自动重试。
+## 5. 恢复入口与展示
 
-## S4.6 恢复入口
+- CLI/API 读取最近合法 checkpoint，校验 plan hash、input/artifact checksum 和 pending interaction。
+- checkpoint 损坏、引用缺失或状态冲突时 fail loud，不静默从头执行。
+- 恢复动作写 audit，P5 trace 记录 `resume_from`。
+- WebUI 只列出/下载 artifact；lineage 首版用 CLI/JSON，不做前端图。
 
-- 提供 CLI/API 读取最近合法 checkpoint。
-- 校验 plan hash、input snapshot、artifact checksum 和 pending approval。
-- checkpoint 损坏、引用缺失或状态冲突时 fail loud，不静默从头重跑。
-- 恢复动作写 audit，P5 接入 trace `resume_from=checkpoint_id`。
+## 测试与出口
 
-## S4.7 Artifact 展示
-
-WebUI 只需列出和下载任务产物；lineage 通过 CLI/JSON 展示，不做前端图。现有 Office artifact panel 继续识别 OfficeCLI sidecar 与 preview。
-
-## S4.8 机动项
-
-- Artifact v2/delta 局部重渲染。
-- staging/正式 artifact 不可变发布模型。
-- 白盒记忆条目、Dream change set、召回审计和回滚。
-
-这些不进入冻结前 P4/P7 必做验收。
-
-## 定向测试
-
-- 输入复制后修改源文件，不影响 task snapshot checksum。
-- reference-only 标记不可重放。
-- Python/OfficeCLI 产物均可回溯到同一输入和 facts。
-- 普通聊天不写 durable checkpoint。
-- 已确认计划任务写三阶段 checkpoint。
-- completed 跳过、pending 安全恢复、uncertain 停止并请求用户。
-- checkpoint 损坏/计划 hash 改变/输入 snapshot 缺失时拒绝恢复。
-
-## 阶段出口检查
-
-- [ ] 输入 snapshot 默认启用，reference-only 诚实标注。
-- [ ] 两个 Office Skill 全链血缘可查。
-- [ ] Durable checkpoint 只服务已确认计划任务。
-- [ ] 恢复使用 completed/pending/uncertain，不以 tool_call id 宣称 exactly-once。
-- [ ] kill → resume demo 能恢复可验证 Office 任务；未知副作用不会自动重试。
-- [ ] 白盒记忆不阻塞阶段出口。
+- snapshot 后修改源文件不影响任务输入；reference_only 诚实标注不可重放。
+- 两个 Office Skill 的成品都可回溯到输入和 facts。
+- 普通聊天不写完整 checkpoint；已激活且 hash 绑定的计划任务写必要阶段状态。
+- completed 跳过、pending 安全恢复、uncertain 转 required。
+- 三档 InteractionRequest 跨刷新/重启恢复，回答/deadline 只消费一次，等待期不调用 provider。
+- checkpoint 损坏、plan hash 改变、input/artifact 缺失均拒绝恢复。
+- kill→resume demo 能恢复可验证 Office 任务，未知副作用不自动重试。

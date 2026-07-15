@@ -12,8 +12,9 @@ def test_builtin_model_presets_include_mybot_switch_targets() -> None:
     expected = {
         "deepseek-v4-pro": ("DeepSeek V4 Pro", "deepseek-v4-pro", "deepseek"),
         "deepseek-v4-flash": ("DeepSeek V4 Flash", "deepseek-v4-flash", "deepseek"),
-        "mimo-v2-5-pro": ("MiMo V2.5 Pro", "mimo-v2.5-pro", "xiaomi_mimo"),
-        "mimo-v2-5": ("MiMo V2.5", "mimo-v2.5", "xiaomi_mimo"),
+        "gpt-5-6-sol": ("GPT-5.6 Sol", "gpt-5.6-sol", "openai"),
+        "gpt-5-6-terra": ("GPT-5.6 Terra", "gpt-5.6-terra", "openai"),
+        "gpt-5-6-luna": ("GPT-5.6 Luna", "gpt-5.6-luna", "openai"),
     }
 
     assert set(expected).issubset(config.model_presets)
@@ -28,7 +29,11 @@ def test_builtin_model_presets_resolve_provider_base_urls() -> None:
     config = Config.model_validate({
         "providers": {
             "deepseek": {"apiKey": "deepseek-key"},
-            "xiaomiMimo": {"apiKey": "mimo-key"},
+            "openai": {
+                "apiKey": "openai-key",
+                "apiBase": "https://dasuapi.com/v1",
+                "apiType": "responses",
+            },
         },
     })
 
@@ -36,9 +41,10 @@ def test_builtin_model_presets_resolve_provider_base_urls() -> None:
     assert config.get_provider_name(deepseek.model, preset=deepseek) == "deepseek"
     assert config.get_api_base(deepseek.model, preset=deepseek) == "https://api.deepseek.com"
 
-    mimo = config.resolve_preset("mimo-v2-5-pro")
-    assert config.get_provider_name(mimo.model, preset=mimo) == "xiaomi_mimo"
-    assert config.get_api_base(mimo.model, preset=mimo) == "https://api.xiaomimimo.com/v1"
+    terra = config.resolve_preset("gpt-5-6-terra")
+    assert config.get_provider_name(terra.model, preset=terra) == "openai"
+    assert config.get_api_base(terra.model, preset=terra) == "https://dasuapi.com/v1"
+    assert terra.context_window_tokens == 262_144
 
 
 def test_resolve_preset_returns_defaults_when_no_preset() -> None:

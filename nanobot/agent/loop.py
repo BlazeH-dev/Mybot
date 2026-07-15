@@ -18,6 +18,12 @@ from nanobot.agent import context as agent_context
 from nanobot.agent import model_presets as preset_helpers
 from nanobot.agent.autocompact import AutoCompact
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.execution_mode import (
+    EXECUTION_MODE_PLAN_ONLY,
+    execution_mode_from_metadata,
+    plan_only_prompt,
+    plan_only_registry,
+)
 from nanobot.agent.hook import AgentHook, CompositeHook
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.progress_hook import AgentProgressHook
@@ -599,7 +605,10 @@ class AgentLoop:
         scope = self.workspace_scopes.for_message(msg, session.metadata)
         return self.context.build_messages(
             history=history,
-            current_message=image_generation_prompt(msg.content, msg.metadata),
+            current_message=plan_only_prompt(
+                image_generation_prompt(msg.content, msg.metadata),
+                msg.metadata,
+            ),
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=self._runtime_chat_id(msg),
@@ -1221,7 +1230,11 @@ class AgentLoop:
             on_stream_end=on_stream_end,
             pending_queue=pending_queue,
             ephemeral=ephemeral,
-            tools=tools,
+            tools=(
+                plan_only_registry(tools or self.tools)
+                if execution_mode_from_metadata(msg.metadata) == EXECUTION_MODE_PLAN_ONLY
+                else tools
+            ),
         )
 
         while ctx.state is not TurnState.DONE:

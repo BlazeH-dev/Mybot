@@ -3,6 +3,11 @@ import { useTranslation } from "react-i18next";
 
 import { MessageBubble } from "@/components/MessageBubble";
 import { AgentActivityCluster } from "@/components/thread/AgentActivityCluster";
+import {
+  latestPlanSnapshot,
+  PlanProgressCard,
+  type PlanSnapshot,
+} from "@/components/thread/PlanProgressCard";
 import { normalizeActivityTimeline, type TurnUnit } from "@/lib/activity-timeline";
 import type { CliAppInfo, McpPresetInfo, UIMessage } from "@/lib/types";
 
@@ -18,6 +23,7 @@ interface ThreadMessagesProps {
   forkBoundaryMessageCount?: number | null;
   onOpenFilePreview?: (path: string) => void;
   onForkFromMessage?: (beforeUserIndex: number) => void;
+  onExecutePlan?: (taskId: string, planHash: string) => void;
 }
 
 export type DisplayUnit = TurnUnit;
@@ -74,6 +80,7 @@ export function ThreadMessages({
   forkBoundaryMessageCount = null,
   onOpenFilePreview,
   onForkFromMessage,
+  onExecutePlan,
 }: ThreadMessagesProps) {
   const { t } = useTranslation();
   const units = useMemo(() => buildDisplayUnits(messages, isStreaming), [isStreaming, messages]);
@@ -86,6 +93,7 @@ export function ThreadMessages({
     () => isStreaming ? currentActivityClusterIndices(units) : new Set<number>(),
     [isStreaming, units],
   );
+  const latestPlan = useMemo(() => latestPlanUnit(units), [units]);
   let nextUserIndex = hiddenUserMessageCount;
 
   return (
@@ -130,15 +138,20 @@ export function ThreadMessages({
           <Fragment key={unitKey(unit, index)}>
             <div className={marginTop} data-user-prompt-id={userPromptId}>
               {unit.type === "activity" ? (
-                <AgentActivityCluster
-                  messages={unit.messages}
-                  isTurnStreaming={liveActivityClusterIndices.has(index)}
-                  hasBodyBelow={hasBodyBelow}
-                  turnLatencyMs={unit.turnLatencyMs}
-                  cliApps={cliApps}
-                  mcpPresets={mcpPresets}
-                  onOpenFilePreview={onOpenFilePreview}
-                />
+                <>
+                  <AgentActivityCluster
+                    messages={unit.messages}
+                    isTurnStreaming={liveActivityClusterIndices.has(index)}
+                    hasBodyBelow={hasBodyBelow || latestPlan?.unitIndex === index}
+                    turnLatencyMs={unit.turnLatencyMs}
+                    cliApps={cliApps}
+                    mcpPresets={mcpPresets}
+                    onOpenFilePreview={onOpenFilePreview}
+                  />
+                  {latestPlan?.unitIndex === index ? (
+                    <PlanProgressCard plan={latestPlan.plan} onExecute={onExecutePlan} />
+                  ) : null}
+                </>
               ) : (
                 <MessageBubble
                   message={unit.message}
@@ -166,6 +179,18 @@ export function ThreadMessages({
       })}
     </div>
   );
+}
+
+function latestPlanUnit(
+  units: DisplayUnit[],
+): { unitIndex: number; plan: PlanSnapshot } | null {
+  let latest: { unitIndex: number; plan: PlanSnapshot } | null = null;
+  units.forEach((unit, unitIndex) => {
+    if (unit.type !== "activity") return;
+    const plan = latestPlanSnapshot(unit.messages);
+    if (plan) latest = { unitIndex, plan };
+  });
+  return latest;
 }
 
 function unitIndexAfterMessageCount(

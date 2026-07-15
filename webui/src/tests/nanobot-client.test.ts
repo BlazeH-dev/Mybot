@@ -502,6 +502,28 @@ describe("NanobotClient", () => {
     });
   });
 
+  it("includes the selected execution mode in outbound WebUI messages", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    lastSocket().fakeOpen();
+
+    client.sendMessage("chat-plan", "design it", undefined, {
+      executionMode: "plan_only",
+    });
+
+    expect(JSON.parse(lastSocket().sent.at(-1) as string)).toEqual({
+      type: "message",
+      chat_id: "chat-plan",
+      content: "design it",
+      execution_mode: "plan_only",
+      webui: true,
+    });
+  });
+
   it("includes image generation options in outbound messages", () => {
     const client = new NanobotClient({
       url: "ws://test",

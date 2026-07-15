@@ -341,6 +341,19 @@
       "addConfiguration": "Ajouter une configuration",
       "newConfiguration": "Nouvelle configuration de modèle",
       "newConfigurationHelp": "Enregistre un fournisseur et un modèle comme option en un clic.",
+      "editConfiguration": "Modifier la configuration du modèle",
+      "editConfigurationHelp": "Mettez à jour le fournisseur, le modèle et la fenêtre de contexte enregistrés.",
+      "configurations": "Configurations de modèle",
+      "configurationsHelp": "Changez, modifiez ou ajoutez les modèles utilisés pour les nouvelles réponses.",
+      "current": "Actuel",
+      "builtin": "Intégré",
+      "custom": "Personnalisé",
+      "use": "Utiliser",
+      "edit": "Modifier",
+      "delete": "Supprimer",
+      "deleteTitle": "Supprimer la configuration du modèle ?",
+      "deleteHelp": "Cela supprime la configuration enregistrée. Vous pourrez l’ajouter à nouveau plus tard.",
+      "deleting": "Suppression...",
       "configurationName": "Nom de la configuration",
       "configurationNameHelp": "Renomme cette configuration de modèle enregistrée.",
       "configurationNamePlaceholder": "Rédaction rapide",
@@ -658,6 +671,11 @@
       "placeholderOpening": "Ouverture d’une nouvelle discussion…",
       "placeholderStreaming": "Le modèle est en train de répondre…",
       "inputAria": "Champ de message",
+      "planMode": {
+        "label": "Plan",
+        "toggle": "Activer le mode plan uniquement",
+        "hint": "Créer un plan sans l’exécuter"
+      },
       "sendHint": "Entrée pour envoyer · Maj+Entrée pour un retour à la ligne",
       "runRuntimeTitle": "Exécution · {{elapsed}}",
       "goalStateStrip": "Objectif · {{label}}",
@@ -669,6 +687,7 @@
       "stop": "Arrêter la réponse",
       "modelNotConfigured": "Modèle non configuré",
       "configureModel": "Configurer le modèle",
+      "manageModels": "Gérer les modèles",
       "queued": {
         "label": "Guidage en attente",
         "guide": "Guider",
@@ -821,6 +840,18 @@
     }
   },
   "message": {
+    "plan": {
+      "title": "Plan",
+      "execute": "Exécuter le plan",
+      "starting": "Démarrage…",
+      "confirmPrompt": "Je confirme le plan {{taskId}} avec le hash {{planHash}}. Exécutez-le maintenant, mettez chaque étape à jour et terminez uniquement après vérification.",
+      "status": {
+        "creating": "Création",
+        "awaiting_confirmation": "Prêt",
+        "active": "En cours",
+        "completed": "Terminé"
+      }
+    },
     "streaming": "en cours de génération",
     "assistantTyping": "L’assistant est en train d’écrire",
     "toolSingle": "Utilisation d’un outil",

@@ -32,10 +32,12 @@ import {
   History,
   ImageIcon,
   Loader2,
+  ListTodo,
   Mic,
   Plus,
   RotateCw,
   Shield,
+  SlidersHorizontal,
   Sparkles,
   Square,
   SquarePen,
@@ -52,6 +54,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -163,6 +166,7 @@ interface ThreadComposerProps {
   modelProviderLabel?: string | null;
   modelNeedsSetup?: boolean;
   onModelBadgeClick?: () => void;
+  onManageModels?: () => void;
   modelPresets?: SettingsPayload["model_presets"];
   onModelPresetSelect?: (presetName: string) => void;
   variant?: "thread" | "hero";
@@ -760,6 +764,7 @@ export function ThreadComposer({
   modelProviderLabel = null,
   modelNeedsSetup = false,
   onModelBadgeClick,
+  onManageModels,
   modelPresets = [],
   onModelPresetSelect,
   variant = "thread",
@@ -788,6 +793,7 @@ export function ThreadComposer({
   const [cursorPosition, setCursorPosition] = useState(0);
   const [recentSlashCommands, setRecentSlashCommands] = useState<string[]>(() => readSlashRecents());
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
+  const [planOnly, setPlanOnly] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1405,13 +1411,15 @@ export function ThreadComposer({
     const attachedCliApps = activeCliMentionApps.map(cliAppMentionPayload);
     const attachedMcpPresets = activeMcpPresetMentions.map(mcpPresetMentionPayload);
     const options: SendOptions | undefined =
-      attachedCliApps.length > 0 || attachedMcpPresets.length > 0
+      planOnly || attachedCliApps.length > 0 || attachedMcpPresets.length > 0
         ? {
+            ...(planOnly ? { executionMode: "plan_only" as const } : {}),
             ...(attachedCliApps.length > 0 ? { cliApps: attachedCliApps } : {}),
             ...(attachedMcpPresets.length > 0 ? { mcpPresets: attachedMcpPresets } : {}),
           }
         : undefined;
     onSend(content, payload, options);
+    setPlanOnly(false);
     setQueuedPrompts([]);
     // Bubble owns the data URL copy; safe to revoke every staged blob
     // preview here without affecting the rendered message.
@@ -1426,6 +1434,7 @@ export function ThreadComposer({
     modelNeedsSetup,
     onModelBadgeClick,
     onSend,
+    planOnly,
     readyImages,
     value,
   ]);
@@ -1740,6 +1749,34 @@ export function ThreadComposer({
             >
               <Plus className={cn(isHero ? "h-[18px] w-[18px]" : "h-4 w-4")} />
             </Button>
+            {!voiceRecorder.isRecording ? (
+              <TooltipProvider delayDuration={220} skipDelayDuration={80}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      aria-pressed={planOnly}
+                      aria-label={t("thread.composer.planMode.toggle")}
+                      disabled={disabled || isStreaming}
+                      onClick={() => setPlanOnly((enabled) => !enabled)}
+                      className={cn(
+                        "h-8 rounded-full border px-2.5 text-xs font-medium transition-colors",
+                        planOnly
+                          ? "border-blue-400/60 bg-blue-500/10 text-blue-700 hover:bg-blue-500/15 dark:text-blue-300"
+                          : "border-border/55 bg-card text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                      )}
+                    >
+                      <ListTodo className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+                      {t("thread.composer.planMode.label")}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" align="center">
+                    {t("thread.composer.planMode.hint")}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ) : null}
             {voiceRecorder.isRecording ? (
               <VoiceRecordingMeter
                 ariaLabel={voiceRecordingStatusLabel}
@@ -1769,6 +1806,7 @@ export function ThreadComposer({
                 onClick={modelNeedsSetup ? onModelBadgeClick : undefined}
                 presets={modelPresets}
                 onPresetSelect={onModelPresetSelect}
+                onManageModels={onManageModels}
               />
             ) : null}
             {showVoiceButton ? (
@@ -2058,6 +2096,7 @@ function ComposerModelBadge({
   onClick,
   presets = [],
   onPresetSelect,
+  onManageModels,
 }: {
   label: string;
   provider?: string | null;
@@ -2067,7 +2106,9 @@ function ComposerModelBadge({
   onClick?: () => void;
   presets?: SettingsPayload["model_presets"];
   onPresetSelect?: (presetName: string) => void;
+  onManageModels?: () => void;
 }) {
+  const { t } = useTranslation();
   const inferredProvider = needsSetup ? null : provider || inferProviderFromModelName(label);
   const brand = providerBrand(inferredProvider);
   const [logoIndex, setLogoIndex] = useState(0);
@@ -2183,6 +2224,15 @@ function ComposerModelBadge({
             </DropdownMenuItem>
           );
         })}
+        {onManageModels ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onManageModels} className="gap-2">
+              <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+              {t("thread.composer.manageModels", { defaultValue: "Manage models" })}
+            </DropdownMenuItem>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

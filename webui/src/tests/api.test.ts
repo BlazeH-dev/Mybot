@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createModelConfiguration,
+  deleteModelConfiguration,
   deleteSession,
   fetchFilePreview,
   fetchCliApps,
@@ -152,10 +153,22 @@ describe("webui API helpers", () => {
       label: "Fast writing",
       provider: "openai",
       model: "openai/gpt-4.1-mini",
+      contextWindowTokens: 262144,
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/model-configurations/create?label=Fast+writing&provider=openai&model=openai%2Fgpt-4.1-mini",
+      "/api/settings/model-configurations/create?label=Fast+writing&provider=openai&model=openai%2Fgpt-4.1-mini&context_window_tokens=262144",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+      }),
+    );
+  });
+
+  it("serializes model configuration deletion", async () => {
+    await deleteModelConfiguration("tok", "fast-writing");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/settings/model-configurations/delete?name=fast-writing",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
       }),

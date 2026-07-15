@@ -328,6 +328,7 @@ describe("ThreadShell", () => {
   it("switches composer model presets through settings without sending a chat message", async () => {
     const user = userEvent.setup();
     const client = makeClient();
+    const onOpenModelSettings = vi.fn();
     const settings = modelSettings("deepseek-v4-pro", "deepseek");
     settings.agent.model_preset = "deepseek-v4-pro";
     settings.model_presets = [
@@ -385,6 +386,7 @@ describe("ThreadShell", () => {
           title="Model switch"
           onToggleSidebar={() => {}}
           settingsSnapshot={settings}
+          onOpenModelSettings={onOpenModelSettings}
         />,
         "deepseek-v4-pro",
       ),
@@ -402,6 +404,10 @@ describe("ThreadShell", () => {
       ),
     );
     expect(client.sendMessage).not.toHaveBeenCalled();
+
+    await user.click(await screen.findByRole("button", { name: /deepseek-v4-flash/i }));
+    await user.click(await screen.findByRole("menuitem", { name: "Manage models" }));
+    expect(onOpenModelSettings).toHaveBeenCalledTimes(1);
   });
 
   it("keeps image generation controls out of the composer", async () => {

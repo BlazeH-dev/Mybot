@@ -6,7 +6,7 @@
 
 - **后端**: Python 3.11+ / nanobot 0.2.1
 - **前端**: React 18 + TypeScript + Vite + Tailwind CSS
-- **模型**: 内置 DeepSeek V4 / Xiaomi MiMo V2.5 预设，可运行时切换
+- **模型**: 内置 DeepSeek V4 与中转站 GPT-5.6 Sol/Terra/Luna 预设，可运行时切换
 - **交互**: WebSocket + WebUI
 
 ## 快速开始
@@ -23,7 +23,9 @@ cd webui && bun install && bun run build && cd ..
 # 3. 配置 API Key
 # 编辑 ~/.nanobot/config.json，按需填写：
 # providers.deepseek.apiKey     # DeepSeek V4 Pro / Flash
-# providers.xiaomiMimo.apiKey   # MiMo V2.5 Pro / MiMo V2.5
+# providers.openai.apiKey       # GPT-5.6 中转站
+# providers.openai.apiBase      # 例如 https://your-relay.example/v1
+# providers.xiaomiMimo.apiKey   # 可选，仅用于 Xiaomi MiMo 语音转写
 
 # 4. 启动
 nanobot gateway
@@ -39,10 +41,11 @@ nanobot gateway
 |--------|------|----------|---------------|
 | `deepseek-v4-pro` | `deepseek-v4-pro` | `deepseek` | `https://api.deepseek.com` |
 | `deepseek-v4-flash` | `deepseek-v4-flash` | `deepseek` | `https://api.deepseek.com` |
-| `mimo-v2-5-pro` | `mimo-v2.5-pro` | `xiaomi_mimo` | `https://api.xiaomimimo.com/v1` |
-| `mimo-v2-5` | `mimo-v2.5` | `xiaomi_mimo` | `https://api.xiaomimimo.com/v1` |
+| `gpt-5-6-sol` | `gpt-5.6-sol` | `openai` | 由 `providers.openai.apiBase` 配置 |
+| `gpt-5-6-terra` | `gpt-5.6-terra` | `openai` | 由 `providers.openai.apiBase` 配置 |
+| `gpt-5-6-luna` | `gpt-5.6-luna` | `openai` | 由 `providers.openai.apiBase` 配置 |
 
-可以在 WebUI 对话框右下角模型下拉中切换；也可以在聊天中发送 `/model` 查看当前模型和可用预设，发送 `/model mimo-v2-5-pro` 这类命令切换。
+WebUI 设置页提供模型配置列表，可新增、编辑、切换和删除自定义配置；输入框右下角菜单用于快速切换。也可以发送 `/model` 查看当前模型和可用预设，例如 `/model gpt-5-6-terra`。
 
 ## 项目结构
 

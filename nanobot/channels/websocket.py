@@ -18,6 +18,10 @@ from websockets.asyncio.server import ServerConnection, serve, unix_serve
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request as WsRequest
 
+from nanobot.agent.execution_mode import (
+    EXECUTION_MODE_METADATA_KEY,
+    normalize_execution_mode,
+)
 from nanobot.bus.events import OUTBOUND_META_AGENT_UI, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
@@ -762,6 +766,17 @@ class WebSocketChannel(BaseChannel):
             if envelope.get("webui") is True:
                 metadata["webui"] = True
                 metadata.update(self._transcripts.client_turn_metadata(envelope.get("turn_id")))
+            if "execution_mode" in envelope:
+                execution_mode = normalize_execution_mode(envelope.get("execution_mode"))
+                if execution_mode is None:
+                    await self._send_event(
+                        connection,
+                        "error",
+                        detail="invalid_execution_mode",
+                        chat_id=cid,
+                    )
+                    return
+                metadata[EXECUTION_MODE_METADATA_KEY] = execution_mode
             cli_apps = normalize_cli_app_mentions(envelope.get("cli_apps"))
             if cli_apps:
                 metadata["cli_apps"] = cli_apps

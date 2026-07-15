@@ -533,6 +533,19 @@ export function ThreadShell({
     [send, withWorkspaceScope],
   );
 
+  const handleExecutePlan = useCallback(
+    (taskId: string, planHash: string) => {
+      if (!taskId || !planHash) return;
+      setScrollToBottomSignal((value) => value + 1);
+      send(
+        t("message.plan.confirmPrompt", { taskId, planHash }),
+        undefined,
+        withWorkspaceScope({ executionMode: "default" }),
+      );
+    },
+    [send, t, withWorkspaceScope],
+  );
+
   const handleModelPresetSelect = useCallback(
     async (presetName: string) => {
       const name = presetName.trim();
@@ -671,6 +684,7 @@ export function ThreadShell({
           modelProviderLabel={modelBadge.providerLabel}
           modelNeedsSetup={modelBadge.needsSetup}
           onModelBadgeClick={modelBadge.needsSetup ? onOpenModelSettings : undefined}
+          onManageModels={onOpenModelSettings}
           modelPresets={settings?.model_presets ?? []}
           onModelPresetSelect={handleModelPresetSelect}
           variant={showHeroComposer ? "hero" : "thread"}
@@ -704,6 +718,7 @@ export function ThreadShell({
           modelProviderLabel={modelBadge.providerLabel}
           modelNeedsSetup={modelBadge.needsSetup}
           onModelBadgeClick={modelBadge.needsSetup ? onOpenModelSettings : undefined}
+          onManageModels={onOpenModelSettings}
           modelPresets={settings?.model_presets ?? []}
           onModelPresetSelect={handleModelPresetSelect}
           variant="hero"
@@ -776,6 +791,7 @@ export function ThreadShell({
           forkBoundaryMessageCount={forkBoundaryMessageCount}
           onOpenFilePreview={historyKey ? handleOpenFilePreview : undefined}
           onForkFromMessage={onForkChat ? handleForkFromMessage : undefined}
+          onExecutePlan={handleExecutePlan}
         />
       </div>
       {filePreviewPath && historyKey ? (

@@ -1,21 +1,13 @@
-# P3 Policy、可恢复审批与最小文件冲突保护 — 详细步骤
+# P3 Policy、三档 HITL 与最小文件 OCC
 
-> 所属：`docs/plans/Mybot通用AgentRuntime与办公自动化SkillPack整合方案.md`
-> 状态：仅规划，未执行。2026-07-14 按 grill-me 共识收缩 OCC、重构 HITL。
-> 阶段出口：工具执行前统一 allow/ask/deny；ask 持久化后结束当前执行并可跨刷新/重启恢复；已有文件不会被过期读取静默覆盖。
+> 状态：待执行。文件租约不属于本阶段必做。
+> 出口：工具执行前统一 allow/ask/deny；等待可持久化恢复；危险审批超时不放行；已有文件冲突拦截率 100%。
 
----
+## 1. Policy Gate
 
-## S3.1 Tool 风险元数据
+### 元数据与决策
 
-- `Tool` 增加 `capability`、`risk_level`、`requires_approval`。
-- 不使用模型可伪造的 `skill_scope` 作为授权依据。
-- manifest permissions 仅是需求声明，最终权限由 Runtime、会话策略和一次性审批决定。
-- 安全默认：已知本地只读可 allow；未知写入/执行/网络进入 ask；未知 MCP 默认 deny 或 require explicit trust。
-
-## S3.2 PermissionDecision 纯函数
-
-新增 `nanobot/runtime/policy.py`：
+`Tool` 增加 `capability`、`risk_level`、`requires_approval`。`runtime/policy.py` 提供纯函数：
 
 ```python
 PermissionDecision(
@@ -26,102 +18,102 @@ PermissionDecision(
 )
 ```
 
-输入至少包含工具、规范化参数、request/task/plan 上下文、父任务约束和配置。
+输入包含工具、规范化参数、request/task/plan、父任务约束和配置。规则优先级：
 
-规则层级：
-
-1. workspace、SSRF、敏感信息等硬边界 deny，配置和审批都不能放宽。
+1. workspace、SSRF、敏感信息 hard deny，任何配置和审批都不能放宽。
 2. 配置 deny。
-3. 已绑定参数的一次性 approval。
-4. 配置 ask/allow 与默认策略。
+3. 精确参数绑定的一次性 approval。
+4. 配置 ask/allow 与安全默认值。
 
-## S3.3 工具执行前拦截
+### 接线
 
-- 在 `ToolRegistry.prepare_call` 成功解析参数后执行 policy。
-- deny 返回稳定、不可通过重试绕过的结构化错误。
-- allow 正常执行。
-- ask 不执行工具，转 S3.4 创建 pending approval。
-- 每次决策先写本地 audit，P5 再接完整 trace。
+- `ToolRegistry.prepare_call` 只做同步解析、转换和 schema 校验。
+- Runner/Runtime 在实际执行前调用异步 policy gate，负责持久化和事件 I/O。
+- deny 返回稳定结构化错误；allow 执行；ask 不执行工具，创建 approval。
+- 每次决策先写本地 audit，P5 接入完整 trace。
 
-## S3.4 `pending_approval` 持久化
+## 2. InteractionRequest
 
-新增 `nanobot/runtime/approvals.py`，记录：
+`runtime/interactions.py` 统一承接：
+
+- `question`：`request_user_input` 的单选、多选和自由文本。
+- `approval`：高风险工具批准/拒绝。
+- `plan_confirmation`：只用于 plan-only、手动计划或其他明确要求人工确认的计划，绑定 plan hash；普通 WebUI 自动激活计划不创建该请求。
+- `recovery_decision`：uncertain 副作用人工决定。
+
+最小记录：
 
 ```text
-approval_id
-task_id / plan_hash / step_id
-tool_name
-normalized_params_hash
-target summary
-risk / reason
+request_id / revision / kind
+task_id / turn_id / plan_hash / step_id / child_id
+continuation / tool_call_id
+payload / questions / target summary
+strategy: required|auto_resolve|expire_and_deny
 created_at / expires_at
-status: pending|approved|denied|expired|consumed
+status: pending|answered|approved|denied|timed_out|expired|cancelled|superseded|consumed
 ```
 
-流程：
+首版可按 request 原子写入 `.nanobot-runtime/interactions/<request_id>.json`；session/task metadata 只保存活动引用。
 
-1. policy 返回 ask。
-2. Runtime 原子写 pending approval，发送 WebUI runtime event。
-3. 当前 Agent 执行进入 `awaiting_approval` 并结束，不保持 Runner coroutine 长时间等待。
-4. 用户批准/拒绝形成新 inbound control event。
-5. Runtime 恢复原任务；只有工具名、plan hash 和规范化参数 hash 完全一致时消费一次性 approval。
-6. 参数改变、计划替换、过期或已消费都必须重新审批。
+### 三档等待
 
-WebSocket 只负责展示和传递决定，不是审批状态真相源。
+- `required`：必要参数、文件、不可推断选择、需要人工确认的 plan、uncertain recovery。无回答就不继续，只能回答、取消或 `/stop`。
+- `auto_resolve`：非阻塞偏好问题，deadline 建议 60–240 秒。到期优先用声明的确定性默认值，否则返回 `timed_out` 让模型最佳判断；不得伪造用户答案。
+- `expire_and_deny`：修改用户原文件、消息/邮件、高风险 shell、远程写操作。到期 expired/denied，原工具不得执行。
 
-## S3.5 OfficeCLI 能力分级
+普通聊天不能隐式消费 approval。客户端响应必须包含 request id、expected revision 和幂等键。
 
-OfficeCLI 能力完整保留，不在 Skill 层删除：
+### Suspension 与恢复
 
-- `help/view/get/query/validate/screenshot`：通常 allow。
-- 任务 artifact 目录中新文件的常规 `add/set/batch`：可 allow。
-- 修改用户已有文件：ask，并执行文件新鲜度检查。
-- `raw/raw-set/add-part`：默认 ask。
-- `MCP/plugin/install/update/config/watch`：根据安装、网络、长期进程和配置副作用 ask/deny。
-- workspace 越界、敏感路径和 SSRF：硬 deny。
+1. 模型调用 `request_user_input`，或 policy 返回 ask。
+2. Runtime 原子保存请求并推送 WebUI 卡片。
+3. Runner 返回 typed `awaiting_question|approval|plan_confirmation|recovery_decision`，不是 tool error。
+4. 当前 LLM 调用结束，释放 Runner 资源；task/turn 不发送 completed，等待期 token 为 0。
+5. 用户响应或 deadline 恢复原 task/turn 和 tool call；原子竞争只允许一次消费。
+6. 回答、`timed_out`、denied/expired 作为匹配原 `tool_call_id` 的结构化 tool result 注入，不重复添加用户文本。
 
-不声称通过 shell 字符串分类形成绝对安全；最终安全依赖硬边界、目标路径、参数 hash 和审批。
+`InteractionManager` 启动时扫描 overdue pending 请求；运行中维护最近 deadline 的 timer，不为每个请求建立永久 cron。刷新、断线和重启后 WebUI 必须重放未处理卡片。
 
-## S3.6 最小文件 OCC
+## 3. 参数绑定 Approval
 
-复用 `agent/tools/file_state.py`：
+`runtime/approvals.py` 是 `InteractionRequest(kind="approval")` 的安全专用逻辑，额外保存：
 
-- 已有文件在 `write_file`、`edit_file`、`apply_patch` 前必须有本会话读取快照。
-- 即使 mtime 未变化也比较 SHA-256；内容变化返回 `file_conflict:modified_since_read`。
-- 未读已有文件返回 `file_conflict:not_read`。
-- 多文件 patch 在第一处写入前统一检查全部已有目标；任一冲突则零写入。
-- 成功写入后刷新 read state。
-- 错误提示明确要求“重新读取 → 重新生成 patch → 再提交”。
+```text
+tool_name / normalized_params_hash
+task_id / plan_hash / step_id
+target / risk / reason / expires_at
+```
 
-冻结前不承诺：
+- approval 固定 `expire_and_deny`，只能消费一次。
+- 工具名、plan hash、参数 hash 任一改变，或请求过期/已消费，都必须重新审批。
+- plan 的自动激活状态不能替代工具 approval；自动 plan-and-execute 仍逐次经过 policy gate。
+- WebSocket 不是状态真相源。
 
-- 新文件 expected-absent 竞态完全消除。
-- fsync/数据库式事务。
-- 对 shell/外部进程任意写盘的拦截。
-- 最终 hash 校验后的极小 TOCTOU 窗口消失。
+OfficeCLI 基线：只读 help/view/get/query/validate 通常 allow；任务目录新产物的常规 DOM 操作可 allow；修改用户文件、raw、MCP/plugin/install/update/config/watch 按参数 ask/deny；硬边界始终 deny。
 
-## S3.7 不可信内容安全口径
+## 4. 最小文件 OCC
 
-- 网页、文档、表格、邮件和 MCP 描述统一视为 untrusted content。
-- 不承诺检测全部提示词注入。
-- 安全验收改为：注入不能造成越权写入、敏感信息泄漏或未确认外发。
+复用 `agent/tools/file_state.py`，但 read snapshot 必须按 actor 隔离：
+
+- 已有文件在 `write_file`、`edit_file`、`apply_patch` 前必须由当前 actor 读取。
+- 未读返回 `file_conflict:not_read`；SHA-256 变化返回 `file_conflict:modified_since_read`，即使 mtime 未变也失败。
+- 多文件 patch 在第一次写入前检查全部目标；任一冲突则零写入。
+- 成功写入后刷新当前 actor read state；提示模型重新读取、重新生成 patch。
+
+冻结前不承诺：新文件完整竞态消除、数据库式事务/fsync、shell 任意写盘拦截、最终微小 TOCTOU、Subagent 文件租约或跨进程锁。
+
+## 5. 安全口径
+
+- 网页、文档、表格、邮件和 MCP 描述都是 untrusted content。
+- 不承诺检测全部注入；验收的是越权写入、敏感泄漏和未确认外发为 0。
 - 启发式 injection signal 只用于审计，不是安全边界。
 
-## 定向测试
+## 测试与出口
 
-- 硬边界不能被配置 allow 或用户 approval 覆盖。
-- ask 后 Runner 结束，pending approval 可跨重新实例化读回。
-- approve/deny/expire/params hash mismatch/plan hash mismatch。
-- approval 只消费一次。
-- OfficeCLI L1 allow、已有文件修改 ask、越界 deny。
-- 未读写入、读取后修改、mtime 不变但 hash 改变、多文件第 N 个冲突均硬失败。
-
-## 阶段出口检查
-
-- [ ] allow/ask/deny 在工具执行前统一生效。
-- [ ] ask 不阻塞 Runner，审批可跨刷新/断线/重启恢复。
-- [ ] approval 与精确参数和计划绑定且一次性消费。
-- [ ] 配置和审批不能突破硬边界。
-- [ ] OfficeCLI 完整能力由 Policy 分级治理。
-- [ ] 已有文件冲突拦截率 100%，多文件冲突时零写入。
-- [ ] 安全报告使用“越权副作用为 0”，不宣称万能注入检测。
+- hard deny 不能被配置、Skill、approval 或 child 放宽。
+- required 不回答不继续；auto_resolve 到期恢复；expire_and_deny 到期不执行。
+- 等待期间 provider 不被调用；回答/deadline 只恢复一次，重复、迟到和错误 revision 被拒。
+- approval 的 approve/deny/expire、参数/计划 hash mismatch 和一次性消费通过。
+- 刷新、断线、重启后卡片和 continuation 可恢复。
+- OfficeCLI allow/ask/deny 分级通过。
+- 未读、读后修改、mtime 不变但 hash 变化、多文件第 N 个冲突均硬失败且零部分写入。

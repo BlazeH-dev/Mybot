@@ -268,7 +268,9 @@ def test_load_config_backfills_builtin_model_presets_for_existing_empty_config(t
     config = load_config(config_path)
 
     assert config.model_presets["deepseek-v4-flash"].model == "deepseek-v4-flash"
-    assert config.model_presets["mimo-v2-5-pro"].provider == "xiaomi_mimo"
+    assert config.model_presets["gpt-5-6-terra"].provider == "openai"
+    assert config.model_presets["gpt-5-6-terra"].context_window_tokens == 262_144
+    assert "mimo-v2-5-pro" not in config.model_presets
     assert "gpt-5-5" not in config.model_presets
 
 
@@ -348,4 +350,75 @@ def test_load_config_keeps_user_model_preset_when_backfilling_builtins(tmp_path)
     assert config.model_presets["deepseek-v4-flash"].label == "My Flash"
     assert config.model_presets["deepseek-v4-flash"].model == "custom-flash"
     assert config.model_presets["local"].provider == "ollama"
-    assert config.model_presets["mimo-v2-5"].model == "mimo-v2.5"
+    assert config.model_presets["gpt-5-6-luna"].model == "gpt-5.6-luna"
+
+
+def test_load_config_retires_exact_mimo_presets_and_references(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {
+                        "modelPreset": "mimo-v2-5-pro",
+                        "fallbackModels": ["mimo-v2-5", "deepseek-v4-flash"],
+                    }
+                },
+                "modelPresets": {
+                    "mimo-v2-5-pro": {
+                        "label": "MiMo V2.5 Pro",
+                        "model": "mimo-v2.5-pro",
+                        "provider": "xiaomi_mimo",
+                        "maxTokens": 8192,
+                        "contextWindowTokens": 65536,
+                        "temperature": 0.1,
+                        "reasoningEffort": "medium",
+                    },
+                    "mimo-v2-5": {
+                        "label": "MiMo V2.5",
+                        "model": "mimo-v2.5",
+                        "provider": "xiaomi_mimo",
+                        "maxTokens": 8192,
+                        "contextWindowTokens": 65536,
+                        "temperature": 0.1,
+                        "reasoningEffort": "medium",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.agents.defaults.model_preset is None
+    assert config.agents.defaults.fallback_models == ["deepseek-v4-flash"]
+    assert "mimo-v2-5-pro" not in config.model_presets
+    assert "mimo-v2-5" not in config.model_presets
+
+
+def test_load_config_keeps_user_modified_mimo_preset(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "modelPresets": {
+                    "mimo-v2-5": {
+                        "label": "My MiMo",
+                        "model": "mimo-v2.5",
+                        "provider": "xiaomi_mimo",
+                        "maxTokens": 8192,
+                        "contextWindowTokens": 262144,
+                        "temperature": 0.1,
+                        "reasoningEffort": "medium",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.model_presets["mimo-v2-5"].label == "My MiMo"
+    assert config.model_presets["mimo-v2-5"].context_window_tokens == 262_144

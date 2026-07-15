@@ -12,6 +12,7 @@ from nanobot.webui.settings_api import (
     WebUISettingsError,
     _oauth_provider_status,
     create_model_configuration,
+    delete_model_configuration,
     provider_models_payload,
     settings_payload,
     settings_usage_payload,
@@ -39,6 +40,7 @@ def test_create_model_configuration_writes_label_and_selects(
             "label": ["Fast writing"],
             "provider": ["openai"],
             "model": ["openai/gpt-4.1-mini"],
+            "context_window_tokens": ["262144"],
         }
     )
 
@@ -46,12 +48,15 @@ def test_create_model_configuration_writes_label_and_selects(
     assert payload["agent"]["model"] == "openai/gpt-4.1-mini"
     rows = {row["name"]: row for row in payload["model_presets"]}
     assert rows["fast-writing"]["label"] == "Fast writing"
+    assert rows["fast-writing"]["is_builtin"] is False
+    assert rows["gpt-5-6-terra"]["is_builtin"] is True
 
     saved = load_config(config_path)
     assert saved.agents.defaults.model_preset == "fast-writing"
     assert saved.model_presets["fast-writing"].label == "Fast writing"
     assert saved.model_presets["fast-writing"].model == "openai/gpt-4.1-mini"
     assert saved.model_presets["fast-writing"].provider == "openai"
+    assert saved.model_presets["fast-writing"].context_window_tokens == 262_144
 
     with pytest.raises(WebUISettingsError) as duplicate:
         create_model_configuration(
@@ -188,6 +193,45 @@ def test_update_model_configuration_rejects_default_preset(
 
     with pytest.raises(WebUISettingsError, match="model configuration is required"):
         update_model_configuration({"name": ["default"], "model": ["openai/gpt-4.1"]})
+
+
+def test_delete_model_configuration_removes_custom_active_and_fallback(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.model_presets["custom"] = ModelPresetConfig(
+        label="Custom",
+        provider="openai",
+        model="gpt-custom",
+    )
+    config.agents.defaults.model_preset = "custom"
+    config.agents.defaults.fallback_models = ["custom", "deepseek-v4-flash"]
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = delete_model_configuration({"name": ["custom"]})
+
+    saved = load_config(config_path)
+    assert saved.agents.defaults.model_preset is None
+    assert saved.agents.defaults.fallback_models == ["deepseek-v4-flash"]
+    assert "custom" not in saved.model_presets
+    assert payload["agent"]["model_preset"] == "default"
+
+
+@pytest.mark.parametrize("name", ["default", "gpt-5-6-terra", "deepseek-v4-pro"])
+def test_delete_model_configuration_rejects_default_and_builtins(
+    name: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    save_config(Config(), config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    with pytest.raises(WebUISettingsError, match="cannot be deleted|required"):
+        delete_model_configuration({"name": [name]})
 
 
 def test_settings_payload_includes_oauth_provider_status(

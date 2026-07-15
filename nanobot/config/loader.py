@@ -12,6 +12,36 @@ from pydantic import BaseModel
 
 from nanobot.config.schema import Config, _resolve_tool_config_refs, default_model_presets
 
+_RETIRED_BUILTIN_MODEL_PRESETS = {
+    "gpt-5-5": {
+        "label": "GPT-5.5",
+        "model": "gpt-5.5",
+        "provider": "openai",
+        "maxTokens": 8192,
+        "contextWindowTokens": 128000,
+        "temperature": 0.1,
+        "reasoningEffort": "medium",
+    },
+    "mimo-v2-5-pro": {
+        "label": "MiMo V2.5 Pro",
+        "model": "mimo-v2.5-pro",
+        "provider": "xiaomi_mimo",
+        "maxTokens": 8192,
+        "contextWindowTokens": 65_536,
+        "temperature": 0.1,
+        "reasoningEffort": "medium",
+    },
+    "mimo-v2-5": {
+        "label": "MiMo V2.5",
+        "model": "mimo-v2.5",
+        "provider": "xiaomi_mimo",
+        "maxTokens": 8192,
+        "contextWindowTokens": 65_536,
+        "temperature": 0.1,
+        "reasoningEffort": "medium",
+    },
+}
+
 # Global variable to store current config path (for multi-instance support)
 _current_config_path: Path | None = None
 _schema_refs_ready = False
@@ -154,7 +184,8 @@ def _env_replace(match: re.Match[str]) -> str:
 
 def _migrate_config(data: dict) -> dict:
     """Migrate old config formats to current."""
-    _backfill_builtin_model_presets(data)
+    retired_model_presets = _backfill_builtin_model_presets(data)
+    _remove_retired_model_references(data, retired_model_presets)
 
     # Move tools.exec.restrictToWorkspace → tools.restrictToWorkspace
     tools = data.get("tools", {})
@@ -179,27 +210,62 @@ def _migrate_config(data: dict) -> dict:
     return data
 
 
-def _backfill_builtin_model_presets(data: dict) -> None:
+def _backfill_builtin_model_presets(data: dict) -> set[str]:
     """Merge Mybot's built-in presets into existing config without overwriting users."""
     key = "modelPresets" if "modelPresets" in data else "model_presets"
     presets = data.setdefault(key, {})
     if not isinstance(presets, dict):
-        return
+        return set()
 
-    _remove_retired_builtin_model_presets(presets)
+    retired = _remove_retired_builtin_model_presets(presets)
 
     for name, preset in default_model_presets().items():
         presets.setdefault(name, preset.model_dump(mode="json", by_alias=True))
+    return retired
 
 
-def _remove_retired_builtin_model_presets(presets: dict) -> None:
+def _remove_retired_builtin_model_presets(presets: dict) -> set[str]:
     """Drop retired built-in presets while preserving user-modified entries."""
-    retired_gpt = presets.get("gpt-5-5")
-    if not isinstance(retired_gpt, dict):
+    aliases = {
+        "maxTokens": "max_tokens",
+        "contextWindowTokens": "context_window_tokens",
+        "reasoningEffort": "reasoning_effort",
+    }
+    retired: set[str] = set()
+    for name, expected in _RETIRED_BUILTIN_MODEL_PRESETS.items():
+        current = presets.get(name)
+        if not isinstance(current, dict):
+            continue
+        matches = all(
+            current.get(key, current.get(aliases.get(key, key))) == value
+            for key, value in expected.items()
+        )
+        if matches:
+            presets.pop(name, None)
+            retired.add(name)
+    return retired
+
+
+def _remove_retired_model_references(data: dict, retired: set[str]) -> None:
+    """Keep active/fallback references valid when an exact built-in is retired."""
+    if not retired:
         return
-    if (
-        retired_gpt.get("label") == "GPT-5.5"
-        and retired_gpt.get("model") == "gpt-5.5"
-        and retired_gpt.get("provider") == "openai"
-    ):
-        presets.pop("gpt-5-5", None)
+    agents = data.get("agents")
+    if not isinstance(agents, dict):
+        return
+    defaults = agents.get("defaults")
+    if not isinstance(defaults, dict):
+        return
+
+    preset_key = "modelPreset" if "modelPreset" in defaults else "model_preset"
+    if defaults.get(preset_key) in retired:
+        defaults[preset_key] = None
+
+    fallback_key = "fallbackModels" if "fallbackModels" in defaults else "fallback_models"
+    fallbacks = defaults.get(fallback_key)
+    if isinstance(fallbacks, list):
+        defaults[fallback_key] = [
+            fallback
+            for fallback in fallbacks
+            if not (isinstance(fallback, str) and fallback in retired)
+        ]

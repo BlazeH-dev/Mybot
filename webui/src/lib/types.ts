@@ -1,4 +1,5 @@
 export type Role = "user" | "assistant" | "tool" | "system";
+export type ExecutionMode = "default" | "plan_only";
 
 /** "trace" rows are intermediate agent breadcrumbs (tool-call hints,
  * progress pings) that should not be rendered as conversational replies. */
@@ -74,6 +75,8 @@ export interface UIMessage {
   turnId?: string;
   turnPhase?: UITurnPhase;
   turnSeq?: number;
+  /** Per-turn behavior selected in the composer. */
+  executionMode?: ExecutionMode;
 }
 
 export interface UICliAppAttachment {
@@ -327,6 +330,7 @@ export interface SettingsPayload {
     label: string;
     active: boolean;
     is_default: boolean;
+    is_builtin?: boolean;
     model: string;
     provider: string;
     max_tokens: number;
@@ -658,6 +662,7 @@ export interface ModelConfigurationCreate {
   label: string;
   provider: string;
   model: string;
+  contextWindowTokens?: number;
 }
 
 export interface ModelConfigurationUpdate {
@@ -890,6 +895,7 @@ export type Outbound =
       image_generation?: OutboundImageGeneration;
       cli_apps?: OutboundCliAppMention[];
       mcp_presets?: OutboundMcpPresetMention[];
+      execution_mode?: ExecutionMode;
       workspace_scope?: WorkspaceScopePayload;
       turn_id?: string;
       /** Marks messages sent by the embedded WebUI, without changing the

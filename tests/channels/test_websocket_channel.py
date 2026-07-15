@@ -294,6 +294,7 @@ async def test_webui_message_envelope_marks_inbound_metadata(bus: MagicMock) -> 
             "content": "hello",
             "webui": True,
             "turn_id": "turn-1",
+            "execution_mode": "plan_only",
         },
     )
 
@@ -302,6 +303,7 @@ async def test_webui_message_envelope_marks_inbound_metadata(bus: MagicMock) -> 
     assert msg.chat_id == "chat-1"
     assert msg.metadata["webui"] is True
     assert msg.metadata["webui_turn_id"] == "turn-1"
+    assert msg.metadata["execution_mode"] == "plan_only"
     assert msg.metadata["_wants_stream"] is True
     lines = read_transcript_lines("websocket:chat-1")
     assert lines == [{
@@ -312,6 +314,30 @@ async def test_webui_message_envelope_marks_inbound_metadata(bus: MagicMock) -> 
         "turn_phase": "user",
         "turn_seq": 1,
     }]
+
+
+@pytest.mark.asyncio
+async def test_webui_message_rejects_invalid_execution_mode(bus: MagicMock) -> None:
+    channel = _ch(bus)
+    conn = AsyncMock()
+    conn.remote_address = ("127.0.0.1", 50123)
+
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {
+            "type": "message",
+            "chat_id": "chat-1",
+            "content": "hello",
+            "webui": True,
+            "execution_mode": "unsafe",
+        },
+    )
+
+    bus.publish_inbound.assert_not_awaited()
+    payload = json.loads(conn.send.await_args.args[0])
+    assert payload["event"] == "error"
+    assert payload["detail"] == "invalid_execution_mode"
 
 
 @pytest.mark.asyncio
@@ -1635,6 +1661,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
     config_path = tmp_path / "config.json"
     config = Config()
     config.agents.defaults.model = "openai/gpt-4o"
+    config.agents.defaults.provider = "openai"
     config.providers.openai.api_key = "secret-key"
     config.model_presets["deep"] = ModelPresetConfig(
         model="anthropic/claude-opus-4-5",
@@ -1827,6 +1854,38 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
             headers={"Authorization": "Bearer tok"},
         )
         assert duplicate_preset.status_code == 409
+
+        delete_candidate = await _http_get(
+            "http://127.0.0.1:"
+            f"{port}/api/settings/model-configurations/create"
+            "?label=Delete%20me&provider=openai&model=gpt-delete-me",
+            headers={"Authorization": "Bearer tok"},
+        )
+        assert delete_candidate.status_code == 200
+
+        deleted_preset = await _http_get(
+            "http://127.0.0.1:"
+            f"{port}/api/settings/model-configurations/delete?name=delete-me",
+            headers={"Authorization": "Bearer tok"},
+        )
+        assert deleted_preset.status_code == 200
+        assert "delete-me" not in {
+            preset["name"] for preset in deleted_preset.json()["model_presets"]
+        }
+
+        restored_active_preset = await _http_get(
+            "http://127.0.0.1:"
+            f"{port}/api/settings/update?model_preset=fast-writing",
+            headers={"Authorization": "Bearer tok"},
+        )
+        assert restored_active_preset.status_code == 200
+
+        builtin_delete = await _http_get(
+            "http://127.0.0.1:"
+            f"{port}/api/settings/model-configurations/delete?name=gpt-5-6-terra",
+            headers={"Authorization": "Bearer tok"},
+        )
+        assert builtin_delete.status_code == 400
 
         search_updated = await _http_get(
             "http://127.0.0.1:"

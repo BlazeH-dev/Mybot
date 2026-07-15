@@ -40,6 +40,7 @@ interface ThreadViewportProps {
   forkBoundaryMessageCount?: number | null;
   onOpenFilePreview?: (path: string) => void;
   onForkFromMessage?: (beforeUserIndex: number) => void;
+  onExecutePlan?: (taskId: string, planHash: string) => void;
 }
 
 const NEAR_BOTTOM_PX = 48;
@@ -74,6 +75,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   forkBoundaryMessageCount = null,
   onOpenFilePreview,
   onForkFromMessage,
+  onExecutePlan,
 }, ref) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -310,6 +312,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
                   forkBoundaryMessageCount={visibleForkBoundaryMessageCount}
                   onOpenFilePreview={onOpenFilePreview}
                   onForkFromMessage={onForkFromMessage}
+                  onExecutePlan={onExecutePlan}
                 />
               </div>
             </div>

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SettingsView } from "@/components/settings/SettingsView";
@@ -330,6 +330,7 @@ describe("SettingsView Apps catalog", () => {
 
     renderSettingsView({ initialSection: "models" });
 
+    fireEvent.click((await screen.findAllByRole("button", { name: "Edit" }))[0]);
     expect(await screen.findByText("Context window")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "64K" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "256K" })).toBeInTheDocument();
@@ -385,12 +386,11 @@ describe("SettingsView Apps catalog", () => {
 
     renderSettingsView({ initialSection: "models" });
 
-    const configurationButton = await screen.findByRole("button", {
-      name: "Current configuration",
-    });
-    expect(configurationButton).toHaveTextContent("Not configured");
-    expect(configurationButton).toHaveTextContent("OpenAI Codex · openai-codex/gpt-5.1-codex");
-    expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    expect((await screen.findAllByText("Not configured")).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("OpenAI Codex · openai-codex/gpt-5.1-codex").length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Use" })).not.toBeInTheDocument();
   });
 
   it("keeps unsigned OAuth providers out of the active provider picker", async () => {
@@ -465,6 +465,7 @@ describe("SettingsView Apps catalog", () => {
 
     renderSettingsView({ initialSection: "models" });
 
+    fireEvent.click((await screen.findAllByRole("button", { name: "Edit" }))[0]);
     const deepseekButtons = await screen.findAllByRole("button", { name: /DeepSeek/ });
     const providerPicker = deepseekButtons.find(
       (button) => button.getAttribute("aria-haspopup") === "menu",
@@ -537,7 +538,10 @@ describe("SettingsView Apps catalog", () => {
 
     renderSettingsView({ initialSection: "models" });
 
-    fireEvent.pointerDown(await screen.findByRole("button", { name: /Select model/i }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "Edit" }))[0]);
+    const emptyModelTrigger = (await screen.findByText("Select model")).closest("button");
+    if (!emptyModelTrigger) throw new Error("model picker trigger was not found");
+    fireEvent.pointerDown(emptyModelTrigger);
     expect(
       await screen.findByText("Configure this provider before loading models."),
     ).toBeInTheDocument();
@@ -595,8 +599,12 @@ describe("SettingsView Apps catalog", () => {
 
     renderSettingsView({ initialSection: "models" });
 
-    const modelButtons = await screen.findAllByRole("button", { name: /open-codex\/gpt-5\.5/i });
-    fireEvent.pointerDown(modelButtons[modelButtons.length - 1]);
+    fireEvent.click((await screen.findAllByRole("button", { name: "Edit" }))[0]);
+    const oauthModelTrigger = within(await screen.findByRole("dialog"))
+      .getByText("open-codex/gpt-5.5")
+      .closest("button");
+    if (!oauthModelTrigger) throw new Error("model picker trigger was not found");
+    fireEvent.pointerDown(oauthModelTrigger);
     const input = (await screen.findByPlaceholderText("Search or type model ID")) as HTMLInputElement;
     expect(input.value).toBe("open-codex/gpt-5.5");
 
@@ -627,9 +635,8 @@ describe("SettingsView Apps catalog", () => {
 
     renderSettingsView({ initialSection: "models" });
 
-    const configurationButton = await screen.findByRole("button", { name: "Current configuration" });
-    fireEvent.pointerDown(configurationButton!);
-    fireEvent.click(await screen.findByText("Add configuration"));
+    const addButton = await screen.findByRole("button", { name: "Add configuration" });
+    fireEvent.click(addButton);
 
     expect(await screen.findByRole("heading", { name: "New model configuration" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -639,8 +646,59 @@ describe("SettingsView Apps catalog", () => {
     );
     expect(document.body.style.pointerEvents).not.toBe("none");
 
-    fireEvent.pointerDown(configurationButton!);
-    expect(await screen.findByText("Add configuration")).toBeInTheDocument();
+    expect(addButton).toBeInTheDocument();
+  });
+
+  it("deletes custom model configurations but keeps built-ins protected", async () => {
+    const base = settingsPayload();
+    const customPreset: SettingsPayload["model_presets"][number] = {
+      ...base.model_presets[0],
+      name: "custom-writing",
+      label: "Custom writing",
+      model: "gpt-custom",
+      provider: "openai",
+      active: false,
+      is_default: false,
+      is_builtin: false,
+    };
+    const payload = {
+      ...base,
+      model_presets: [
+        { ...base.model_presets[0], is_builtin: true },
+        customPreset,
+      ],
+    };
+    const deletedPayload = {
+      ...payload,
+      model_presets: [payload.model_presets[0]],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return jsonResponse(payload);
+      if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
+      if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
+      if (url === "/api/settings/model-configurations/delete?name=custom-writing") {
+        return jsonResponse(deletedPayload);
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSettingsView({ initialSection: "models" });
+
+    const deleteButton = await screen.findByRole("button", { name: "Delete" });
+    expect(screen.getAllByRole("button", { name: "Delete" })).toHaveLength(1);
+    fireEvent.click(deleteButton);
+    expect(await screen.findByRole("heading", { name: "Delete model configuration?" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/settings/model-configurations/delete?name=custom-writing",
+        expect.objectContaining({ headers: { Authorization: "Bearer tok" } }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByText("Custom writing")).not.toBeInTheDocument());
   });
 
   it("loads provider models and lets users choose one without typing the id manually", async () => {
@@ -708,7 +766,7 @@ describe("SettingsView Apps catalog", () => {
           fetched_at: 1,
         });
       }
-      if (url === "/api/settings/update?model_preset=default&model=deepseek-reasoner") {
+      if (url === "/api/settings/update?model_preset=default&model=deepseek-reasoner&provider=deepseek&context_window_tokens=65536") {
         return jsonResponse(updatedPayload);
       }
       return { ok: false, status: 404, json: async () => ({}) } as Response;
@@ -717,8 +775,12 @@ describe("SettingsView Apps catalog", () => {
 
     renderSettingsView({ initialSection: "models" });
 
-    const modelButtons = await screen.findAllByRole("button", { name: /deepseek-chat/i });
-    fireEvent.pointerDown(modelButtons[modelButtons.length - 1]);
+    fireEvent.click((await screen.findAllByRole("button", { name: "Edit" }))[0]);
+    const deepseekModelTrigger = within(await screen.findByRole("dialog"))
+      .getByText("deepseek-chat")
+      .closest("button");
+    if (!deepseekModelTrigger) throw new Error("model picker trigger was not found");
+    fireEvent.pointerDown(deepseekModelTrigger);
     await screen.findByText("deepseek-reasoner");
     fireEvent.click(screen.getAllByText("deepseek-reasoner")[0]);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -733,7 +795,7 @@ describe("SettingsView Apps catalog", () => {
     );
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/settings/update?model_preset=default&model=deepseek-reasoner",
+        "/api/settings/update?model_preset=default&model=deepseek-reasoner&provider=deepseek&context_window_tokens=65536",
         expect.objectContaining({
           headers: { Authorization: "Bearer tok" },
         }),

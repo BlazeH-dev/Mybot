@@ -21,7 +21,7 @@ from nanobot.audio.transcription_registry import (
     transcription_provider_names,
 )
 from nanobot.config.loader import get_config_path, load_config, save_config
-from nanobot.config.schema import ModelPresetConfig
+from nanobot.config.schema import ModelPresetConfig, default_model_presets
 from nanobot.providers.image_generation import (
     get_image_gen_provider,
     image_gen_provider_names,
@@ -682,6 +682,7 @@ def settings_payload(
             "label": "Default",
             "active": active_preset_name == "default",
             "is_default": True,
+            "is_builtin": True,
             "model": defaults.model,
             "provider": defaults.provider,
             "max_tokens": defaults.max_tokens,
@@ -690,6 +691,7 @@ def settings_payload(
             "reasoning_effort": defaults.reasoning_effort,
         }
     ]
+    builtin_model_presets = default_model_presets()
     for name, preset in config.model_presets.items():
         model_presets.append(
             {
@@ -697,6 +699,7 @@ def settings_payload(
                 "label": preset.label or name,
                 "active": active_preset_name == name,
                 "is_default": False,
+                "is_builtin": name in builtin_model_presets,
                 "model": preset.model,
                 "provider": preset.provider,
                 "max_tokens": preset.max_tokens,
@@ -921,6 +924,9 @@ def create_model_configuration(query: QueryParams) -> dict[str, Any]:
     raw_name = (_query_first(query, "name") or label).strip()
     model = (_query_first(query, "model") or "").strip()
     provider = (_query_first(query, "provider") or "").strip()
+    context_window_tokens = _parse_context_window_tokens(
+        _query_first_alias(query, "context_window_tokens", "contextWindowTokens")
+    )
 
     if not label:
         label = raw_name
@@ -941,7 +947,7 @@ def create_model_configuration(query: QueryParams) -> dict[str, Any]:
         model=model,
         provider=provider,
         max_tokens=base.max_tokens,
-        context_window_tokens=base.context_window_tokens,
+        context_window_tokens=context_window_tokens or base.context_window_tokens,
         temperature=base.temperature,
         reasoning_effort=base.reasoning_effort,
     )
@@ -1005,6 +1011,30 @@ def update_model_configuration(query: QueryParams) -> dict[str, Any]:
 
     if changed:
         save_config(config)
+    return settings_payload()
+
+
+def delete_model_configuration(query: QueryParams) -> dict[str, Any]:
+    """Delete one user-created model configuration."""
+    name = (_query_first(query, "name") or "").strip()
+    if not name or name == "default":
+        raise WebUISettingsError("custom model configuration is required")
+    if name in default_model_presets():
+        raise WebUISettingsError("built-in model configurations cannot be deleted")
+
+    config = load_config()
+    if name not in config.model_presets:
+        raise WebUISettingsError("unknown model configuration", status=404)
+
+    config.model_presets.pop(name)
+    if config.agents.defaults.model_preset == name:
+        config.agents.defaults.model_preset = None
+    config.agents.defaults.fallback_models = [
+        fallback
+        for fallback in config.agents.defaults.fallback_models
+        if not (isinstance(fallback, str) and fallback == name)
+    ]
+    save_config(config)
     return settings_payload()
 
 

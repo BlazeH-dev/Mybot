@@ -19,18 +19,18 @@
 | 阶段                       | 状态  | 说明                                                                                                                                  |
 | ------------------------ | --- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | P0 准备                    | 已执行 | 已建立 Office golden fixture 与 CI smoke 回归门。见 [P0-准备阶段代码变更说明.md](./P0-准备阶段代码变更说明.md)。                                                  |
-| P1 Office 垂直切片           | 已执行 | 已落地独立 `office-automation` Python Skill、独立 `officecli` Skill、共享 verified facts、静态 Plan Tool、OfficeCLI 固定版本契约与 sidecar、pytest 回归及 WebUI artifact 面板。见 [P1-office垂直切片代码变更说明.md](./P1-office垂直切片代码变更说明.md)。 |
-| P2 Skill Pack Manifest   | 待执行 | 后续完成后补充。                                                                                                                            |
-| P3 Policy 权限层            | 待执行 | 后续完成后补充。                                                                                                                            |
-| P4 Artifact / Checkpoint | 待执行 | 后续完成后补充。                                                                                                                            |
-| P5 Trace / Eval          | 待执行 | 后续完成后补充。                                                                                                                            |
-| P6 通用性扩展                 | 待执行 | 后续完成后补充。                                                                                                                            |
-| P7 面试交付物                 | 待执行 | 后续完成后补充。                                                                                                                            |
-| P8 多 Agent 编排            | 待执行 | 后续完成后补充。                                                                                                                            |
+| P1 Office 垂直切片           | 已执行 | 已落地双 Office Skill、共享 verified facts、WebUI 仅规划/自动 plan-and-execute、计划步骤卡片、OfficeCLI 固定契约与 artifact 面板。见 [P1-office垂直切片代码变更说明.md](./P1-office垂直切片代码变更说明.md)。 |
+| P2 Skill Pack Manifest   | 待执行 | 已记录 typed manifest、局部 fail closed、availability 与开关边界；代码未落地。见 [P2-skillpack-manifest代码变更说明.md](./P2-skillpack-manifest代码变更说明.md)。 |
+| P3 Policy 权限层            | 待执行 | 已记录三档 InteractionRequest、审批超时不放行与最小文件 OCC 的规划边界；代码未落地。见 [P3-policy权限层代码变更说明.md](./P3-policy权限层代码变更说明.md)。 |
+| P4 Artifact / Checkpoint | 待执行 | 已记录合法 `awaiting_*` 与 completed/pending/uncertain 分离的恢复边界；代码未落地。见 [P4-artifact-checkpoint代码变更说明.md](./P4-artifact-checkpoint代码变更说明.md)。 |
+| P5 Trace / Eval          | 待执行 | 已记录 P5 Core 与选做评测边界；代码未落地。见 [P5-trace-eval代码变更说明.md](./P5-trace-eval代码变更说明.md)。 |
+| P6 通用性扩展                 | 待执行 | 已记录 1–2 天 Research 最小闭环；代码未落地。见 [P6-通用性扩展代码变更说明.md](./P6-通用性扩展代码变更说明.md)。 |
+| P7 面试交付物                 | 持续规划 | 已记录 benchmark、README、demo 与答辩证据边界。见 [P7-面试交付物代码变更说明.md](./P7-面试交付物代码变更说明.md)。 |
+| P8 多 Agent 编排            | 待执行 | 已记录治理主线与选做文件租约边界；代码未落地。见 [P8-多agent编排代码变更说明.md](./P8-多agent编排代码变更说明.md)。 |
 
 ## 维护约定
 
-- 只记录已经落地或正在落地的真实代码变更，不提前虚构 P2-P8 的实现细节。
+- 默认记录已经落地或正在落地的真实代码变更；若 AGENTS.md 要求方案变更同步阶段说明，可新增明确标注“仅规划、尚未执行”的边界说明，但不得把规划描述成已实现能力。
 - 每完成一个阶段，新增对应阶段说明，并在本索引表更新状态。
 - 某阶段的方案或代码发生变化时，必须在同一次任务中同步更新对应代码变更说明。
 - 方案演进和修改记录继续写入 `docs/修改记录.md`；这里专注“代码为什么这样改、怎么运行和怎么验证”。

@@ -11,6 +11,7 @@ import {
 import type { StreamError } from "@/lib/nanobot-client";
 import type {
   InboundEvent,
+  ExecutionMode,
   OutboundCliAppMention,
   OutboundImageGeneration,
   OutboundMcpPresetMention,
@@ -422,6 +423,7 @@ export interface SendOptions {
   imageGeneration?: OutboundImageGeneration;
   cliApps?: OutboundCliAppMention[];
   mcpPresets?: OutboundMcpPresetMention[];
+  executionMode?: ExecutionMode;
   workspaceScope?: WorkspaceScopePayload | null;
 }
 
@@ -1063,6 +1065,7 @@ export function useNanobotStream(
             ...(previews ? { images: previews } : {}),
             ...(options?.cliApps?.length ? { cliApps: options.cliApps } : {}),
             ...(options?.mcpPresets?.length ? { mcpPresets: options.mcpPresets } : {}),
+            executionMode: options?.executionMode ?? "default",
           },
         ];
       });
@@ -1070,7 +1073,11 @@ export function useNanobotStream(
       // right away, before the first delta arrives from the server.
       setIsStreaming(true);
       const wireMedia = hasImages ? images!.map((i) => i.media) : undefined;
-      client.sendMessage(chatId, content, wireMedia, { ...options, turnId });
+      client.sendMessage(chatId, content, wireMedia, {
+        ...options,
+        executionMode: options?.executionMode ?? "default",
+        turnId,
+      });
     },
     [chatId, clearActivitySegment, client, flushPendingStreamEvents],
   );

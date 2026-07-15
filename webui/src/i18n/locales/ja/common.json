@@ -341,6 +341,19 @@
       "addConfiguration": "設定を追加",
       "newConfiguration": "新しいモデル設定",
       "newConfigurationHelp": "プロバイダーとモデルをワンクリックの選択肢として保存します。",
+      "editConfiguration": "モデル設定を編集",
+      "editConfigurationHelp": "保存済みのプロバイダー、モデル、コンテキストウィンドウを更新します。",
+      "configurations": "モデル設定",
+      "configurationsHelp": "新しい応答で使うモデルを切り替え、編集、追加します。",
+      "current": "現在",
+      "builtin": "組み込み",
+      "custom": "カスタム",
+      "use": "使用",
+      "edit": "編集",
+      "delete": "削除",
+      "deleteTitle": "モデル設定を削除しますか？",
+      "deleteHelp": "保存済みの設定を削除します。後で再追加できます。",
+      "deleting": "削除中...",
       "configurationName": "設定名",
       "configurationNameHelp": "保存済みのモデル設定の名前を変更します。",
       "configurationNamePlaceholder": "高速執筆",
@@ -658,6 +671,11 @@
       "placeholderOpening": "新しいチャットを開いています…",
       "placeholderStreaming": "モデルが応答しています…",
       "inputAria": "メッセージ入力欄",
+      "planMode": {
+        "label": "計画",
+        "toggle": "計画のみモードを切り替える",
+        "hint": "実行せずに計画だけを作成します"
+      },
       "sendHint": "Enter で送信 · Shift+Enter で改行",
       "runRuntimeTitle": "実行中 · {{elapsed}}",
       "goalStateStrip": "目標 · {{label}}",
@@ -669,6 +687,7 @@
       "stop": "応答を停止",
       "modelNotConfigured": "モデルが未設定です",
       "configureModel": "モデルを設定",
+      "manageModels": "モデルを管理",
       "queued": {
         "label": "保留中のガイド",
         "guide": "ガイド",
@@ -821,6 +840,18 @@
     }
   },
   "message": {
+    "plan": {
+      "title": "計画",
+      "execute": "計画を実行",
+      "starting": "開始中…",
+      "confirmPrompt": "計画 {{taskId}}（ハッシュ {{planHash}}）を確認しました。今すぐ実行し、各ステップを更新して、検証後にのみ完了してください。",
+      "status": {
+        "creating": "作成中",
+        "awaiting_confirmation": "準備完了",
+        "active": "実行中",
+        "completed": "完了"
+      }
+    },
     "streaming": "生成中",
     "assistantTyping": "アシスタントが入力中",
     "toolSingle": "ツールを使用中",

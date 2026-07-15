@@ -108,6 +108,19 @@
       "addConfiguration": "Add configuration",
       "newConfiguration": "New model configuration",
       "newConfigurationHelp": "Save a provider and model as a one-click option.",
+      "editConfiguration": "Edit model configuration",
+      "editConfigurationHelp": "Update the saved provider, model, and context window.",
+      "configurations": "Model configurations",
+      "configurationsHelp": "Switch, edit, or add models used for new replies.",
+      "current": "Current",
+      "builtin": "Built-in",
+      "custom": "Custom",
+      "use": "Use",
+      "edit": "Edit",
+      "delete": "Delete",
+      "deleteTitle": "Delete model configuration?",
+      "deleteHelp": "This removes the saved configuration. You can add it again later.",
+      "deleting": "Deleting...",
       "configurationName": "Configuration name",
       "configurationNameHelp": "Rename this saved model configuration.",
       "configurationNamePlaceholder": "Fast writing",
@@ -658,6 +671,11 @@
       "placeholderOpening": "Opening a new chat…",
       "placeholderStreaming": "Model is responding…",
       "inputAria": "Message input",
+      "planMode": {
+        "label": "Plan",
+        "toggle": "Toggle plan-only mode",
+        "hint": "Create a plan without executing it"
+      },
       "sendHint": "Enter to send · Shift+Enter for newline",
       "runRuntimeTitle": "Running · {{elapsed}}",
       "goalStateStrip": "Goal · {{label}}",
@@ -669,6 +687,7 @@
       "stop": "Stop response",
       "modelNotConfigured": "Model not configured",
       "configureModel": "Configure model",
+      "manageModels": "Manage models",
       "queued": {
         "label": "Queued guidance",
         "guide": "Guide",
@@ -821,6 +840,18 @@
     }
   },
   "message": {
+    "plan": {
+      "title": "Plan",
+      "execute": "Execute plan",
+      "starting": "Starting…",
+      "confirmPrompt": "I confirm plan {{taskId}} with hash {{planHash}}. Execute it now, keep every step updated in the plan tool, and complete it only after verification.",
+      "status": {
+        "creating": "Creating",
+        "awaiting_confirmation": "Ready",
+        "active": "In progress",
+        "completed": "Completed"
+      }
+    },
     "streaming": "streaming",
     "assistantTyping": "Assistant is typing",
     "toolSingle": "Using a tool",

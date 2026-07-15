@@ -108,6 +108,19 @@
       "addConfiguration": "添加配置",
       "newConfiguration": "新建模型配置",
       "newConfigurationHelp": "把提供商和模型保存成一键选项。",
+      "editConfiguration": "编辑模型配置",
+      "editConfigurationHelp": "更新已保存的提供商、模型和上下文窗口。",
+      "configurations": "模型配置",
+      "configurationsHelp": "切换、编辑或添加用于后续回复的模型。",
+      "current": "当前",
+      "builtin": "内置",
+      "custom": "自定义",
+      "use": "使用",
+      "edit": "编辑",
+      "delete": "删除",
+      "deleteTitle": "删除模型配置？",
+      "deleteHelp": "这会移除已保存的配置，之后仍可重新添加。",
+      "deleting": "正在删除...",
       "configurationName": "配置名称",
       "configurationNameHelp": "重命名这个已保存的模型配置。",
       "configurationNamePlaceholder": "快速写作",
@@ -658,6 +671,11 @@
       "placeholderOpening": "正在打开新对话…",
       "placeholderStreaming": "模型正在回复…",
       "inputAria": "消息输入框",
+      "planMode": {
+        "label": "计划",
+        "toggle": "切换仅规划模式",
+        "hint": "只创建计划，不立即执行"
+      },
       "sendHint": "Enter 发送 · Shift+Enter 换行",
       "runRuntimeTitle": "运行中 · {{elapsed}}",
       "goalStateStrip": "目标 · {{label}}",
@@ -668,6 +686,7 @@
       "stop": "停止响应",
       "modelNotConfigured": "模型未配置",
       "configureModel": "配置模型",
+      "manageModels": "管理模型",
       "queued": {
         "label": "待引导提示",
         "guide": "引导",
@@ -821,6 +840,18 @@
     }
   },
   "message": {
+    "plan": {
+      "title": "执行计划",
+      "execute": "执行计划",
+      "starting": "正在启动…",
+      "confirmPrompt": "我确认执行计划 {{taskId}}，计划哈希为 {{planHash}}。请立即执行，持续更新每个计划步骤，并仅在验证通过后完成计划。",
+      "status": {
+        "creating": "正在创建",
+        "awaiting_confirmation": "等待执行",
+        "active": "执行中",
+        "completed": "已完成"
+      }
+    },
     "streaming": "流式输出中",
     "assistantTyping": "助手正在输入",
     "toolSingle": "正在使用工具",

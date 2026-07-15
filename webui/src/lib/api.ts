@@ -430,6 +430,9 @@ export async function createModelConfiguration(
   query.set("label", configuration.label);
   query.set("provider", configuration.provider);
   query.set("model", configuration.model);
+  if (configuration.contextWindowTokens !== undefined) {
+    query.set("context_window_tokens", String(configuration.contextWindowTokens));
+  }
   return request<SettingsPayload>(
     `${base}/api/settings/model-configurations/create?${query}`,
     token,
@@ -451,6 +454,18 @@ export async function updateModelConfiguration(
   }
   return request<SettingsPayload>(
     `${base}/api/settings/model-configurations/update?${query}`,
+    token,
+  );
+}
+
+export async function deleteModelConfiguration(
+  token: string,
+  name: string,
+  base: string = "",
+): Promise<SettingsPayload> {
+  const query = new URLSearchParams({ name });
+  return request<SettingsPayload>(
+    `${base}/api/settings/model-configurations/delete?${query}`,
     token,
   );
 }
