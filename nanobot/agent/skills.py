@@ -6,8 +6,13 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
+from pydantic import ValidationError
+
+from nanobot.agent.skill_manifest import SkillManifest
+from nanobot.officecli_runtime import OfficeCliBootstrapError, select_officecli_asset
 
 # Default builtin skills directory (relative to this file)
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
@@ -50,6 +55,14 @@ class SkillsLoader:
         self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
         self.disabled_skills = disabled_skills or set()
 
+    def _skill_dir(self, name: str) -> Path | None:
+        for root in (self.workspace_skills, self.builtin_skills):
+            if root:
+                path = root / name
+                if (path / "SKILL.md").is_file():
+                    return path
+        return None
+
     def _skill_entries_from_dir(self, base: Path, source: str, *, skip_names: set[str] | None = None) -> list[dict[str, str]]:
         if not base.exists():
             return []
@@ -66,7 +79,12 @@ class SkillsLoader:
             entries.append({"name": name, "path": str(skill_file), "source": source})
         return entries
 
-    def list_skills(self, filter_unavailable: bool = True) -> list[dict[str, str]]:
+    def list_skills(
+        self,
+        filter_unavailable: bool = True,
+        *,
+        include_disabled: bool = False,
+    ) -> list[dict[str, str]]:
         """
         List all available skills.
 
@@ -83,11 +101,11 @@ class SkillsLoader:
                 self._skill_entries_from_dir(self.builtin_skills, "builtin", skip_names=workspace_names)
             )
 
-        if self.disabled_skills:
+        if self.disabled_skills and not include_disabled:
             skills = [s for s in skills if s["name"] not in self.disabled_skills]
 
         if filter_unavailable:
-            return [skill for skill in skills if self._check_requirements(self._get_skill_meta(skill["name"]))]
+            return [skill for skill in skills if self.get_skill_status(skill["name"])["available"]]
         return skills
 
     def load_skill(self, name: str) -> str | None:
@@ -122,7 +140,8 @@ class SkillsLoader:
         parts = [
             f"### Skill: {name}\n\n{self._strip_frontmatter(markdown)}"
             for name in skill_names
-            if (markdown := self.load_skill(name))
+            if self.get_skill_status(name)["available"]
+            and (markdown := self.load_skill(name))
         ]
         return "\n\n---\n\n".join(parts)
 
@@ -139,7 +158,7 @@ class SkillsLoader:
         Returns:
             Markdown-formatted skills summary.
         """
-        all_skills = self.list_skills(filter_unavailable=False)
+        all_skills = self.list_skills(filter_unavailable=True)
         if not all_skills:
             return ""
 
@@ -148,16 +167,189 @@ class SkillsLoader:
             skill_name = entry["name"]
             if exclude and skill_name in exclude:
                 continue
-            meta = self._get_skill_meta(skill_name)
-            available = self._check_requirements(meta)
             desc = self._get_skill_description(skill_name)
-            if available:
-                lines.append(f"- **{skill_name}** — {desc}  `{entry['path']}`")
-            else:
-                missing = self._get_missing_requirements(meta)
-                suffix = f" (unavailable: {missing})" if missing else " (unavailable)"
-                lines.append(f"- **{skill_name}** — {desc}{suffix}  `{entry['path']}`")
+            lines.append(f"- **{skill_name}** — {desc}  `{entry['path']}`")
         return "\n".join(lines)
+
+    @staticmethod
+    def _reason(code: str, message: str, *, field: str | None = None) -> dict[str, str]:
+        reason = {"code": code, "message": message}
+        if field:
+            reason["field"] = field
+        return reason
+
+    def _load_manifest(self, name: str) -> tuple[SkillManifest | None, list[dict[str, str]], bool]:
+        skill_dir = self._skill_dir(name)
+        manifest_path = skill_dir / "skill.yaml" if skill_dir else None
+        if manifest_path is None or not manifest_path.is_file():
+            return None, [], False
+        try:
+            raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            return None, [self._reason("invalid_manifest", str(exc), field="skill.yaml")], True
+        try:
+            manifest = SkillManifest.model_validate(raw)
+        except ValidationError as exc:
+            reasons = [
+                self._reason(
+                    "invalid_manifest",
+                    error["msg"],
+                    field=".".join(str(part) for part in error["loc"]),
+                )
+                for error in exc.errors()
+            ]
+            return None, reasons, True
+        if manifest.name != name:
+            return None, [
+                self._reason(
+                    "invalid_manifest",
+                    f"manifest name {manifest.name!r} must match directory {name!r}",
+                    field="name",
+                )
+            ], True
+        return manifest, [], True
+
+    @staticmethod
+    def _safe_relative_path(base: Path, value: str) -> Path | None:
+        relative = Path(value)
+        if not value or relative.is_absolute() or ".." in relative.parts:
+            return None
+        resolved = (base / relative).resolve(strict=False)
+        try:
+            resolved.relative_to(base.resolve(strict=False))
+        except ValueError:
+            return None
+        return resolved
+
+    def _manifest_reasons(
+        self,
+        name: str,
+        manifest: SkillManifest,
+    ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+        skill_dir = self._skill_dir(name)
+        if skill_dir is None:
+            return [self._reason("invalid_manifest", "skill directory is missing")], []
+        reasons: list[dict[str, str]] = []
+        providers: list[dict[str, Any]] = []
+        for index, entrypoint in enumerate(manifest.entrypoints):
+            path = self._safe_relative_path(skill_dir, entrypoint)
+            if path is None:
+                reasons.append(
+                    self._reason(
+                        "invalid_manifest",
+                        "entrypoint must be a safe relative path",
+                        field=f"entrypoints.{index}",
+                    )
+                )
+            elif not path.is_file():
+                reasons.append(
+                    self._reason(
+                        "missing_entrypoint",
+                        f"entrypoint does not exist: {entrypoint}",
+                        field=f"entrypoints.{index}",
+                    )
+                )
+        for provider_name, provider in manifest.providers.items():
+            provider_reasons: list[dict[str, str]] = []
+            if provider.contract:
+                contract_path = self._safe_relative_path(skill_dir, provider.contract)
+                if contract_path is None:
+                    provider_reasons.append(
+                        self._reason(
+                            "invalid_manifest",
+                            "provider contract must be a safe relative path",
+                            field=f"providers.{provider_name}.contract",
+                        )
+                    )
+                elif not contract_path.is_file():
+                    provider_reasons.append(
+                        self._reason(
+                            "missing_contract",
+                            f"provider contract does not exist: {provider.contract}",
+                            field=f"providers.{provider_name}.contract",
+                        )
+                    )
+                else:
+                    try:
+                        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+                        if not isinstance(payload, dict):
+                            raise ValueError("contract root must be an object")
+                        if provider_name == "officecli":
+                            if payload.get("provider") != "officecli":
+                                raise ValueError("contract provider must be 'officecli'")
+                            select_officecli_asset(payload)
+                    except (
+                        OfficeCliBootstrapError,
+                        OSError,
+                        ValueError,
+                        json.JSONDecodeError,
+                    ) as exc:
+                        provider_reasons.append(
+                            self._reason(
+                                "invalid_contract",
+                                str(exc),
+                                field=f"providers.{provider_name}.contract",
+                            )
+                        )
+            provider_available = not provider_reasons
+            providers.append(
+                {
+                    "name": provider_name,
+                    "required": provider.required,
+                    "contract": provider.contract,
+                    "available": provider_available,
+                    "reasons": provider_reasons,
+                }
+            )
+            if provider.required:
+                reasons.extend(provider_reasons)
+        return reasons, providers
+
+    def get_skill_status(self, name: str) -> dict[str, Any]:
+        manifest, reasons, manifest_present = self._load_manifest(name)
+        valid = not reasons
+        providers: list[dict[str, Any]] = []
+        if manifest is not None:
+            manifest_reasons, providers = self._manifest_reasons(name, manifest)
+            reasons.extend(manifest_reasons)
+            valid = valid and not any(
+                reason["code"] in {"invalid_manifest", "invalid_contract", "missing_contract"}
+                for reason in manifest_reasons
+            )
+
+        requirements = self.get_skill_requirements(name)
+        reasons.extend(
+            self._reason("missing_binary", f"CLI: {value}", field="requires.bins")
+            for value in requirements["missing_bins"]
+        )
+        reasons.extend(
+            self._reason("missing_env", f"ENV: {value}", field="requires.env")
+            for value in requirements["missing_env"]
+        )
+        enabled = name not in self.disabled_skills
+        if not enabled:
+            reasons.insert(0, self._reason("disabled", "Skill is disabled by configuration"))
+        available = enabled and valid and not reasons
+        status = (
+            "disabled"
+            if not enabled
+            else "invalid"
+            if not valid
+            else "available"
+            if available
+            else "unavailable"
+        )
+        return {
+            "enabled": enabled,
+            "valid": valid,
+            "available": available,
+            "status": status,
+            "reasons": reasons,
+            "manifest_present": manifest_present,
+            "manifest": manifest.model_dump() if manifest is not None else None,
+            "providers": providers,
+            "requirements": requirements,
+        }
 
     def _get_missing_requirements(self, skill_meta: dict) -> str:
         """Get a description of missing requirements."""
@@ -171,9 +363,9 @@ class SkillsLoader:
 
     def get_skill_availability(self, name: str) -> tuple[bool, str]:
         """Return whether a skill can run and why not when it cannot."""
-        meta = self._get_skill_meta(name)
-        available = self._check_requirements(meta)
-        return available, "" if available else self._get_missing_requirements(meta)
+        status = self.get_skill_status(name)
+        reason = ", ".join(item["message"] for item in status["reasons"])
+        return status["available"], reason
 
     def get_skill_requirements(self, name: str) -> dict[str, list[str]]:
         """Return explicit command/env requirements and currently missing entries."""
@@ -189,6 +381,9 @@ class SkillsLoader:
 
     def _get_skill_description(self, name: str) -> str:
         """Get the description of a skill from its frontmatter."""
+        manifest, _, _ = self._load_manifest(name)
+        if manifest and manifest.description.strip():
+            return manifest.description.strip()
         meta = self.get_skill_metadata(name)
         if meta and meta.get("description"):
             return meta["description"]

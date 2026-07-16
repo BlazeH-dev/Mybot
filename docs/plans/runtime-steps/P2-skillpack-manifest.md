@@ -1,6 +1,6 @@
 # P2 Skill Pack Manifest 与开关
 
-> 状态：待执行。目标是让 Skill 可声明、校验、诊断和禁用，同时兼容现有 `SKILL.md`。
+> 状态：已执行（2026-07-16）。Skill 已支持声明、校验、诊断和禁用，同时兼容现有 `SKILL.md`。
 
 ## 实施契约
 
@@ -45,6 +45,15 @@ evals: []
 - 禁用或 unavailable 的 Skill 不进入 summary、候选和执行路径；Registry/Agent 不得调用上游 latest/install/update、自动启用或静默切换。随包 provider launcher 按 contract 准备固定 runtime 不视为动态扩权安装。
 
 API/WebUI 只展示 name/version/source、enabled、valid/available、缺失依赖和权限需求摘要，不做权限管理后台。
+
+## 实际落地
+
+- 新增 `nanobot.agent.skill_manifest` 的 Pydantic v1 schema，未知字段、错误类型、name 与目录不一致、危险相对路径均局部 fail closed，并返回字段路径。
+- `SkillsLoader` 作为当前 Skill Registry：workspace 同名 Skill 覆盖 builtin；无 `skill.yaml` 继续走 legacy frontmatter；manifest 存在但无效时不得回退。
+- availability 统一返回 `enabled`、`valid`、`available`、`status`、结构化 `reasons`、provider 与 legacy requirements；disabled/invalid/unavailable Skill 不进入 Agent summary、显式上下文加载或 `/skill`。
+- WebUI catalog 仍展示 disabled/invalid/unavailable Skill 及诊断、工具/权限声明和 provider 状态；权限字段仅展示，不接入 ToolRegistry 或 policy 决策。
+- `office-automation` 与 `officecli` 已随包提供 manifest。OfficeCLI manifest 只引用 `references/officecli-runtime.json`；当前平台资产选择、固定版本和 checksum 校验继续由该唯一 contract 与随包 launcher 负责。
+- wheel/sdist 构建包含 `nanobot/skills/**/*.yaml`。
 
 ## 测试与出口
 

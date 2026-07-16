@@ -367,7 +367,7 @@ bun run build
 
 后续阶段接续：
 
-- P2：为两个 Skill 增加正式 manifest/Registry；本地存在但无效的 manifest 必须 fail closed，缺失 manifest 保持兼容。
+- P2（已完成）：两个 Skill 已增加正式 manifest，并由 `SkillsLoader` 提供 Registry、局部 fail closed、结构化 availability 与统一 disabled 语义；缺失 manifest 继续兼容。
 - P3：实现参数级 allow/ask/deny、三档持久化 `InteractionRequest`、参数绑定 `expire_and_deny` approval、文件 fresh-read hash 和不可放宽的 workspace/network/sensitive 边界。
 - P4：实现不可变输入快照、artifact/lineage 和已激活、hash 绑定计划任务的 checkpoint/resume；恢复状态使用 completed/pending/uncertain。
 - P5：记录 Skill、引擎、facts、policy、artifact 和成本时长 trace，安全目标是“不可信内容无法诱导未授权副作用或泄漏”。

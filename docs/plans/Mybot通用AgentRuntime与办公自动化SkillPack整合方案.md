@@ -130,7 +130,7 @@ nanobot/runtime/
 | ----------------------------------------------------------------- | --- | ------------------------------------------------- | --------------------------------------------- |
 | [P0 准备](runtime-steps/P0-准备.md)                                   | 已完成 | 固定 Office fixture、Python 3.11 CI smoke            | fixture 可复算，workflow 可运行；远端状态以最新 Actions 记录为准 |
 | [P1 Office 垂直切片](runtime-steps/P1-office垂直切片.md)                  | 已完成 | 双 Office Skill、共享 facts、仅规划/自动执行、计划步骤 UI       | 两条 Office 路径和两种计划模式可验证                         |
-| [P2 Manifest](runtime-steps/P2-skillpack-manifest.md)             | 待执行 | typed manifest、局部 fail closed、availability、开关     | 坏 Skill 不拖垮网关且不能进入候选                          |
+| [P2 Manifest](runtime-steps/P2-skillpack-manifest.md)             | 已执行 | typed manifest、局部 fail closed、availability、开关     | 坏 Skill 不拖垮网关且不能进入候选                          |
 | [P3 Policy/HITL/OCC](runtime-steps/P3-policy权限层.md)               | 待执行 | policy gate、三档 InteractionRequest、approval、文件 OCC | 硬边界不可绕过，等待可恢复，冲突拦截 100%                       |
 | [S5.0 轻量回放](runtime-steps/P5-trace-eval.md)                       | 待执行 | 3–4 个关键 cassette smoke                            | 无 API key、无网络即可回归关键 Agent 行为                  |
 | [P4 Artifact/Checkpoint](runtime-steps/P4-artifact-checkpoint.md) | 待执行 | 输入快照、artifact/lineage、计划任务恢复                      | kill→resume 可验证，uncertain 不自动重试               |

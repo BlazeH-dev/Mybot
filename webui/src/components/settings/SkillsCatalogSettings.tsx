@@ -78,9 +78,7 @@ function SkillCatalogRow({
   const { t } = useTranslation();
   const sourceLabel = skillSourceLabel(skill.source, t);
   const StatusIcon = skill.available ? Check : CircleAlert;
-  const statusLabel = skill.available
-    ? t("settings.skills.statusAvailable", { defaultValue: "Available" })
-    : t("settings.skills.statusUnavailable", { defaultValue: "Unavailable" });
+  const statusLabel = skillStatusLabel(skill, t);
 
   return (
     <button
@@ -107,6 +105,11 @@ function SkillCatalogRow({
           <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground">
             {sourceLabel}
           </span>
+          {skill.version ? (
+            <span className="shrink-0 text-[10px] font-medium text-muted-foreground/75">
+              v{skill.version}
+            </span>
+          ) : null}
         </div>
         <p className="mt-1 line-clamp-2 text-[13px] leading-5 text-muted-foreground">
           {skill.description}
@@ -176,9 +179,7 @@ function SkillDetailSheet({
 
   const activeSkill = detail ?? skill;
   const sourceLabel = skillSourceLabel(activeSkill.source, t);
-  const statusLabel = activeSkill.available
-    ? t("settings.skills.statusAvailable", { defaultValue: "Available" })
-    : t("settings.skills.statusUnavailable", { defaultValue: "Unavailable" });
+  const statusLabel = skillStatusLabel(activeSkill, t);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -203,6 +204,7 @@ function SkillDetailSheet({
               </SheetDescription>
               <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[12px] text-muted-foreground">
                 <Pill>{sourceLabel}</Pill>
+                {activeSkill.version ? <Pill>v{activeSkill.version}</Pill> : null}
                 <Pill tone={activeSkill.available ? "success" : "muted"}>{statusLabel}</Pill>
               </div>
             </div>
@@ -234,19 +236,34 @@ function SkillDetailSheet({
                 />
               </div>
 
-              {!activeSkill.available && activeSkill.unavailable_reason ? (
+              {activeSkill.availability_reasons?.length ? (
                 <DetailSection
-                  title={t("settings.skills.unavailableReasonLabel", {
-                    defaultValue: "Unavailable reason",
+                  title={t("settings.skills.availabilityDiagnostics", {
+                    defaultValue: "Availability diagnostics",
                   })}
                 >
-                  <p className="text-[13px] leading-5 text-destructive/85">
-                    {activeSkill.unavailable_reason}
-                  </p>
+                  <div className="space-y-2">
+                    {activeSkill.availability_reasons.map((reason, index) => (
+                      <div
+                        key={`${reason.code}:${reason.field ?? index}`}
+                        className="rounded-[14px] bg-destructive/8 px-3 py-2.5"
+                      >
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">
+                          {reason.code}
+                          {reason.field ? ` · ${reason.field}` : ""}
+                        </div>
+                        <p className="mt-1 text-[13px] leading-5 text-destructive/85">
+                          {reason.message}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
                 </DetailSection>
               ) : null}
 
               {detail ? <RequirementsSection detail={detail} /> : null}
+
+              {detail ? <ManifestDeclarations detail={detail} /> : null}
 
               {detail ? <RawInstructionsBlock markdown={detail.raw_markdown} /> : null}
             </div>
@@ -255,6 +272,64 @@ function SkillDetailSheet({
       </SheetContent>
     </Sheet>
   );
+}
+
+function ManifestDeclarations({ detail }: { detail: SkillDetail }) {
+  const { t } = useTranslation();
+  const hasDeclarations =
+    (detail.tools_required?.length ?? 0) > 0 ||
+    (detail.permissions_required?.length ?? 0) > 0 ||
+    (detail.providers?.length ?? 0) > 0;
+  if (!hasDeclarations) return null;
+
+  return (
+    <DetailSection
+      title={t("settings.skills.manifestDeclarations", {
+        defaultValue: "Manifest declarations",
+      })}
+    >
+      <div className="space-y-3">
+        {detail.tools_required?.length ? (
+          <RequirementLine
+            title={t("settings.skills.requiredTools", { defaultValue: "Required tools" })}
+            items={detail.tools_required}
+            icon={<Terminal className="h-3.5 w-3.5" aria-hidden />}
+          />
+        ) : null}
+        {detail.permissions_required?.length ? (
+          <RequirementLine
+            title={t("settings.skills.requiredPermissions", {
+              defaultValue: "Required permissions (declarative only)",
+            })}
+            items={detail.permissions_required}
+            icon={<KeyRound className="h-3.5 w-3.5" aria-hidden />}
+          />
+        ) : null}
+        {detail.providers?.length ? (
+          <RequirementLine
+            title={t("settings.skills.providers", { defaultValue: "Providers" })}
+            items={detail.providers.map((provider) =>
+              `${provider.name}: ${provider.available ? "ready" : "unavailable"}`,
+            )}
+            icon={<Brain className="h-3.5 w-3.5" aria-hidden />}
+          />
+        ) : null}
+      </div>
+    </DetailSection>
+  );
+}
+
+function skillStatusLabel(skill: SkillSummary, t: TFunction): string {
+  if (skill.status === "disabled") {
+    return t("settings.skills.statusDisabled", { defaultValue: "Disabled" });
+  }
+  if (skill.status === "invalid") {
+    return t("settings.skills.statusInvalid", { defaultValue: "Invalid" });
+  }
+  if (skill.available) {
+    return t("settings.skills.statusAvailable", { defaultValue: "Available" });
+  }
+  return t("settings.skills.statusUnavailable", { defaultValue: "Unavailable" });
 }
 
 function RawInstructionsBlock({ markdown }: { markdown: string }) {

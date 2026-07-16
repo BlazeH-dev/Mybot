@@ -287,15 +287,22 @@ async def test_webui_skills_route_requires_token_and_hides_paths(
         assert "cron" in names
         assert all("path" not in skill for skill in body["skills"])
         workspace = body["skills"][0]
-        assert workspace == {
-            "name": "workspace-skill",
-            "description": "Workspace skill.",
-            "source": "workspace",
-            "available": True,
-            "unavailable_reason": "",
-        }
+        assert workspace["name"] == "workspace-skill"
+        assert workspace["description"] == "Workspace skill."
+        assert workspace["source"] == "workspace"
+        assert workspace["enabled"] is True
+        assert workspace["valid"] is True
+        assert workspace["available"] is True
+        assert workspace["status"] == "available"
+        assert workspace["availability_reasons"] == []
+        assert workspace["unavailable_reason"] == ""
         unavailable = next(skill for skill in body["skills"] if skill["name"] == "zz-unavailable-skill")
         assert unavailable["available"] is False
+        assert unavailable["status"] == "unavailable"
+        assert [reason["code"] for reason in unavailable["availability_reasons"]] == [
+            "missing_binary",
+            "missing_env",
+        ]
         assert unavailable["unavailable_reason"] == (
             "CLI: definitely-missing-nanobot-skill-cli, "
             "ENV: DEFINITELY_MISSING_NANOBOT_SKILL_ENV"

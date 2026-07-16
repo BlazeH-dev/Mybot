@@ -269,8 +269,17 @@ describe("App layout", () => {
             name: "github",
             description: "Work with GitHub.",
             source: "builtin",
+            version: 1,
+            enabled: true,
+            valid: true,
             available: false,
+            status: "unavailable",
+            availability_reasons: [
+              { code: "missing_binary", message: "CLI: gh", field: "requires.bins" },
+            ],
             unavailable_reason: "CLI: gh",
+            tools_required: ["exec"],
+            permissions_required: ["process:execute"],
           },
         ],
       },
@@ -278,14 +287,25 @@ describe("App layout", () => {
         name: "github",
         description: "Work with GitHub.",
         source: "builtin",
+        version: 1,
+        enabled: true,
+        valid: true,
         available: false,
+        status: "unavailable",
+        availability_reasons: [
+          { code: "missing_binary", message: "CLI: gh", field: "requires.bins" },
+        ],
         unavailable_reason: "CLI: gh",
+        tools_required: ["exec"],
+        permissions_required: ["process:execute"],
         requirements: {
           bins: ["gh"],
           env: [],
           missing_bins: ["gh"],
           missing_env: [],
         },
+        providers: [{ name: "github", required: true, available: true, reasons: [] }],
+        manifest: { name: "github", version: 1 },
         raw_markdown: "---\nname: github\n---\nUse GitHub CLI.",
       },
     });
@@ -319,9 +339,12 @@ describe("App layout", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open details for github" }));
 
     expect(await screen.findByRole("heading", { name: "github" })).toBeInTheDocument();
-    expect(screen.getByText("Unavailable reason")).toBeInTheDocument();
+    expect(screen.getByText("Availability diagnostics")).toBeInTheDocument();
+    expect(screen.getByText(/missing_binary/)).toBeInTheDocument();
     expect(screen.getAllByText("CLI: gh").length).toBeGreaterThan(0);
     expect(screen.getByText("Missing CLI")).toBeInTheDocument();
+    expect(screen.getByText("Manifest declarations")).toBeInTheDocument();
+    expect(screen.getByText("process:execute")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Raw SKILL.md"));
     expect(screen.getByText(/Use GitHub CLI/)).toBeInTheDocument();
   });

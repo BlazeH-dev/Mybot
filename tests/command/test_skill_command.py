@@ -107,6 +107,27 @@ async def test_skill_command_excludes_disabled(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_skill_command_excludes_invalid_and_unavailable(tmp_path: Path) -> None:
+    ws_skills = tmp_path / "skills"
+    ws_skills.mkdir()
+    _write_skill(ws_skills, "healthy", description="Healthy skill")
+    _write_skill(ws_skills, "broken", description="Broken skill")
+    (ws_skills / "broken" / "skill.yaml").write_text("name: [\n", encoding="utf-8")
+    _write_skill(ws_skills, "missing", description="Missing entrypoint")
+    (ws_skills / "missing" / "skill.yaml").write_text(
+        "name: missing\nversion: 1\nentrypoints: [missing.py]\n",
+        encoding="utf-8",
+    )
+
+    loop = _loop_with_skills(tmp_path)
+    out = await cmd_skill(_ctx(loop))
+
+    assert "**healthy**" in out.content
+    assert "broken" not in out.content
+    assert "missing" not in out.content
+
+
+@pytest.mark.asyncio
 async def test_skill_command_fallback_description(tmp_path: Path) -> None:
     ws_skills = tmp_path / "skills"
     ws_skills.mkdir()

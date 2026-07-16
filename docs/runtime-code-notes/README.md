@@ -20,7 +20,7 @@
 | ------------------------ | --- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | P0 准备                    | 已执行 | 已建立 Office golden fixture 与 CI smoke 回归门。见 [P0-准备阶段代码变更说明.md](./P0-准备阶段代码变更说明.md)。                                                  |
 | P1 Office 垂直切片           | 已执行 | 已落地双 Office Skill、共享 verified facts、WebUI 仅规划/自动 plan-and-execute、计划步骤卡片、OfficeCLI 固定契约与 artifact 面板。见 [P1-office垂直切片代码变更说明.md](./P1-office垂直切片代码变更说明.md)。 |
-| P2 Skill Pack Manifest   | 待执行 | 已记录 typed manifest、局部 fail closed、availability 与开关边界；代码未落地。见 [P2-skillpack-manifest代码变更说明.md](./P2-skillpack-manifest代码变更说明.md)。 |
+| P2 Skill Pack Manifest   | 已执行 | 已落地可选 typed manifest、局部 fail closed、结构化 availability、复用 disabledSkills 与 WebUI 诊断。见 [P2-skillpack-manifest代码变更说明.md](./P2-skillpack-manifest代码变更说明.md)。 |
 | P3 Policy 权限层            | 待执行 | 已记录三档 InteractionRequest、审批超时不放行与最小文件 OCC 的规划边界；代码未落地。见 [P3-policy权限层代码变更说明.md](./P3-policy权限层代码变更说明.md)。 |
 | P4 Artifact / Checkpoint | 待执行 | 已记录合法 `awaiting_*` 与 completed/pending/uncertain 分离的恢复边界；代码未落地。见 [P4-artifact-checkpoint代码变更说明.md](./P4-artifact-checkpoint代码变更说明.md)。 |
 | P5 Trace / Eval          | 待执行 | 已记录 P5 Core 与选做评测边界；代码未落地。见 [P5-trace-eval代码变更说明.md](./P5-trace-eval代码变更说明.md)。 |

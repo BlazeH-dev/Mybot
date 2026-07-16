@@ -125,8 +125,29 @@ export interface SkillSummary {
   name: string;
   description: string;
   source: "workspace" | "builtin" | string;
+  version?: number | null;
+  enabled?: boolean;
+  valid?: boolean;
   available: boolean;
+  status?: "available" | "unavailable" | "invalid" | "disabled" | string;
+  availability_reasons?: SkillAvailabilityReason[];
   unavailable_reason?: string;
+  permissions_required?: string[];
+  tools_required?: string[];
+}
+
+export interface SkillAvailabilityReason {
+  code: string;
+  message: string;
+  field?: string;
+}
+
+export interface SkillProviderStatus {
+  name: string;
+  required: boolean;
+  contract?: string | null;
+  available: boolean;
+  reasons: SkillAvailabilityReason[];
 }
 
 export interface SkillRequirements {
@@ -138,6 +159,8 @@ export interface SkillRequirements {
 
 export interface SkillDetail extends SkillSummary {
   requirements: SkillRequirements;
+  manifest?: Record<string, unknown> | null;
+  providers?: SkillProviderStatus[];
   raw_markdown: string;
 }
 

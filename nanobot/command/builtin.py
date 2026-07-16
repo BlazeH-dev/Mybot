@@ -658,7 +658,7 @@ async def cmd_pairing(ctx: CommandContext) -> OutboundMessage:
 async def cmd_skill(ctx: CommandContext) -> OutboundMessage:
     """List all enabled skills (name and description only)."""
     loop = ctx.loop
-    skills = loop.context.skills.list_skills(filter_unavailable=False)
+    skills = loop.context.skills.list_skills(filter_unavailable=True)
     if not skills:
         content = "No skills available."
     else:

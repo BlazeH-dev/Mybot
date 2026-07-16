@@ -1,0 +1,33 @@
+name: officecli
+version: 1
+description: Default Office skill for creating, inspecting, validating, and modifying docx, xlsx, and pptx with the pinned OfficeCLI capability.
+entrypoints:
+  - scripts/compile_officecli.py
+  - scripts/render_docx.py
+  - scripts/render_pptx.py
+inputs:
+  - docx
+  - xlsx
+  - pptx
+outputs:
+  - office-document
+  - validation-sidecar
+  - run-sidecar
+  - preview
+tools:
+  required:
+    - read_file
+    - write_file
+    - exec
+    - plan
+providers:
+  officecli:
+    required: true
+    contract: references/officecli-runtime.json
+permissions:
+  required:
+    - filesystem:read
+    - filesystem:write-artifacts
+    - process:execute
+evals:
+  - officecli-real-binary
