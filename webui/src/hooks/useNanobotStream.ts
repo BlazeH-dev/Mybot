@@ -19,6 +19,7 @@ import type {
   GoalStateWsPayload,
   ToolProgressEvent,
   UIImage,
+  UIMediaAttachment,
   UIFileEdit,
   UIMessage,
   UITurnPhase,
@@ -408,7 +409,7 @@ function findFileEditTraceIndex(
  * separately (e.g. via ``fetchWebuiThread``) since the server only replays
  * live events.
  */
-/** Payload passed to ``send`` when the user attaches one or more images.
+/** Payload passed to ``send`` when the user attaches one or more files.
  *
  * ``media`` is handed to the wire client verbatim; ``preview`` powers the
  * optimistic user bubble (blob URLs so the preview appears before the server
@@ -416,13 +417,14 @@ function findFileEditTraceIndex(
  * blob URL even after the server persists the file under a different name. */
 export interface SendImage {
   media: OutboundMedia;
-  preview: UIImage;
+  preview: UIImage | UIMediaAttachment;
 }
 
 export interface SendOptions {
   imageGeneration?: OutboundImageGeneration;
   cliApps?: OutboundCliAppMention[];
   mcpPresets?: OutboundMcpPresetMention[];
+  selectedSkills?: string[];
   executionMode?: ExecutionMode;
   workspaceScope?: WorkspaceScopePayload | null;
 }
@@ -1040,13 +1042,19 @@ export function useNanobotStream(
     (content: string, images?: SendImage[], options?: SendOptions) => {
       if (!chatId) return;
       const hasImages = !!images && images.length > 0;
-      // Text is optional when images are attached — the agent will still see
-      // the image blocks via ``media`` paths.
+      // Text is optional when files are attached — the agent will still see
+      // image blocks or extracted document text via ``media`` paths.
       if (!hasImages && !content.trim()) return;
 
       flushPendingStreamEvents();
       const turnId = crypto.randomUUID();
       const previews = hasImages ? images!.map((i) => i.preview) : undefined;
+      const imagePreviews = previews?.filter((preview): preview is UIImage =>
+        !("kind" in preview),
+      );
+      const filePreviews = previews?.filter((preview): preview is UIMediaAttachment =>
+        "kind" in preview,
+      );
       setMessages((prev) => {
         buffer.current = null;
         activeAssistantRef.current = null;
@@ -1062,9 +1070,11 @@ export function useNanobotStream(
             turnPhase: "user",
             turnSeq: 0,
             createdAt: Date.now(),
-            ...(previews ? { images: previews } : {}),
+            ...(imagePreviews?.length ? { images: imagePreviews } : {}),
+            ...(filePreviews?.length ? { media: filePreviews } : {}),
             ...(options?.cliApps?.length ? { cliApps: options.cliApps } : {}),
             ...(options?.mcpPresets?.length ? { mcpPresets: options.mcpPresets } : {}),
+            ...(options?.selectedSkills?.length ? { selectedSkills: options.selectedSkills } : {}),
             executionMode: options?.executionMode ?? "default",
           },
         ];

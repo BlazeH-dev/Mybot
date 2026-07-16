@@ -6,6 +6,7 @@ import platform
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from nanobot.agent import skills as skill_tools
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 from nanobot.agent.tools import mcp as mcp_tools
@@ -46,7 +47,9 @@ async def connect_mcp(state: Any, tools: ToolRegistry) -> None:
 
 
 async def handle_runtime_control(state: Any, msg: InboundMessage, tools: ToolRegistry) -> bool:
-    return await mcp_tools.handle_runtime_control(state, msg, tools)
+    return await mcp_tools.handle_runtime_control(state, msg, tools) or await skill_tools.handle_runtime_control(
+        state, msg
+    )
 
 
 class ContextBuilder:
@@ -92,9 +95,21 @@ class ContextBuilder:
             if always_content:
                 parts.append(f"# Active Skills\n\n{always_content}")
 
-        skills_summary = self.skills.build_skills_summary(exclude=set(always_skills))
-        if skills_summary:
-            parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
+        selected_skills = [name for name in (skill_names or []) if name not in always_skills]
+        if selected_skills:
+            selected_content = self.skills.load_skills_for_context(selected_skills)
+            if selected_content:
+                parts.append(
+                    "# Selected Skills\n\n"
+                    "The user explicitly selected these Skills for this turn. Follow their "
+                    "instructions as the required routing contract; do not substitute a "
+                    "different Skill.\n\n"
+                    + selected_content
+                )
+        else:
+            skills_summary = self.skills.build_skills_summary(exclude=set(always_skills))
+            if skills_summary:
+                parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
 
         if include_memory_recent_history:
             entries = self.memory.read_unprocessed_history(since_cursor=self.memory.get_last_dream_cursor())

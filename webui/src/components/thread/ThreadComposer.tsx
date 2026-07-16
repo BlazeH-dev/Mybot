@@ -28,6 +28,7 @@ import {
   ChevronUp,
   CircleHelp,
   CornerDownRight,
+  FileText,
   GripVertical,
   History,
   ImageIcon,
@@ -68,12 +69,12 @@ import {
   WorkspaceProjectPicker,
 } from "@/components/thread/WorkspaceControls";
 import {
-  useAttachedImages,
-  type AttachedImage,
+  useAttachedFiles,
+  type AttachedFile,
   type AttachmentError,
-  MAX_IMAGES_PER_MESSAGE,
-  type RestoredReadyImage,
-} from "@/hooks/useAttachedImages";
+  MAX_FILES_PER_MESSAGE,
+  type RestoredReadyFile,
+} from "@/hooks/useAttachedFiles";
 import { useClipboardAndDrop } from "@/hooks/useClipboardAndDrop";
 import type { SendImage, SendOptions } from "@/hooks/useNanobotStream";
 import { useVoiceRecorder, type VoiceRecorderErrorKey } from "@/hooks/useVoiceRecorder";
@@ -81,6 +82,7 @@ import type {
   CliAppInfo,
   GoalStateWsPayload,
   McpPresetInfo,
+  SkillSummary,
   OutboundCliAppMention,
   OutboundMcpPresetMention,
   SlashCommand,
@@ -95,9 +97,13 @@ import {
 } from "@/lib/provider-brand";
 import { cn } from "@/lib/utils";
 
-/** ``<input accept>``: aligned with the server's MIME whitelist. SVG is
- * deliberately excluded to avoid an embedded-script XSS surface. */
-const ACCEPT_ATTR = "image/png,image/jpeg,image/webp,image/gif";
+/** ``<input accept>``: aligned with the WebSocket document/source allowlist. */
+const ACCEPT_ATTR = [
+  "image/png", "image/jpeg", "image/webp", "image/gif", ".pdf", ".docx", ".xlsx", ".pptx",
+  ".txt", ".md", ".csv", ".json", ".xml", ".html", ".yaml", ".yml", ".toml", ".py",
+  ".js", ".jsx", ".ts", ".tsx", ".css", ".scss", ".sh", ".sql", ".java", ".go", ".rs",
+  ".c", ".h", ".cpp", ".hpp", ".rb", ".php", ".swift", ".kt", ".kts", ".cs", ".vue", ".svelte",
+].join(",");
 const VOICE_SHORTCUT_CODE = "KeyD";
 const VOICE_SHORTCUT_ARIA = "Control+Shift+D";
 type VoiceShortcutPlatform = "apple" | "chromeos" | "linux" | "other" | "windows";
@@ -173,6 +179,7 @@ interface ThreadComposerProps {
   slashCommands?: SlashCommand[];
   cliApps?: CliAppInfo[];
   mcpPresets?: McpPresetInfo[];
+  skills?: SkillSummary[];
   onStop?: () => void;
   onTranscribeAudio?: (dataUrl: string, options?: { durationMs?: number }) => Promise<string>;
   /** Unix seconds from server; turn elapsed timer above input while set. */
@@ -267,6 +274,7 @@ interface QueuedPrompt {
 interface QueuedPromptImage {
   dataUrl: string;
   name?: string;
+  kind?: "image" | "file";
 }
 
 interface CliAppMentionQuery {
@@ -277,7 +285,8 @@ interface CliAppMentionQuery {
 
 type MentionCandidate =
   | { kind: "cli"; name: string; app: CliAppInfo }
-  | { kind: "mcp"; name: string; preset: McpPresetInfo };
+  | { kind: "mcp"; name: string; preset: McpPresetInfo }
+  | { kind: "skill"; name: string; skill: SkillSummary };
 
 interface SlashPaletteCommand extends SlashCommand {
   detail: string;
@@ -328,7 +337,7 @@ function normalizeQueuedPrompt(item: unknown, index: number): QueuedPrompt | nul
     ? record.images.flatMap((image) => {
         if (!image || typeof image !== "object") return [];
         const candidate = image as Partial<QueuedPromptImage>;
-        if (typeof candidate.dataUrl !== "string" || !candidate.dataUrl.startsWith("data:image/")) {
+        if (typeof candidate.dataUrl !== "string" || !candidate.dataUrl.startsWith("data:")) {
           return [];
         }
         return [{
@@ -336,8 +345,9 @@ function normalizeQueuedPrompt(item: unknown, index: number): QueuedPrompt | nul
           ...(typeof candidate.name === "string" && candidate.name.trim()
             ? { name: candidate.name.trim() }
             : {}),
+          ...(candidate.kind === "file" ? { kind: "file" as const } : {}),
         }];
-      }).slice(0, MAX_IMAGES_PER_MESSAGE)
+      }).slice(0, MAX_FILES_PER_MESSAGE)
     : [];
   if (!text && images.length === 0) return null;
   const id = typeof record.id === "string" && record.id.trim()
@@ -374,7 +384,7 @@ function storeQueuedPrompts(storageKey: string, prompts: QueuedPrompt[]): void {
         prompts.slice(0, QUEUED_PROMPTS_LIMIT).map((prompt) => ({
           id: prompt.id,
           text: prompt.text.slice(0, QUEUED_PROMPT_MAX_CHARS),
-          ...(prompt.images?.length ? { images: prompt.images.slice(0, MAX_IMAGES_PER_MESSAGE) } : {}),
+          ...(prompt.images?.length ? { images: prompt.images.slice(0, MAX_FILES_PER_MESSAGE) } : {}),
         })),
       ),
     );
@@ -384,11 +394,12 @@ function storeQueuedPrompts(storageKey: string, prompts: QueuedPrompt[]): void {
 }
 
 function readyImagesToQueuedImages(
-  images: Array<AttachedImage & { dataUrl: string }>,
+  images: Array<AttachedFile & { dataUrl: string }>,
 ): QueuedPromptImage[] {
   return images.map((img) => ({
     dataUrl: img.dataUrl,
     name: img.file.name,
+    kind: img.kind,
   }));
 }
 
@@ -402,6 +413,7 @@ function queuedImagesToSendImages(images?: QueuedPromptImage[]): SendImage[] | u
     preview: {
       url: img.dataUrl,
       ...(img.name ? { name: img.name } : {}),
+      ...(img.kind === "file" ? { kind: "file" as const } : {}),
     },
   }));
 }
@@ -409,7 +421,7 @@ function queuedImagesToSendImages(images?: QueuedPromptImage[]): SendImage[] | u
 function queuedPromptLabel(prompt: QueuedPrompt): string {
   const text = prompt.text.trim();
   if (text) return text;
-  return prompt.images?.map((img) => img.name).filter(Boolean).join(", ") || "Image attachment";
+  return prompt.images?.map((img) => img.name).filter(Boolean).join(", ") || "File attachment";
 }
 
 function suppressNativeDragPreview(dataTransfer: DataTransfer): void {
@@ -771,6 +783,7 @@ export function ThreadComposer({
   slashCommands = [],
   cliApps = [],
   mcpPresets = [],
+  skills = [],
   onStop,
   onTranscribeAudio,
   runStartedAt = null,
@@ -835,13 +848,13 @@ export function ThreadComposer({
     ? t("thread.composer.placeholderStreaming")
     : placeholder ?? t("thread.composer.placeholderThread");
 
-  const { images, enqueue, remove, clear, restoreReadyImages, encoding, full } =
-    useAttachedImages();
+  const { files: images, enqueue, remove, clear, restoreReadyFiles: restoreReadyImages, encoding, full } =
+    useAttachedFiles();
 
   const formatRejection = useCallback(
     (reason: AttachmentError): string => {
       const key = `thread.composer.imageRejected.${reason}`;
-      return t(key, { max: MAX_IMAGES_PER_MESSAGE });
+      return t(key, { max: MAX_FILES_PER_MESSAGE });
     },
     [t],
   );
@@ -877,7 +890,7 @@ export function ThreadComposer({
   }, [disabled]);
 
   const readyImages = useMemo(
-    () => images.filter((img): img is AttachedImage & { dataUrl: string } =>
+    () => images.filter((img): img is AttachedFile & { dataUrl: string } =>
       img.status === "ready" && typeof img.dataUrl === "string",
     ),
     [images],
@@ -1033,8 +1046,12 @@ export function ThreadComposer({
         return haystack.includes(cliAppMention.query);
       })
       .map((preset) => ({ kind: "mcp", name: preset.name, preset }));
-    return [...cliCandidates, ...mcpCandidates].slice(0, 8);
-  }, [cliAppMention, cliApps, mcpPresets]);
+    const skillCandidates: MentionCandidate[] = skills
+      .filter((skill) => skill.available)
+      .filter((skill) => `${skill.name} ${skill.description}`.toLowerCase().includes(cliAppMention.query))
+      .map((skill) => ({ kind: "skill", name: skill.name, skill }));
+    return [...skillCandidates, ...cliCandidates, ...mcpCandidates].slice(0, 8);
+  }, [cliAppMention, cliApps, mcpPresets, skills]);
 
   const showCliAppMenu = filteredMentionCandidates.length > 0;
   const showAnyPalette = showSlashMenu || showCliAppMenu;
@@ -1061,6 +1078,12 @@ export function ThreadComposer({
       return [segment.preset];
     });
   }, [mentionSegments]);
+  const activeSelectedSkills = useMemo(() => {
+    const mentionedNames = new Set(
+      Array.from(value.matchAll(/(?:^|\s)@([a-z0-9][a-z0-9_-]{0,63})\b/gi), (match) => match[1]),
+    );
+    return skills.filter((skill) => skill.available && mentionedNames.has(skill.name));
+  }, [skills, value]);
   const [slashPaletteLayout, setSlashPaletteLayout] = useState<SlashPaletteLayout>({
     placement: "above",
     maxHeight: SLASH_PALETTE_MAX_HEIGHT_PX,
@@ -1314,7 +1337,7 @@ export function ThreadComposer({
     setCliAppMenuDismissed(false);
     setCursorPosition(prompt.text.length);
     if (prompt.images?.length) {
-      restoreReadyImages(prompt.images as RestoredReadyImage[]);
+      restoreReadyImages(prompt.images as RestoredReadyFile[]);
     } else {
       clear();
     }
@@ -1405,17 +1428,21 @@ export function ThreadComposer({
               data_url: img.dataUrl,
               name: img.file.name,
             },
-            preview: { url: img.dataUrl, name: img.file.name },
+            preview: img.kind === "image"
+              ? { url: img.dataUrl, name: img.file.name }
+              : { kind: "file", url: img.dataUrl, name: img.file.name },
           }))
         : undefined;
     const attachedCliApps = activeCliMentionApps.map(cliAppMentionPayload);
     const attachedMcpPresets = activeMcpPresetMentions.map(mcpPresetMentionPayload);
+    const selectedSkills = activeSelectedSkills.map((skill) => skill.name);
     const options: SendOptions | undefined =
-      planOnly || attachedCliApps.length > 0 || attachedMcpPresets.length > 0
+      planOnly || attachedCliApps.length > 0 || attachedMcpPresets.length > 0 || selectedSkills.length > 0
         ? {
             ...(planOnly ? { executionMode: "plan_only" as const } : {}),
             ...(attachedCliApps.length > 0 ? { cliApps: attachedCliApps } : {}),
             ...(attachedMcpPresets.length > 0 ? { mcpPresets: attachedMcpPresets } : {}),
+            ...(selectedSkills.length > 0 ? { selectedSkills } : {}),
           }
         : undefined;
     onSend(content, payload, options);
@@ -1428,6 +1455,7 @@ export function ThreadComposer({
   }, [
     activeCliMentionApps,
     activeMcpPresetMentions,
+    activeSelectedSkills,
     canSend,
     clear,
     clearComposerText,
@@ -1645,7 +1673,7 @@ export function ThreadComposer({
         {images.length > 0 ? (
           <div
             className="flex flex-wrap gap-2 px-3 pt-3"
-            aria-label={t("thread.composer.attachImage")}
+            aria-label={t("thread.composer.attachFile", { defaultValue: "Add files" })}
           >
             {images.map((img) => (
               <AttachmentChip
@@ -1738,7 +1766,7 @@ export function ThreadComposer({
               size="icon"
               variant="ghost"
               disabled={attachButtonDisabled}
-              aria-label={t("thread.composer.attachImage")}
+              aria-label={t("thread.composer.attachFile", { defaultValue: "Add files" })}
               onClick={() => fileInputRef.current?.click()}
               className={cn(
                 "rounded-full text-muted-foreground hover:text-foreground",
@@ -2352,13 +2380,17 @@ function CliAppMentionPalette({
           const name = candidate.name;
           const displayName = candidate.kind === "cli"
             ? candidate.app.display_name
-            : candidate.preset.display_name;
+            : candidate.kind === "mcp" ? candidate.preset.display_name : candidate.skill.name;
           const typeLabel = candidate.kind === "cli"
             ? t("thread.composer.mentions.cliBadge")
-            : t("thread.composer.mentions.mcpBadge");
+            : candidate.kind === "mcp"
+              ? t("thread.composer.mentions.mcpBadge")
+              : t("thread.composer.mentions.skillBadge");
           const ariaDescription = candidate.kind === "cli"
             ? t("thread.composer.mentions.cliDescription", { name })
-            : t("thread.composer.mentions.mcpDescription", { name });
+            : candidate.kind === "mcp"
+              ? t("thread.composer.mentions.mcpDescription", { name })
+              : t("thread.composer.mentions.skillDescription", { name });
           return (
             <button
               key={`${candidate.kind}-${name}`}
@@ -2393,7 +2425,9 @@ function CliAppMentionPalette({
                   "ml-2 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold tracking-normal",
                   candidate.kind === "cli"
                     ? "bg-orange-500/10 text-orange-600 dark:text-orange-300"
-                    : "bg-sky-500/10 text-sky-600 dark:text-sky-300",
+                    : candidate.kind === "mcp"
+                      ? "bg-sky-500/10 text-sky-600 dark:text-sky-300"
+                      : "bg-violet-500/10 text-violet-600 dark:text-violet-300",
                 )}
               >
                 {typeLabel}
@@ -2416,8 +2450,10 @@ function MentionCandidateLogo({
   const [logoIndex, setLogoIndex] = useState(0);
   const color = (candidate.kind === "cli"
     ? candidate.app.brand_color
-    : candidate.preset.brand_color) || "hsl(var(--primary))";
-  const rawLogoUrl = candidate.kind === "cli" ? candidate.app.logo_url : candidate.preset.logo_url;
+    : candidate.kind === "mcp" ? candidate.preset.brand_color : "#7c3aed") || "hsl(var(--primary))";
+  const rawLogoUrl = candidate.kind === "cli"
+    ? candidate.app.logo_url
+    : candidate.kind === "mcp" ? candidate.preset.logo_url : null;
   const logoUrls = useMemo(() => logoFallbackUrls(rawLogoUrl), [rawLogoUrl]);
   const logoUrl = logoUrls[logoIndex];
 
@@ -2447,7 +2483,7 @@ function MentionCandidateLogo({
     >
       {candidate.kind === "cli"
         ? cliAppInitials(candidate.app)
-        : mcpPresetInitials(candidate.preset)}
+        : candidate.kind === "mcp" ? mcpPresetInitials(candidate.preset) : "SK"}
     </span>
   );
 }
@@ -2544,7 +2580,7 @@ function SlashCommandPalette({
 }
 
 interface AttachmentChipProps {
-  image: AttachedImage;
+  image: AttachedFile;
   labelRemove: string;
   labelEncoding: string;
   normalizedHint: (origBytes: number, currentBytes: number) => string;
@@ -2583,7 +2619,7 @@ function AttachmentChip({
       data-testid="composer-chip"
     >
       <div className="relative h-10 w-10 overflow-hidden rounded-md bg-background">
-        {image.previewUrl ? (
+        {image.kind === "image" && image.previewUrl ? (
           <img
             src={image.previewUrl}
             alt=""
@@ -2594,7 +2630,9 @@ function AttachmentChip({
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center">
-            <ImageIcon className="h-4 w-4 text-muted-foreground" aria-hidden />
+            {image.kind === "image"
+              ? <ImageIcon className="h-4 w-4 text-muted-foreground" aria-hidden />
+              : <FileText className="h-4 w-4 text-muted-foreground" aria-hidden />}
           </div>
         )}
         {image.status === "encoding" ? (

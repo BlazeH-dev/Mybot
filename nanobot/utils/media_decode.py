@@ -47,6 +47,7 @@ def save_base64_data_url(
     media_dir: Path,
     *,
     max_bytes: int | None = None,
+    filename: str | None = None,
 ) -> str | None:
     """Decode a ``data:<mime>;base64,<payload>`` URL and persist it.
 
@@ -66,7 +67,13 @@ def save_base64_data_url(
     if len(raw) > limit:
         raise FileSizeExceeded(f"File exceeds {limit // (1024 * 1024)}MB limit")
     ext = _MIME_EXTENSION_OVERRIDES.get(mime_type) or mimetypes.guess_extension(mime_type) or ".bin"
-    filename = f"{uuid.uuid4().hex[:12]}{ext}"
-    dest = media_dir / safe_filename(filename)
+    safe_name = safe_filename(filename or "")
+    # Preserve an advisory browser filename when available.  Document
+    # extraction is extension-based, and the agent needs a meaningful name to
+    # reason about and edit an uploaded source/document file.  The random
+    # prefix prevents collisions while ``safe_filename`` keeps the result in
+    # the media directory.
+    stored_name = f"{uuid.uuid4().hex[:12]}_{safe_name}" if safe_name else f"{uuid.uuid4().hex[:12]}{ext}"
+    dest = media_dir / stored_name
     dest.write_bytes(raw)
     return str(dest)

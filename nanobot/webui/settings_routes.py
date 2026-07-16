@@ -15,6 +15,7 @@ from typing import Any
 from websockets.http11 import Request as WsRequest
 from websockets.http11 import Response
 
+from nanobot.agent.skills import request_skills_reload
 from nanobot.agent.tools.mcp import request_mcp_reload
 from nanobot.bus.queue import MessageBus
 from nanobot.webui.cli_apps_api import cli_apps_action, cli_apps_payload
@@ -34,6 +35,7 @@ from nanobot.webui.settings_api import (
     update_model_configuration,
     update_network_safety_settings,
     update_provider_settings,
+    update_skill_enabled,
     update_transcription_settings,
     update_web_search_settings,
 )
@@ -86,6 +88,8 @@ class WebUISettingsRouter:
             return self._handle_settings_usage(request)
         if path == "/api/settings/update":
             return self._handle_settings_update(request)
+        if path == "/api/settings/skills/update":
+            return await self._handle_settings_skill_update(request)
         if path == "/api/settings/model-configurations/create":
             return self._handle_settings_model_configuration_create(request)
         if path == "/api/settings/model-configurations/update":
@@ -206,6 +210,18 @@ class WebUISettingsRouter:
         except WebUISettingsError as e:
             return self._error_response(e.status, e.message)
         return self._json_response(self._with_restart_state(payload, section="runtime"))
+
+    async def _handle_settings_skill_update(self, request: WsRequest) -> Response:
+        if not self._authorized(request):
+            return self._unauthorized()
+        try:
+            payload = update_skill_enabled(self._query(request))
+            refresh = await request_skills_reload(self.bus)
+        except WebUISettingsError as e:
+            return self._error_response(e.status, e.message)
+        if not refresh.get("ok"):
+            return self._error_response(503, str(refresh.get("message") or "skill refresh failed"))
+        return self._json_response({**payload, "requires_restart": False})
 
     def _handle_settings_model_configuration_create(self, request: WsRequest) -> Response:
         if not self._authorized(request):

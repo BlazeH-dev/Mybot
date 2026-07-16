@@ -22,6 +22,7 @@ from nanobot.agent.execution_mode import (
     EXECUTION_MODE_METADATA_KEY,
     normalize_execution_mode,
 )
+from nanobot.agent.skills import SKILL_SELECTION_METADATA_KEY
 from nanobot.bus.events import OUTBOUND_META_AGENT_UI, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
@@ -223,6 +224,9 @@ _MAX_IMAGES_PER_MESSAGE = 4
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
 _MAX_VIDEOS_PER_MESSAGE = 1
 _MAX_VIDEO_BYTES = 20 * 1024 * 1024
+_MAX_FILES_PER_MESSAGE = 10
+_MAX_DOCUMENT_BYTES = 20 * 1024 * 1024
+_MAX_TOTAL_MEDIA_BYTES = 24 * 1024 * 1024
 
 # Image MIME whitelist — matches the Composer's ``accept`` list. SVG is
 # explicitly excluded to avoid the XSS surface inside embedded scripts.
@@ -239,9 +243,38 @@ _VIDEO_MIME_ALLOWED: frozenset[str] = frozenset({
     "video/quicktime",
 })
 
-_UPLOAD_MIME_ALLOWED: frozenset[str] = _IMAGE_MIME_ALLOWED | _VIDEO_MIME_ALLOWED
+# Documents are sent as base64 data URLs by the browser.  A few browsers use
+# ``application/octet-stream`` for source files, so extension validation below
+# supplements this MIME whitelist instead of accepting arbitrary binary data.
+_DOCUMENT_MIME_ALLOWED: frozenset[str] = frozenset({
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "text/html",
+    "text/xml",
+    "application/json",
+    "application/xml",
+    "application/javascript",
+    "text/javascript",
+})
+_DOCUMENT_SUFFIX_ALLOWED: frozenset[str] = frozenset({
+    ".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".csv", ".json",
+    ".xml", ".html", ".htm", ".log", ".yaml", ".yml", ".toml", ".ini",
+    ".cfg", ".py", ".js", ".jsx", ".ts", ".tsx", ".css", ".scss", ".sh",
+    ".sql", ".java", ".go", ".rs", ".c", ".h", ".cpp", ".hpp", ".rb",
+    ".php", ".swift", ".kt", ".kts", ".cs", ".vue", ".svelte",
+})
+
+_UPLOAD_MIME_ALLOWED: frozenset[str] = (
+    _IMAGE_MIME_ALLOWED | _VIDEO_MIME_ALLOWED | _DOCUMENT_MIME_ALLOWED
+)
 
 _DATA_URL_MIME_RE = re.compile(r"^data:([^;,]+)(?:;[^,]*)*;base64,", re.DOTALL)
+_SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 def _extract_data_url_mime(url: str) -> str | None:
@@ -252,6 +285,32 @@ def _extract_data_url_mime(url: str) -> str | None:
     if not m:
         return None
     return m.group(1).strip().lower() or None
+
+
+def _is_allowed_document_upload(mime: str, name: object) -> bool:
+    """Return whether a non-visual upload has an allowed MIME or suffix."""
+    if mime in _DOCUMENT_MIME_ALLOWED:
+        return True
+    if not isinstance(name, str):
+        return False
+    return Path(name).suffix.lower() in _DOCUMENT_SUFFIX_ALLOWED
+
+
+def _normalize_selected_skills(raw: object) -> list[str]:
+    """Keep only bounded, safe identifiers; availability is checked by AgentLoop."""
+    if not isinstance(raw, list):
+        return []
+    selected: list[str] = []
+    seen: set[str] = set()
+    for value in raw[:8]:
+        if not isinstance(value, str):
+            continue
+        name = value.strip()
+        if not _SKILL_NAME_RE.fullmatch(name) or name in seen:
+            continue
+        selected.append(name)
+        seen.add(name)
+    return selected
 
 
 def _is_websocket_upgrade(request: WsRequest) -> bool:
@@ -587,7 +646,9 @@ class WebSocketChannel(BaseChannel):
         call are unlinked so partial ingress doesn't leak orphan files.
         ``reason`` is a short, stable token suitable for UI localization.
 
-        Shape: ``list[{"data_url": str, "name"?: str | None}]``.
+        Shape: ``list[{"data_url": str, "name"?: str | None}]``.  Images
+        and videos are visual attachments; documents and source files are
+        accepted from a narrow MIME / filename-extension allowlist.
         """
         image_count = 0
         video_count = 0
@@ -601,9 +662,12 @@ class WebSocketChannel(BaseChannel):
             return [], "too_many_images"
         if video_count > _MAX_VIDEOS_PER_MESSAGE:
             return [], "too_many_videos"
+        if len(media) > _MAX_FILES_PER_MESSAGE:
+            return [], "too_many_files"
 
         media_dir = get_media_dir("websocket")
         paths: list[str] = []
+        total_bytes = 0
 
         def _abort(reason: str) -> tuple[list[str], str]:
             for p in paths:
@@ -624,13 +688,18 @@ class WebSocketChannel(BaseChannel):
             mime = _extract_data_url_mime(data_url)
             if mime is None:
                 return _abort("decode")
-            if mime not in _UPLOAD_MIME_ALLOWED:
+            name = item.get("name")
+            if mime not in _UPLOAD_MIME_ALLOWED and not _is_allowed_document_upload(mime, name):
                 return _abort("mime")
             is_video = mime in _VIDEO_MIME_ALLOWED
-            max_bytes = _MAX_VIDEO_BYTES if is_video else _MAX_IMAGE_BYTES
+            is_image = mime in _IMAGE_MIME_ALLOWED
+            max_bytes = _MAX_VIDEO_BYTES if is_video else _MAX_IMAGE_BYTES if is_image else _MAX_DOCUMENT_BYTES
             try:
                 saved = save_base64_data_url(
-                    data_url, media_dir, max_bytes=max_bytes,
+                    data_url,
+                    media_dir,
+                    max_bytes=max_bytes,
+                    filename=name if isinstance(name, str) else None,
                 )
             except FileSizeExceeded:
                 return _abort("size")
@@ -640,6 +709,12 @@ class WebSocketChannel(BaseChannel):
             if saved is None:
                 return _abort("decode")
             paths.append(saved)
+            try:
+                total_bytes += Path(saved).stat().st_size
+            except OSError:
+                return _abort("decode")
+            if total_bytes > _MAX_TOTAL_MEDIA_BYTES:
+                return _abort("total_size")
         return paths, None
 
     async def _dispatch_envelope(
@@ -783,6 +858,9 @@ class WebSocketChannel(BaseChannel):
             mcp_presets = normalize_mcp_preset_mentions(envelope.get("mcp_presets"))
             if mcp_presets:
                 metadata["mcp_presets"] = mcp_presets
+            selected_skills = _normalize_selected_skills(envelope.get("selected_skills"))
+            if selected_skills:
+                metadata[SKILL_SELECTION_METADATA_KEY] = selected_skills
             metadata[WORKSPACE_SCOPE_METADATA_KEY] = scope.metadata()
             self._workspaces.persist_scope(cid, scope)
             image_generation = envelope.get("image_generation")

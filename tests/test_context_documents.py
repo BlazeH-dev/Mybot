@@ -91,6 +91,7 @@ def test_drain_pending_path_preserves_document_text(tmp_path: Path) -> None:
     # The document text should be present in the final content
     assert "Quarterly revenue" in result
     assert "summarize" in result
+    assert f"[Attachment: {docx_path}]" in result
 
 
 def test_drain_pending_path_without_extract_loses_document(tmp_path: Path) -> None:

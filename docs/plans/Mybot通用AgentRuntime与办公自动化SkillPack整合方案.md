@@ -56,9 +56,24 @@ nanobot/runtime/
   trace.py           JSONL / OTel 风格 trace
   replay.py          轻量 cassette
   evals/             确定性评测与报告
+
+nanobot/security/sandbox/
+  manager.py         sandbox mode、provider capability 与 fail-closed
+  launcher.py        Agent 触发子进程的统一启动边界
+  seatbelt.py        macOS Seatbelt provider
+  bwrap.py           Linux / WSL2 Bubblewrap provider
+  network.py         默认断网、域名绑定代理与审计
 ```
 
-硬边界继续复用 `nanobot/security/`、现有 `WorkspaceScope` / workspace sandbox 和网络校验；`nanobot/runtime/` 负责策略、状态、审计和恢复，不取代或平行重建硬边界。WebUI 现有 Default Permission / Full Access 是会话级 workspace access profile；P3 将其作为 policy 输入，而不是另建一套路径或沙箱权限模型。
+硬边界继续归属 `nanobot/security/`。P3 在现有 `WorkspaceScope`、workspace path guard、SSRF 和 `agent/tools/sandbox.py` 基础上补齐 OS 强制沙箱，不在 `nanobot/runtime/` 平行重建路径判断。`nanobot/runtime/` 负责策略、状态、审计和恢复；WebUI 现有 Default Permission / Full Access 继续作为会话级 access profile，并确定性映射为 sandbox/policy 组合。
+
+参考 Codex，安全控制拆为三个正交轴，禁止混称：
+
+1. `sandbox_mode`：技术上能访问哪些文件、网络和进程资源。
+2. `approval_policy`：越过当前边界时是询问、拒绝还是按既有规则继续。
+3. `approvals_reviewer`：需要 approval 时由用户还是 reviewer Agent 审核。
+
+“替我审批”只改变第 3 轴，不授予权限、不扩大 writable roots、不打开网络，也不替代沙箱。P3 必做 reviewer 只有 `user`；`auto_review` 必须等手动 approval、trace 和安全 eval 稳定后再作为选做项评估。
 
 ## 4. 不可破坏的设计契约
 
@@ -67,6 +82,8 @@ nanobot/runtime/
 - `SKILL.md` 保持兼容；可选 `skill.yaml` 声明版本、依赖、权限需求、产物和 eval。
 - manifest 缺失时兼容旧 Skill；manifest 存在但损坏时仅该 Skill fail closed。
 - `disabledSkills` 是唯一启用/禁用入口，不建立平行配置。
+- WebUI 开关写入 `disabledSkills` 后应热刷新主 Agent 与子代理；只影响后续回合，不要求重启网关。
+- 用户可在单轮消息中用 `@skill-name` 显式指定可用 Skill；运行时必须校验其可用性并把正文作为本轮路由契约加载。未指定时，继续采用摘要 + 模型渐进选择。
 - 普通 Office 请求默认优先 `officecli`；用户明确要求 Python 时使用 `office-automation`。
 - OfficeCLI 版本、平台资产和 checksum 只有 provider contract 一个真相源；Mybot 安装的同名 launcher 可在首次使用时自动准备并校验固定资产，Agent 任务不得调用上游 latest/install/update。
 - 定量结论必须来自 `verified_facts.json`；纯格式、提取和批注任务不强制跑事实层。
@@ -81,11 +98,18 @@ nanobot/runtime/
 - 自动激活只表示允许按计划推进，不批准高风险工具；外发和远程写仍独立经过 P3 policy/approval。本地已有文件写入与高风险本地 Shell 是否 ask 由当前 WebUI access profile 决定，但无论何种 profile 都必须经过 P3 OCC / hard deny。
 - plan 是 artifact 和后续 checkpoint 的根；动态摘要只放用户消息尾部 Runtime Context，工具定义保持稳定以利缓存。
 
-### 4.3 Policy 与三档 HITL
+### 4.3 Sandbox、Policy 与三档 HITL
+
+- `sandbox_mode` 使用 `read_only|workspace_write|danger_full_access`：plan-only 映射 `read_only`，Default Permission 映射 `workspace_write`，Full Access 映射 `danger_full_access`。
+- `workspace_write` 必须由 OS provider 强制：macOS 使用 Seatbelt，Linux/WSL2 使用 Bubblewrap；原生 Windows 首版不宣称支持。provider 缺失时返回 `sandbox_unavailable`，不得静默无沙箱执行；用户只能显式切换 Full Access 或修复 provider。
+- workspace 默认仅项目目录与当前 task artifact 目录可写；builtin Skill、上传媒体和必要系统运行库只读；`~/.nanobot`、凭据、Runtime interactions/checkpoint/trace 控制文件和项目 `.git` 默认不可由普通 sandbox 命令写入。
+- sandbox 内命令默认断网。需要网络时先规范化目标域名并经过 policy；批准只形成绑定当前 tool call/command hash/domain/expiry 的最小例外，SSRF、内网、metadata 和敏感目标仍 hard deny。
+- 沙箱覆盖 Agent 触发的 Shell 一次性/持久 session、CLI Apps 与 OfficeCLI 子进程；预配置 MCP server、channel bootstrap 和网关自身进程首版不纳入同一 OS 边界，必须在文档和 UI 标明，并继续受调用级 policy/SSRF 约束。
+- `danger_full_access` 表示用户明确关闭本地 OS 文件/网络沙箱，不等于关闭 Runtime policy：消息、邮件、远程写、凭据访问、OCC 和 hard deny 仍独立生效。
 
 - 工具调用先完成同步参数校验，再经过异步 policy gate：`allow / ask / deny`。
 - P3 复用当前会话的 `WorkspaceScope`：Default Permission 保持 workspace 受限；Full Access 允许项目外的本地文件/Shell 访问，并作为已选择的本地操作预授权 profile，而非一次性工具 approval。
-- workspace、SSRF、敏感信息等 hard deny 不能被配置、Skill 或用户审批放宽。
+- 路径逃逸、受保护目录、SSRF、敏感信息等 hard deny 不能被配置、Skill 或用户审批放宽；workspace 外普通路径属于 sandbox escalation，只能由参数绑定的一次性 approval 最小放宽。
 - Default Permission 下修改已有本地文件和高风险本地 Shell 默认 ask；Full Access 下这两类本地操作可 allow，但仍受 OCC、command deny pattern 和 hard deny 约束。消息/邮件、远程写和其他外部副作用在两种 profile 下都保持 ask；审批必须参数绑定且超时拒绝。
 - `InteractionRequest` 统一承接 question、approval、需要人工确认的 plan confirmation、recovery decision：
   - `required`：没有明确回答就不继续。
@@ -94,6 +118,7 @@ nanobot/runtime/
 - 发出请求后当前 LLM 调用结束，task/turn 进入 `awaiting_*`；等待期 token 为 0。
 - 回答和 deadline 竞争时只消费一次，并恢复原 task/turn 和 tool call；普通聊天不能隐式批准安全操作。
 - WebSocket 只负责展示/提交，持久化 Runtime 状态是真相源。
+- `approvals_reviewer=user` 是 P3 唯一必做路径；未来的 `auto_review` 只能处理本来会询问用户的有限 escalation，不得审核 hard deny、凭据读取、不可逆外发或关闭沙箱的请求，并必须记录独立 reviewer trace、理由、token 和结果。
 
 ### 4.4 文件安全
 
@@ -131,7 +156,7 @@ nanobot/runtime/
 | [P0 准备](runtime-steps/P0-准备.md)                                   | 已完成 | 固定 Office fixture、Python 3.11 CI smoke            | fixture 可复算，workflow 可运行；远端状态以最新 Actions 记录为准 |
 | [P1 Office 垂直切片](runtime-steps/P1-office垂直切片.md)                  | 已完成 | 双 Office Skill、共享 facts、仅规划/自动执行、计划步骤 UI       | 两条 Office 路径和两种计划模式可验证                         |
 | [P2 Manifest](runtime-steps/P2-skillpack-manifest.md)             | 已执行 | typed manifest、局部 fail closed、availability、开关     | 坏 Skill 不拖垮网关且不能进入候选                          |
-| [P3 Policy/HITL/OCC](runtime-steps/P3-policy权限层.md)               | 待执行 | policy gate、三档 InteractionRequest、approval、文件 OCC | 硬边界不可绕过，等待可恢复，冲突拦截 100%                       |
+| [P3 Sandbox/Policy/HITL/OCC](runtime-steps/P3-policy权限层.md)       | 待执行 | OS sandbox、policy gate、三档 InteractionRequest、approval、文件 OCC | 无静默降级，硬边界不可绕过，等待可恢复，冲突拦截 100%             |
 | [S5.0 轻量回放](runtime-steps/P5-trace-eval.md)                       | 待执行 | 3–4 个关键 cassette smoke                            | 无 API key、无网络即可回归关键 Agent 行为                  |
 | [P4 Artifact/Checkpoint](runtime-steps/P4-artifact-checkpoint.md) | 待执行 | 输入快照、artifact/lineage、计划任务恢复                      | kill→resume 可验证，uncertain 不自动重试               |
 | [P8 Subagent](runtime-steps/P8-多agent编排.md)                       | 待执行 | 数量/嵌套/权限/预算/上下文/产物治理                              | 父子 trace 完整并有单/多 Agent 对比                     |
@@ -165,6 +190,7 @@ P0 → P1 → P2 → P3 → S5.0 → P4 → P8 → P5 Core → P6 → P7
 2. LLM Judge / LLM-as-a-Verifier 离线 PoC。
 3. 多模型成本矩阵与 KV cache 优化。
 4. Subagent 共享 workspace 文件租约与冲突可视化。
+5. `approvals_reviewer=auto_review`（“替我审批”）；手动 approval、sandbox、trace 和红队未完成前不得实现。
 
 ## 7. 硬门指标
 
@@ -172,7 +198,10 @@ P0 → P1 → P2 → P3 → S5.0 → P4 → P8 → P5 Core → P6 → P7
 | -------------------------- | --------------- |
 | 数字可追溯到 fact id             | 100%            |
 | 计划步骤/承诺产物交付                | 100%            |
-| workspace 越权写入             | 0               |
+| 未批准的 workspace 外写入       | 0               |
+| `workspace_write` 沙箱外文件写入 | 0               |
+| 沙箱不可用时静默无沙箱执行          | 0               |
+| 未批准的命令网络访问               | 0               |
 | 注入诱导的越权副作用、敏感泄漏、未确认外发      | 0               |
 | 已有文件冲突拦截率                  | 100%            |
 | HITL 回答/超时/取消恢复正确率         | 100%            |
@@ -191,6 +220,8 @@ P0 → P1 → P2 → P3 → S5.0 → P4 → P8 → P5 Core → P6 → P7
 
 ```text
 Skill 开关
+→ read_only / workspace_write / danger_full_access
+→ sandbox 网络/文件越界被拒绝或参数绑定审批
 → required/auto_resolve/expire_and_deny
 → 仅规划生成/显式执行 + 普通复杂任务自动 plan-and-execute
 → verified facts + Office 产物
@@ -214,6 +245,7 @@ Skill 开关
 项目完成时应满足：
 
 - 新 Skill 可通过同一 manifest/loader/policy/artifact/trace/eval 接入。
+- Default Permission 下 Agent 触发的命令默认由可验证的 OS sandbox 限制在 workspace，越界只能走最小参数绑定 approval，provider 不可用时不会静默降级；Full Access 仍不绕过外部副作用 policy、OCC 和 hard deny。
 - 人机等待可跨刷新、断线和重启恢复，等待期模型不空转，危险审批超时不放行。
 - 用户/IDE 修改不会被过期读取静默覆盖。
 - 已激活且 hash 绑定的计划任务可从可验证 checkpoint 恢复，未知副作用转人工。

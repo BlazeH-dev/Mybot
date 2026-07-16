@@ -437,6 +437,16 @@ export async function updateSettings(
   return request<SettingsPayload>(`${base}/api/settings/update?${query}`, token);
 }
 
+export async function updateSkillEnabled(
+  token: string,
+  name: string,
+  enabled: boolean,
+  base: string = "",
+): Promise<SkillsPayload> {
+  const query = new URLSearchParams({ name, enabled: String(enabled) });
+  return request<SkillsPayload>(`${base}/api/settings/skills/update?${query}`, token);
+}
+
 export async function createModelConfiguration(
   token: string,
   configuration: ModelConfigurationCreate,

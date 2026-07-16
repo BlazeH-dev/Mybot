@@ -90,6 +90,14 @@ def test_saved_file_lives_under_media_dir(tmp_path) -> None:
     assert result.startswith(str(tmp_path))
 
 
+def test_preserves_safe_advisory_filename(tmp_path) -> None:
+    result = save_base64_data_url(
+        _data_url(b"report", mime="application/pdf"), tmp_path, filename="Q2 report.pdf"
+    )
+    assert result is not None
+    assert result.endswith("_Q2 report.pdf")
+
+
 def test_legacy_symbols_reexported_from_api_server() -> None:
     """Existing tests import ``_save_base64_data_url`` / ``_FileSizeExceeded``
     from ``nanobot.api.server`` — keep the aliases working."""

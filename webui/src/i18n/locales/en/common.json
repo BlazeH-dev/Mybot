@@ -703,6 +703,7 @@
         "drag": "Drag to reorder"
       },
       "attachImage": "Attach image",
+      "attachFile": "Attach files",
       "imageMode": {
         "label": "Image Generation",
         "toggle": "Toggle image generation mode",
@@ -808,13 +809,15 @@
       },
       "mentions": {
         "ariaLabel": "Apps",
-        "label": "Apps",
+        "label": "Apps and skills",
         "cliGroup": "CLI apps",
         "mcpGroup": "MCP services",
         "cliBadge": "CLI",
         "mcpBadge": "MCP",
+        "skillBadge": "Skill",
         "cliDescription": "Use @{{name}} as a local CLI app",
-        "mcpDescription": "Use @{{name}} as an MCP server"
+        "mcpDescription": "Use @{{name}} as an MCP server",
+        "skillDescription": "Route this turn through Skill {{name}}"
       },
       "encoding": "Encoding…",
       "remove": "Remove attachment",
@@ -822,6 +825,7 @@
       "imageRejected": {
         "unsupported_type": "Unsupported file type",
         "too_many_images": "Max {{max}} images per message",
+        "too_many_files": "Max {{max}} files per message",
         "magic_mismatch": "File doesn't look like a real image",
         "decode_failed": "Couldn't decode this image",
         "too_large": "Image is too large — try a smaller one",

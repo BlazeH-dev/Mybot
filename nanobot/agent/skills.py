@@ -1,5 +1,6 @@
 """Skills loader for agent capabilities."""
 
+import asyncio
 import json
 import os
 import re
@@ -12,6 +13,13 @@ import yaml
 from pydantic import ValidationError
 
 from nanobot.agent.skill_manifest import SkillManifest
+from nanobot.bus.events import (
+    INBOUND_META_RUNTIME_CONTROL,
+    RUNTIME_CONTROL_ACK,
+    RUNTIME_CONTROL_SKILLS_RELOAD,
+    InboundMessage,
+)
+from nanobot.config.loader import load_config
 from nanobot.officecli_runtime import OfficeCliBootstrapError, select_officecli_asset
 
 # Default builtin skills directory (relative to this file)
@@ -23,6 +31,9 @@ _STRIP_SKILL_FRONTMATTER = re.compile(
     r"^---\s*\r?\n(.*?)\r?\n---\s*\r?\n?",
     re.DOTALL,
 )
+SKILL_SELECTION_METADATA_KEY = "selected_skills"
+_MAX_SELECTED_SKILLS = 8
+_SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 def _which_command(command: str) -> str | None:
@@ -145,6 +156,27 @@ class SkillsLoader:
         ]
         return "\n\n---\n\n".join(parts)
 
+    def selected_available_names(self, metadata: dict[str, Any] | None) -> list[str]:
+        """Return de-duplicated, enabled Skill names explicitly attached to one turn."""
+        raw = (metadata or {}).get(SKILL_SELECTION_METADATA_KEY)
+        if not isinstance(raw, list):
+            return []
+        names: list[str] = []
+        seen: set[str] = set()
+        for value in raw[:_MAX_SELECTED_SKILLS]:
+            if not isinstance(value, str):
+                continue
+            name = value.strip()
+            if not _SKILL_NAME_RE.fullmatch(name) or name in seen:
+                continue
+            if self._skill_dir(name) is None:
+                continue
+            if not self.get_skill_status(name)["available"]:
+                continue
+            names.append(name)
+            seen.add(name)
+        return names
+
     def build_skills_summary(self, exclude: set[str] | None = None) -> str:
         """
         Build a summary of all skills (name, description, path, availability).
@@ -170,6 +202,7 @@ class SkillsLoader:
             desc = self._get_skill_description(skill_name)
             lines.append(f"- **{skill_name}** — {desc}  `{entry['path']}`")
         return "\n".join(lines)
+
 
     @staticmethod
     def _reason(code: str, message: str, *, field: str | None = None) -> dict[str, str]:
@@ -471,3 +504,58 @@ class SkillsLoader:
         for key, value in parsed.items():
             metadata[str(key)] = value
         return metadata
+
+
+async def request_skills_reload(bus: Any, *, timeout: float = 5.0) -> dict[str, Any]:
+    """Refresh the running agent's Skill enablement after a settings change."""
+    loop = asyncio.get_running_loop()
+    ack: asyncio.Future[dict[str, Any]] = loop.create_future()
+    await bus.publish_inbound(
+        InboundMessage(
+            channel="system",
+            sender_id="webui-settings",
+            chat_id="runtime",
+            content=RUNTIME_CONTROL_SKILLS_RELOAD,
+            metadata={
+                INBOUND_META_RUNTIME_CONTROL: RUNTIME_CONTROL_SKILLS_RELOAD,
+                RUNTIME_CONTROL_ACK: ack,
+            },
+        )
+    )
+    try:
+        result = await asyncio.wait_for(ack, timeout=timeout)
+    except asyncio.TimeoutError:
+        return {
+            "ok": False,
+            "message": "Skill refresh timed out. Restart nanobot to pick up changes.",
+            "requires_restart": True,
+        }
+    return result if isinstance(result, dict) else {
+        "ok": False,
+        "message": "Skill refresh returned an unexpected response.",
+        "requires_restart": True,
+    }
+
+
+async def handle_runtime_control(state: Any, msg: InboundMessage) -> bool:
+    """Apply the persisted disabled-Skill list to the running agent and subagents."""
+    metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+    if metadata.get(INBOUND_META_RUNTIME_CONTROL) != RUNTIME_CONTROL_SKILLS_RELOAD:
+        return False
+
+    ack = metadata.get(RUNTIME_CONTROL_ACK)
+    try:
+        disabled_skills = set(load_config().agents.defaults.disabled_skills)
+        state.context.skills.disabled_skills = disabled_skills
+        state.subagents.disabled_skills = disabled_skills
+        result = {"ok": True, "message": "Skill settings applied.", "requires_restart": False}
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "message": "Could not refresh skills. Restart nanobot to pick up changes.",
+            "requires_restart": True,
+            "error": str(exc),
+        }
+    if isinstance(ack, asyncio.Future) and not ack.done():
+        ack.set_result(result)
+    return True

@@ -132,7 +132,7 @@ nanobot/skills/officecli/
 - raw、raw-set、add-part。
 - plugins、MCP、watch、install、config、update。
 
-这些能力不会在 Skill 层被删除。P3 Runtime Policy 将按操作、参数、目标路径和网络边界分类为 allow / ask / deny。manifest 或 Skill 只能声明需求，不能自行授予权限；workspace、网络和敏感信息硬边界不可被审批放宽。
+这些能力不会在 Skill 层被删除。P3 Runtime Policy 将按操作、参数、目标路径和网络边界分类为 allow / ask / deny。manifest 或 Skill 只能声明需求，不能自行授予权限；workspace 外普通路径和公网域名只能由参数绑定 approval 最小放宽，路径逃逸、受保护目录、SSRF/私网和敏感信息硬边界不可被审批放宽。
 
 `compile_officecli.py`、`render_docx.py`、`render_pptx.py` 是现有 grounded report/deck 的兼容 helper：
 

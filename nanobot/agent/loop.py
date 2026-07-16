@@ -614,12 +614,14 @@ class AgentLoop:
     ) -> list[dict[str, Any]]:
         """Build the initial message list for the LLM turn."""
         scope = self.workspace_scopes.for_message(msg, session.metadata)
+        selected_skills = self.context.skills.selected_available_names(msg.metadata)
         return self.context.build_messages(
             history=history,
             current_message=plan_only_prompt(
                 image_generation_prompt(msg.content, msg.metadata),
                 msg.metadata,
             ),
+            skill_names=selected_skills,
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=self._runtime_chat_id(msg),
@@ -1151,10 +1153,12 @@ class AgentLoop:
         history = session.get_history(**_hist_kwargs)
         current_role = "assistant" if is_subagent else "user"
         workspace_scope = self.workspace_scopes.for_message(msg, session.metadata)
+        selected_skills = self.context.skills.selected_available_names(msg.metadata)
 
         messages = self.context.build_messages(
             history=history,
             current_message="" if is_subagent else msg.content,
+            skill_names=selected_skills,
             channel=channel,
             chat_id=chat_id,
             current_role=current_role,

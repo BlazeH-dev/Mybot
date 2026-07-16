@@ -31,6 +31,7 @@ import {
   updateNetworkSafetySettings,
   updateProviderSettings,
   updateSettings,
+  updateSkillEnabled,
   updateWebSearchSettings,
 } from "@/lib/api";
 
@@ -104,6 +105,15 @@ describe("webui API helpers", () => {
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
       }),
+    );
+  });
+
+  it("updates a Skill's enabled state", async () => {
+    await updateSkillEnabled("tok", "officecli", false);
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/settings/skills/update?name=officecli&enabled=false",
+      expect.objectContaining({ headers: { Authorization: "Bearer tok" } }),
     );
   });
 

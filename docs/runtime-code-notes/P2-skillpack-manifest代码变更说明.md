@@ -38,6 +38,13 @@
 - `webui/src/components/settings/SkillsCatalogSettings.tsx` 展示 manifest 版本、disabled/invalid/unavailable 状态、逐条诊断、声明工具、声明权限和 provider 状态；中英文文案已补齐。
 - permissions 仅进入只读 payload/UI。P2 没有把它接入 ToolRegistry、`WorkspaceScope` 或任何 policy allow 路径，因此声明不能授予权限、解除禁用或放宽 hard boundary。
 
+### 2.5 即时开关与单轮显式路由（2026-07-16）
+
+- Skills 设置详情页新增启用/禁用按钮。它仍只写入唯一的 `agents.defaults.disabledSkills`，但 WebUI 通过内部 `skills_reload` control 消息立即同步运行中的 `AgentLoop` 与 `SubagentManager`；当前正在执行的回合不改变，后续回合无需重启网关即可按新状态生效。
+- `GET /api/webui/skills` 和详情接口按磁盘上的最新配置计算 catalog，前端收到成功结果后刷新对话框候选，避免已禁用 Skill 短暂仍可选择。
+- 输入框 `@` 候选新增可用 Skill。选中或输入精确 `@skill-name` 会以 `selected_skills` 随 WebSocket 消息发送；AgentLoop 再以当前 loader 校验名称和可用性，禁用、未知或不可用项不能绕过开关。
+- 有显式选择时，`ContextBuilder` 将所选 `SKILL.md` 正文放入本轮 `# Selected Skills`，声明其为必须遵循的路由契约，并不再暴露可自动选择的 Skill 摘要；未选择时完全保留原有渐进披露和模型自主选择行为。
+
 ## 3. 为什么这么做
 
 - 可选 manifest 保留第三方/旧 Skill 的兼容性；“文件一旦存在就严格校验”避免配置损坏被静默忽略。
@@ -60,6 +67,7 @@
 - `ruff check nanobot/ tests/agent/test_skill_manifest.py tests/webui/test_skills_api.py`
 - manifest/loader/API/Office/command/WebSocket 定向 pytest：覆盖合法和 legacy manifest、坏 YAML/schema、字段路径、workspace 覆盖、路径逃逸、缺 entrypoint/contract、disabled catalog、无效 Skill 不进 summary/context/`/skill`、两个 Office manifest 和 API 隐私边界。
 - WebUI `app-layout` 回归覆盖 catalog 状态、诊断和声明展示；TypeScript production build 通过。
+- 即时开关/显式路由定向回归：覆盖 selected Skill 注入并抑制自动候选、disabled/unknown 过滤、WebSocket 名称归一化、热刷新同步主 Agent 与子代理、配置持久化；前端 production build 通过。
 - 最终结果：后端 Skill/P2 定向回归 `101 passed`（含真实固定 OfficeCLI 集成）；WebUI 全量 `29 files / 401 tests passed`；production build 通过。
 - `pip wheel . --no-deps` 构建成功，并从 wheel 清单确认 `office-automation/skill.yaml`、`officecli/skill.yaml` 与 `nanobot/officecli_runtime.py` 均已随包交付。
 

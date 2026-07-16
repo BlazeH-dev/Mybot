@@ -117,6 +117,29 @@ describe("ThreadComposer — image attachments", () => {
     expect(onSend).toHaveBeenCalledTimes(1);
   });
 
+  it("attaches a source file and includes it as a file attachment on send", async () => {
+    const file = new File(["export const answer = 42;"], "config.ts", { type: "text/plain" });
+    const onSend = vi.fn();
+    render(<ThreadComposer onSend={onSend} />);
+
+    const fileInput = screen
+      .getByLabelText(/message input/i)
+      .closest("form")!
+      .querySelector('input[type="file"]') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [file] } });
+    });
+    await waitFor(() => expect(screen.getByTestId("composer-chip")).toHaveTextContent("config.ts"));
+
+    fireEvent.keyDown(screen.getByLabelText(/message input/i), { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    const [, attachments] = onSend.mock.calls[0];
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0].media.name).toBe("config.ts");
+    expect(attachments[0].media.data_url).toMatch(/^data:text\/plain;base64,/);
+    expect(attachments[0].preview.kind).toBe("file");
+  });
+
   it("rejects a non-image paste silently without adding a chip", async () => {
     const onSend = vi.fn();
     render(<ThreadComposer onSend={onSend} />);

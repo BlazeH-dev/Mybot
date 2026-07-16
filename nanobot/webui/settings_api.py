@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from nanobot.agent.skills import SkillsLoader
 from nanobot.audio.transcription import resolve_transcription_config
 from nanobot.audio.transcription_registry import (
     resolve_transcription_provider,
@@ -97,6 +98,7 @@ _IMAGE_GENERATION_ASPECT_RATIOS = {
 }
 _CONTEXT_WINDOW_TOKEN_OPTIONS = {65_536, 262_144}
 _MODEL_CONFIGURATION_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
+_SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 _MODEL_LIST_UNSUPPORTED_BACKENDS = {
@@ -847,6 +849,37 @@ def settings_usage_payload() -> dict[str, Any]:
     """Return the lightweight token usage slice for Overview refreshes."""
     config = load_config()
     return token_usage_payload(timezone_name=config.agents.defaults.timezone)
+
+
+def update_skill_enabled(query: QueryParams) -> dict[str, Any]:
+    """Persist one Skill's enabled state and return the refreshed catalog."""
+    name = (_query_first(query, "name") or "").strip()
+    enabled_raw = (_query_first(query, "enabled") or "").strip().lower()
+    if not _SKILL_NAME_RE.fullmatch(name):
+        raise WebUISettingsError("invalid skill name")
+    if enabled_raw not in {"true", "false"}:
+        raise WebUISettingsError("enabled must be true or false")
+
+    config = load_config()
+    loader = SkillsLoader(config.workspace_path)
+    known_names = {
+        entry["name"]
+        for entry in loader.list_skills(filter_unavailable=False, include_disabled=True)
+    }
+    if name not in known_names:
+        raise WebUISettingsError("unknown skill", status=404)
+
+    disabled = set(config.agents.defaults.disabled_skills)
+    if enabled_raw == "true":
+        disabled.discard(name)
+    else:
+        disabled.add(name)
+    config.agents.defaults.disabled_skills = sorted(disabled)
+    save_config(config)
+
+    from nanobot.webui.skills_api import webui_skills_payload
+
+    return webui_skills_payload(config.workspace_path, disabled_skills=disabled)
 
 
 def update_agent_settings(query: QueryParams) -> dict[str, Any]:

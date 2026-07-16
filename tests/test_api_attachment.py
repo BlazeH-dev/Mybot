@@ -406,7 +406,7 @@ def test_extract_documents_skips_extraction_errors(tmp_path, monkeypatch) -> Non
     )
 
     text, image_paths = extract_documents("hello", [str(bad_file)])
-    assert text == "hello"
+    assert text == f"hello\n\n[Attachment: {bad_file}]"
     assert image_paths == []
 
 
@@ -425,7 +425,7 @@ def test_extract_documents_skips_oversized_files(tmp_path) -> None:
     big.write_bytes(b"x" * 200)
 
     text, image_paths = extract_documents("hello", [str(big)], max_file_size=100)
-    assert text == "hello"
+    assert text == f"hello\n\n[Attachment: {big} (too large to extract)]"
     assert image_paths == []
 
 

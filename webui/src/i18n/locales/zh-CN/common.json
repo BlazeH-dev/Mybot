@@ -702,6 +702,7 @@
         "drag": "拖动排序"
       },
       "attachImage": "添加图片",
+      "attachFile": "添加文件",
       "imageMode": {
         "label": "图片生成",
         "toggle": "切换图片生成模式",
@@ -807,13 +808,15 @@
       },
       "mentions": {
         "ariaLabel": "应用",
-        "label": "应用",
+        "label": "应用和技能",
         "cliGroup": "CLI 应用",
         "mcpGroup": "MCP 服务",
         "cliBadge": "CLI",
         "mcpBadge": "MCP",
+        "skillBadge": "技能",
         "cliDescription": "使用 @{{name}} 调用本地 CLI",
-        "mcpDescription": "使用 @{{name}} 调用 MCP 服务"
+        "mcpDescription": "使用 @{{name}} 调用 MCP 服务",
+        "skillDescription": "本轮强制使用技能 {{name}}"
       },
       "encoding": "处理中…",
       "remove": "移除附件",
@@ -821,6 +824,7 @@
       "imageRejected": {
         "unsupported_type": "不支持的文件类型",
         "too_many_images": "每条消息最多 {{max}} 张图片",
+        "too_many_files": "每条消息最多 {{max}} 个文件",
         "magic_mismatch": "文件看起来不像真实的图片",
         "decode_failed": "无法解码这张图片",
         "too_large": "图片太大，请换一张小一点的",

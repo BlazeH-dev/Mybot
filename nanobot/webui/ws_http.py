@@ -511,10 +511,12 @@ class GatewayHTTPHandler:
     def _handle_webui_skills(self, request: WsRequest) -> Response:
         if not self.check_api_token(request):
             return _http_error(401, "Unauthorized")
+        from nanobot.config.loader import load_config
+
         return _http_json_response(
             webui_skills_payload(
                 self.skills_workspace_path,
-                disabled_skills=self.disabled_skills,
+                disabled_skills=set(load_config().agents.defaults.disabled_skills),
             )
         )
 
@@ -523,13 +525,15 @@ class GatewayHTTPHandler:
             return _http_error(401, "Unauthorized")
         from urllib.parse import unquote
 
+        from nanobot.config.loader import load_config
+
         name = unquote(raw_name)
         if not name or "/" in name or "\\" in name:
             return _http_error(400, "invalid skill name")
         payload = webui_skill_detail_payload(
             self.skills_workspace_path,
             name,
-            disabled_skills=self.disabled_skills,
+            disabled_skills=set(load_config().agents.defaults.disabled_skills),
         )
         if payload is None:
             return _http_error(404, "skill not found")

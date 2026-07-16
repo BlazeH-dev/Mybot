@@ -280,8 +280,10 @@ def extract_documents(
     """Separate images from documents in *media_paths*.
 
     Documents (PDF, DOCX, XLSX, PPTX, plain-text, …) have their text
-    extracted and appended to *text*.  Only image paths are kept in the
-    returned list so that downstream layers only need to handle vision
+    extracted and appended to *text*.  Their local attachment paths are also
+    retained in the text context, so the agent can target the original file
+    with a file tool after analysing the extracted body.  Only image paths are
+    kept in the returned list so downstream layers only need to handle vision
     blocks.
 
     Files larger than *max_file_size* bytes are skipped with a warning
@@ -289,6 +291,7 @@ def extract_documents(
     """
     image_paths: list[str] = []
     doc_texts: list[str] = []
+    attachment_refs: list[str] = []
 
     for path_str in media_paths:
         p = Path(path_str)
@@ -304,6 +307,7 @@ def extract_documents(
                 "Skipping oversized file for extraction: {} ({:.1f} MB > {} MB limit)",
                 p.name, size / (1024 * 1024), max_file_size // (1024 * 1024),
             )
+            attachment_refs.append(f"[Attachment: {path_str} (too large to extract)]")
             continue
 
         if is_image_file(path_str):
@@ -312,8 +316,12 @@ def extract_documents(
             extracted = extract_text(p)
             if extracted and not extracted.startswith("[error:"):
                 doc_texts.append(f"[File: {p.name}]\n{extracted}")
+                attachment_refs.append(f"[Attachment: {path_str}]")
+            else:
+                attachment_refs.append(f"[Attachment: {path_str}]")
 
-    if doc_texts:
-        text = text + "\n\n" + "\n\n".join(doc_texts)
+    additions = [*doc_texts, *attachment_refs]
+    if additions:
+        text = text + "\n\n" + "\n\n".join(additions)
 
     return text, image_paths

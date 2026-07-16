@@ -4,15 +4,26 @@ import { Brain, Check, CircleAlert, KeyRound, Loader2, Terminal } from "lucide-r
 import { useTranslation } from "react-i18next";
 
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
-import { fetchSkillDetail } from "@/lib/api";
+import { fetchSkillDetail, updateSkillEnabled } from "@/lib/api";
 import type { SkillDetail, SkillSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useClient } from "@/providers/ClientProvider";
 
 export function SkillsCatalogSettings({ skills }: { skills: SkillSummary[] }) {
   const { t } = useTranslation();
-  const availableCount = skills.filter((skill) => skill.available).length;
+  const { token } = useClient();
+  const [catalog, setCatalog] = useState(skills);
+  const availableCount = catalog.filter((skill) => skill.available).length;
   const [selectedSkill, setSelectedSkill] = useState<SkillSummary | null>(null);
+
+  useEffect(() => setCatalog(skills), [skills]);
+
+  const toggleEnabled = async (skill: SkillSummary, enabled: boolean) => {
+    const payload = await updateSkillEnabled(token, skill.name, enabled);
+    setCatalog(payload.skills);
+    setSelectedSkill(payload.skills.find((item) => item.name === skill.name) ?? null);
+    window.dispatchEvent(new Event("nanobot.skills.changed"));
+  };
 
   return (
     <div className="space-y-7">
@@ -42,7 +53,7 @@ export function SkillsCatalogSettings({ skills }: { skills: SkillSummary[] }) {
         </div>
         {skills.length ? (
           <div className="grid gap-x-10 gap-y-1 py-3 md:grid-cols-2">
-            {skills.map((skill) => (
+            {catalog.map((skill) => (
               <SkillCatalogRow
                 key={`${skill.source}:${skill.name}`}
                 skill={skill}
@@ -63,6 +74,7 @@ export function SkillsCatalogSettings({ skills }: { skills: SkillSummary[] }) {
         onOpenChange={(open) => {
           if (!open) setSelectedSkill(null);
         }}
+        onToggleEnabled={toggleEnabled}
       />
     </div>
   );
@@ -143,16 +155,20 @@ function SkillDetailSheet({
   skill,
   open,
   onOpenChange,
+  onToggleEnabled,
 }: {
   skill: SkillSummary | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onToggleEnabled: (skill: SkillSummary, enabled: boolean) => Promise<void>;
 }) {
   const { token } = useClient();
   const { t } = useTranslation();
   const [detail, setDetail] = useState<SkillDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [savingEnabled, setSavingEnabled] = useState(false);
+  const [toggleFailed, setToggleFailed] = useState(false);
 
   useEffect(() => {
     if (!open || !skill) return;
@@ -180,6 +196,18 @@ function SkillDetailSheet({
   const activeSkill = detail ?? skill;
   const sourceLabel = skillSourceLabel(activeSkill.source, t);
   const statusLabel = skillStatusLabel(activeSkill, t);
+  const toggle = async () => {
+    setSavingEnabled(true);
+    setToggleFailed(false);
+    try {
+      await onToggleEnabled(activeSkill, activeSkill.enabled === false);
+      setDetail(null);
+    } catch {
+      setToggleFailed(true);
+    } finally {
+      setSavingEnabled(false);
+    }
+  };
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -207,6 +235,23 @@ function SkillDetailSheet({
                 {activeSkill.version ? <Pill>v{activeSkill.version}</Pill> : null}
                 <Pill tone={activeSkill.available ? "success" : "muted"}>{statusLabel}</Pill>
               </div>
+              <button
+                type="button"
+                onClick={toggle}
+                disabled={savingEnabled}
+                className="mt-3 rounded-lg border border-border/60 px-2.5 py-1 text-[12px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+              >
+                {savingEnabled
+                  ? t("settings.skills.saving", { defaultValue: "Saving…" })
+                  : activeSkill.enabled === false
+                    ? t("settings.skills.enable", { defaultValue: "Enable skill" })
+                    : t("settings.skills.disable", { defaultValue: "Disable skill" })}
+              </button>
+              {toggleFailed ? (
+                <p className="mt-2 text-[12px] text-destructive">
+                  {t("settings.skills.toggleFailed", { defaultValue: "Could not update this skill." })}
+                </p>
+              ) : null}
             </div>
           </div>
 

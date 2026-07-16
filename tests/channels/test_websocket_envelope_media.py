@@ -276,14 +276,14 @@ async def test_message_rejected_on_oversize_payload(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_message_rejected_on_non_image_mime(tmp_path) -> None:
+async def test_message_accepts_pdf_with_original_filename(tmp_path) -> None:
     channel = _make_channel()
     mock_conn = AsyncMock()
     envelope = {
         "type": "message",
         "chat_id": "abc123",
-        "content": "pdf?",
-        "media": [{"data_url": _data_url("application/pdf", b"%PDF-1.4")}],
+        "content": "summarize this",
+        "media": [{"data_url": _data_url("application/pdf", b"%PDF-1.4"), "name": "report.pdf"}],
     }
 
     with patch(
@@ -291,10 +291,11 @@ async def test_message_rejected_on_non_image_mime(tmp_path) -> None:
     ):
         await channel._dispatch_envelope(mock_conn, "client-1", envelope)
 
-    channel._handle_message.assert_not_awaited()
-    err = json.loads(mock_conn.send.call_args[0][0])
-    assert err["detail"] == "image_rejected"
-    assert err["reason"] == "mime"
+    channel._handle_message.assert_awaited_once()
+    paths = channel._handle_message.call_args.kwargs["media"]
+    assert len(paths) == 1
+    assert Path(paths[0]).name.endswith("_report.pdf")
+    assert Path(paths[0]).read_bytes() == b"%PDF-1.4"
 
 
 @pytest.mark.asyncio
@@ -316,6 +317,7 @@ async def test_message_rejected_on_svg_mime(tmp_path) -> None:
 
     channel._handle_message.assert_not_awaited()
     err = json.loads(mock_conn.send.call_args[0][0])
+    assert err["detail"] == "image_rejected"
     assert err["reason"] == "mime"
 
 
@@ -404,7 +406,7 @@ async def test_message_rejected_when_media_field_is_not_list() -> None:
 
 @pytest.mark.asyncio
 async def test_failed_media_does_not_partially_persist(tmp_path) -> None:
-    """If the second image is invalid, the first must not be forwarded.
+    """If the second attachment is invalid, the first must not be forwarded.
 
     Also: images already written in this call are cleaned up on failure, so
     a mixed-valid/invalid batch never leaves orphan files in the media dir.
@@ -417,7 +419,7 @@ async def test_failed_media_does_not_partially_persist(tmp_path) -> None:
         "content": "mixed",
         "media": [
             {"data_url": _tiny_png_data_url()},
-            {"data_url": _data_url("application/pdf", b"%PDF-1.4")},
+            {"data_url": _data_url("application/x-msdownload", b"not allowed"), "name": "bad.exe"},
         ],
     }
 

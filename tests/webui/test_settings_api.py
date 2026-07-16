@@ -20,6 +20,7 @@ from nanobot.webui.settings_api import (
     update_model_configuration,
     update_network_safety_settings,
     update_provider_settings,
+    update_skill_enabled,
     update_transcription_settings,
 )
 
@@ -144,6 +145,28 @@ def test_update_agent_settings_accepts_context_window_options(
     assert payload["agent"]["context_window_tokens"] == 262144
     saved = load_config(config_path)
     assert saved.agents.defaults.context_window_tokens == 262144
+
+
+def test_update_skill_enabled_persists_disabled_skills(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    skill_dir = tmp_path / "skills" / "alpha"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# Alpha\n", encoding="utf-8")
+    config = Config()
+    config.agents.defaults.workspace = str(tmp_path)
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    disabled = update_skill_enabled({"name": ["alpha"], "enabled": ["false"]})
+    assert next(skill for skill in disabled["skills"] if skill["name"] == "alpha")["enabled"] is False
+    assert load_config(config_path).agents.defaults.disabled_skills == ["alpha"]
+
+    enabled = update_skill_enabled({"name": ["alpha"], "enabled": ["true"]})
+    assert next(skill for skill in enabled["skills"] if skill["name"] == "alpha")["enabled"] is True
+    assert load_config(config_path).agents.defaults.disabled_skills == []
 
 
 def test_configuring_openai_selects_first_available_openai_preset(

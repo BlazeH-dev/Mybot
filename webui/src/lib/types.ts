@@ -60,6 +60,8 @@ export interface UIMessage {
   cliApps?: UICliAppAttachment[];
   /** Settings-managed MCP presets explicitly attached to this user turn. */
   mcpPresets?: UIMcpPresetAttachment[];
+  /** Instruction skills explicitly routed to this user turn. */
+  selectedSkills?: string[];
   /** Assistant turn: accumulated model reasoning / thinking text. Built up
    * incrementally from ``reasoning_delta`` frames; finalized when
    * ``reasoning_end`` arrives. */
@@ -97,6 +99,10 @@ export interface UIMcpPresetAttachment {
   configured?: boolean;
   logo_url?: string | null;
   brand_color?: string | null;
+}
+
+export interface UISkillAttachment {
+  name: string;
 }
 
 export interface SessionAutomationJob {
@@ -853,13 +859,11 @@ export type InboundEvent =
     }
   | { event: "error"; chat_id?: string; detail?: string; reason?: string };
 
-/** Base64-encoded image attached to an outbound ``message`` envelope.
+/** Base64-encoded file attached to an outbound ``message`` envelope.
  *
- * ``data_url`` must be a ``data:image/<png|jpeg|webp|gif>;base64,...`` string
- * — the server whitelists those MIME types and rejects everything else
- * (including SVG, to avoid an XSS surface). ``name`` is advisory: it's
- * preserved for the file on disk and surfaced as the placeholder label when
- * the session is replayed.
+ * The server accepts visual media plus a narrow document/source allowlist.
+ * ``name`` is advisory but preserved in the stored filename so extension-based
+ * document extraction and file editing can target the uploaded artifact.
  */
 export interface OutboundMedia {
   data_url: string;
@@ -925,6 +929,7 @@ export type Outbound =
       image_generation?: OutboundImageGeneration;
       cli_apps?: OutboundCliAppMention[];
       mcp_presets?: OutboundMcpPresetMention[];
+      selected_skills?: string[];
       execution_mode?: ExecutionMode;
       workspace_scope?: WorkspaceScopePayload;
       turn_id?: string;

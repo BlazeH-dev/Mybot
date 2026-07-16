@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ThreadComposer } from "@/components/thread/ThreadComposer";
 import type { NanobotClient } from "@/lib/nanobot-client";
-import type { CliAppInfo, McpPresetInfo, SlashCommand } from "@/lib/types";
+import type { CliAppInfo, McpPresetInfo, SkillSummary, SlashCommand } from "@/lib/types";
 import { ClientProvider } from "@/providers/ClientProvider";
 
 vi.mock("@/lib/imageEncode", () => ({
@@ -80,6 +80,16 @@ const CLI_APPS: CliAppInfo[] = [
     logo_url: null,
     brand_color: "#3BABFF",
     skill_installed: false,
+  },
+];
+
+const SKILLS: SkillSummary[] = [
+  {
+    name: "officecli",
+    description: "Create and edit Office documents.",
+    source: "builtin",
+    available: true,
+    enabled: true,
   },
 ];
 
@@ -1024,6 +1034,30 @@ describe("ThreadComposer", () => {
         logo_url: null,
         brand_color: "#E87D0D",
       }],
+    });
+  });
+
+  it("routes a turn through an explicitly selected Skill", () => {
+    const onSend = vi.fn();
+    render(
+      <ThreadComposer
+        onSend={onSend}
+        placeholder="Type your message..."
+        skills={SKILLS}
+      />,
+    );
+
+    const input = screen.getByLabelText("Message input");
+    fireEvent.change(input, { target: { value: "@off", selectionStart: 4 } });
+    expect(screen.getByRole("option", { name: /@officecli/i })).toHaveTextContent("Skill");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveValue("@officecli ");
+
+    fireEvent.change(input, { target: { value: "@officecli create a deck" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(onSend).toHaveBeenCalledWith("@officecli create a deck", undefined, {
+      selectedSkills: ["officecli"],
     });
   });
 
