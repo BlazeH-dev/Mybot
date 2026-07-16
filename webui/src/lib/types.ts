@@ -229,6 +229,13 @@ export interface WorkspacesPayload {
   };
 }
 
+export interface WorkspaceDirectoriesPayload {
+  path: string;
+  parent_path: string | null;
+  directories: Array<{ name: string; path: string }>;
+  truncated: boolean;
+}
+
 export type SidebarDensity = "comfortable" | "compact";
 export type SidebarSortMode = "updated_desc" | "created_desc" | "title_asc";
 

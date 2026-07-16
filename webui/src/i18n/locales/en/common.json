@@ -926,6 +926,11 @@
     "dialog": {
       "defaultProject": "Default workspace",
       "manual": "Paste path",
+      "browse": "Browse folders",
+      "up": "Up",
+      "selectFolder": "Select this folder",
+      "empty": "There are no folders to open here.",
+      "truncated": "Only the first 200 folders are shown.",
       "manualPlaceholder": "/Users/name/project",
       "usePath": "Use Path",
       "absolutePathRequired": "Enter an absolute folder path on this machine."

@@ -926,6 +926,11 @@
     "dialog": {
       "defaultProject": "Default workspace",
       "manual": "Tempel path",
+      "browse": "Telusuri folder",
+      "up": "Naik",
+      "selectFolder": "Pilih folder ini",
+      "empty": "Tidak ada folder yang dapat dibuka di sini.",
+      "truncated": "Hanya 200 folder pertama yang ditampilkan.",
       "manualPlaceholder": "/Users/name/project",
       "usePath": "Use Path",
       "absolutePathRequired": "Enter an absolute folder path on this machine."

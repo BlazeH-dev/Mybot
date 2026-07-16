@@ -39,10 +39,10 @@ evals: []
 ### Availability 与开关
 
 - `office-automation` 检查 Python 依赖和 shared core。
-- `officecli` 检查固定 binary、版本、平台和 contract。
+- `officecli` 检查随包 launcher、固定 binary、版本、平台和 contract；launcher 可按 contract 准备缺失缓存。
 - availability 返回结构化原因，如 `missing_binary`、`version_mismatch`、`invalid_manifest`。
 - 复用 `agents.defaults.disabled_skills` / WebUI `disabledSkills`，不建立平行开关。
-- 禁用或 unavailable 的 Skill 不进入 summary、候选和执行路径；不得自动安装、启用或静默切换。
+- 禁用或 unavailable 的 Skill 不进入 summary、候选和执行路径；Registry/Agent 不得调用上游 latest/install/update、自动启用或静默切换。随包 provider launcher 按 contract 准备固定 runtime 不视为动态扩权安装。
 
 API/WebUI 只展示 name/version/source、enabled、valid/available、缺失依赖和权限需求摘要，不做权限管理后台。
 
@@ -50,6 +50,6 @@ API/WebUI 只展示 name/version/source、enabled、valid/available、缺失依�
 
 - 两个 Office manifest 合法可读，旧 Skill 无 manifest 行为不变。
 - 坏 YAML/schema、缺 contract 只隔离目标 Skill并给精确错误。
-- OfficeCLI binary 缺失不影响 Python Skill。
+- OfficeCLI launcher/固定资产准备失败不影响 Python Skill。
 - `disabledSkills` 在 loader、API 和 WebUI 端到端生效。
 - manifest permissions 无法改变 policy 结果。

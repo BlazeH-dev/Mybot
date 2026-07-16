@@ -3,6 +3,7 @@
 > 对应计划：`docs/plans/runtime-steps/P1-office垂直切片.md`
 > 当前状态：双 Skill 边界、共享确定性事实层、Python 渲染链、OfficeCLI 独立能力包、静态 Plan Tool、pytest 回归与 WebUI artifact 面板均已落地。
 > 2026-07-14 修订：撤销“单 Skill + OfficeCLI 默认后端 + legacy Python 后端”的结构，改为两个地位独立、可分别启用或禁用的 Skill。
+> 2026-07-16 修复：新增随 Python 包安装的固定版本 launcher，首次调用按 provider contract 下载、校验并缓存 v1.0.135，不再要求用户手工准备 binary。
 > 2026-07-16：阶段计划仅合并重复背景与步骤，双 Skill、facts、路由、contract、测试和 plan 契约不变。
 
 ## 阶段目标
@@ -154,7 +155,7 @@ verified facts + 原固定 DSL
 - 完整能力列表。
 - 兼容 batch helper 当前允许的 `add/set` 操作。
 - Runtime Policy 的 allow/ask 提示，而不是静态删减能力。
-- `OFFICECLI_SKIP_UPDATE=1` 与 `OFFICECLI_RESIDENT_FLUSH=each` 等隔离运行设置。
+- `OFFICECLI_SKIP_UPDATE=1`、`OFFICECLI_NO_AUTO_RESIDENT=1` 与 `OFFICECLI_RESIDENT_FLUSH=each` 等隔离运行设置；兼容 helper 使用一次性进程，截图文件已完整落盘但浏览器仍不退出时终止对应进程组并记录 `timed_out_after_output`；上游成功生成有效 PNG 却返回纯路径而非 JSON 时记录 `unstructured_output`，其他命令继续严格要求结构化 JSON。
 
 `officecli_backend.py` 负责：
 
@@ -165,13 +166,15 @@ verified facts + 原固定 DSL
 - 同时检查进程退出码、结构化 JSON 的 success 和 unsupported-property warning。
 - 生成 batch、validation、run metadata 和可选 preview。
 
-P1 不负责在 Agent 任务中动态安装 OfficeCLI。binary 的安装、平台校验、manifest availability 和发行许可检查由项目准备流程与 P2 Registry 接续处理。
+P1 不允许 Agent 任务调用上游 `latest`、`install` 或 `update`。Mybot Python 包提供同名 `officecli` launcher：首次调用时从唯一 provider contract 选择平台资产，下载 v1.0.135、校验 SHA-256、原子缓存并强制 `OFFICECLI_SKIP_UPDATE=1`；后续直接复用缓存。平台/版本/checksum 不在 launcher 内重复维护。
+
+launcher 缓存目录在进入 OfficeCLI 临时 `HOME` 隔离前显式固定，避免每个 DOM 子命令重复下载；`SkillsLoader` 除 PATH 外还检查当前 Python 的 scripts 目录，因此直接执行 `venv/bin/nanobot gateway` 时也能发现同目录 console script。
 
 ### 5. Skill 路由、可用性与开关
 
 现有 `SkillsLoader` 已支持两类独立控制：
 
-- `metadata.nanobot.requires.bins`：`officecli` 声明需要 `officecli` binary；缺失时标记 unavailable。
+- `metadata.nanobot.requires.bins`：`officecli` 声明需要 `officecli` 命令；正常安装 Mybot 时 console script 与 `nanobot` 一起生成，首次执行再准备固定 binary。
 - `agents.defaults.disabledSkills`：可按 Skill 名分别禁用 `officecli` 或 `office-automation`。
 
 路由偏好写在两个 Skill 的 description 和正文中，不在 Runtime 写 Office 专用 if/else：
@@ -281,7 +284,15 @@ pytest tests/skills/test_office_weekly.py -q
 11 passed, 1 skipped
 ```
 
-skip 是未设置 `OFFICECLI_TEST_BIN` 时的真实 binary 集成 case；Python 路径、共享事实层、OfficeCLI contract/compiler/约束和独立开关测试都在普通 CI 中运行。
+普通 CI 不访问 GitHub，覆盖 launcher 的平台映射、checksum、缓存复用、篡改恢复和禁更环境；真实 binary 集成 case 可使用 launcher 已验证的缓存路径或显式 `OFFICECLI_TEST_BIN`。
+
+2026-07-16 launcher 修复回归：
+
+```text
+tests/skills/test_officecli_runtime.py: 10 passed
+OFFICECLI_TEST_BIN=venv/bin/officecli 的 P1/SkillLoader/WebUI 路由相关回归: 80 passed
+ruff check nanobot/: passed
+```
 
 ### Plan Tool 回归
 
@@ -311,7 +322,16 @@ OFFICECLI_TEST_BIN=/absolute/path/to/officecli \
   tests/skills/test_office_weekly.py::test_officecli_backend_real_binary -q
 ```
 
-测试不会自动安装或更新 OfficeCLI。binary 必须由开发或 CI 环境预先按 v1.0.135 和 checksum 准备。
+也可直接使用随包安装的 launcher：
+
+```bash
+officecli --version
+OFFICECLI_TEST_BIN="$(venv/bin/python -c 'from nanobot.officecli_runtime import ensure_officecli; print(ensure_officecli())')" \
+  venv/bin/python -m pytest \
+  tests/skills/test_office_weekly.py::test_officecli_backend_real_binary -q
+```
+
+launcher 只下载 contract 固定的 v1.0.135 并校验 checksum，不跟随 latest。
 
 ### 前端回归
 

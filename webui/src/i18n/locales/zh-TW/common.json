@@ -926,6 +926,11 @@
     "dialog": {
       "defaultProject": "預設工作區",
       "manual": "貼上路徑",
+      "browse": "瀏覽資料夾",
+      "up": "上一層",
+      "selectFolder": "選取此資料夾",
+      "empty": "此資料夾沒有可開啟的子資料夾。",
+      "truncated": "僅顯示前 200 個資料夾。",
       "manualPlaceholder": "/Users/name/project",
       "usePath": "使用路徑",
       "absolutePathRequired": "請輸入這台機器上的絕對資料夾路徑。"

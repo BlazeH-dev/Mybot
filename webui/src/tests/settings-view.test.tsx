@@ -99,6 +99,23 @@ function settingsPayload(): SettingsPayload {
   };
 }
 
+function modelReadySettingsPayload(): SettingsPayload {
+  return {
+    ...settingsPayload(),
+    providers: [{
+      name: "openai",
+      label: "OpenAI",
+      configured: true,
+      auth_type: "api_key",
+      api_key_required: true,
+      api_key_hint: "sk-…",
+      api_base: "https://api.openai.com/v1",
+      default_api_base: "https://api.openai.com/v1",
+      model_selectable: true,
+    }],
+  };
+}
+
 const installedAnyGen = {
   name: "anygen",
   display_name: "AnyGen",
@@ -313,11 +330,12 @@ describe("SettingsView Apps catalog", () => {
   });
 
   it("shows context window options in model settings", async () => {
+    const payload = modelReadySettingsPayload();
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/settings") return jsonResponse(settingsPayload());
+        if (url === "/api/settings") return jsonResponse(payload);
         if (url === "/api/settings/cli-apps") {
           return jsonResponse({ apps: [], installed_count: 0 });
         }
@@ -336,7 +354,7 @@ describe("SettingsView Apps catalog", () => {
     expect(screen.getByRole("button", { name: "256K" })).toBeInTheDocument();
   });
 
-  it("marks the current model as unconfigured when its provider needs setup", async () => {
+  it("shows provider setup instead of unusable model configurations", async () => {
     const payload: SettingsPayload = {
       ...settingsPayload(),
       agent: {
@@ -386,11 +404,75 @@ describe("SettingsView Apps catalog", () => {
 
     renderSettingsView({ initialSection: "models" });
 
-    expect((await screen.findAllByText("Not configured")).length).toBeGreaterThan(0);
-    expect(
-      screen.getAllByText("OpenAI Codex · openai-codex/gpt-5.1-codex").length,
-    ).toBeGreaterThan(0);
-    expect(screen.queryByRole("button", { name: "Use" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Set up a provider first")).toBeInTheDocument();
+    expect(screen.queryByText("Model configurations")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+  });
+
+  it("only lists model presets backed by configured providers", async () => {
+    const base = modelReadySettingsPayload();
+    const payload: SettingsPayload = {
+      ...base,
+      agent: {
+        ...base.agent,
+        model: "gpt-5.6-sol",
+        provider: "openai",
+        resolved_provider: "openai",
+        model_preset: "gpt-5-6-sol",
+      },
+      model_presets: [
+        ...base.model_presets,
+        {
+          ...base.model_presets[0],
+          name: "deepseek-v4-pro",
+          label: "DeepSeek V4 Pro",
+          model: "deepseek-v4-pro",
+          provider: "deepseek",
+          active: false,
+          is_default: false,
+          is_builtin: true,
+        },
+        {
+          ...base.model_presets[0],
+          name: "gpt-5-6-sol",
+          label: "GPT-5.6 Sol",
+          model: "gpt-5.6-sol",
+          provider: "openai",
+          active: true,
+          is_default: false,
+          is_builtin: true,
+        },
+      ],
+      providers: [
+        ...base.providers,
+        {
+          name: "deepseek",
+          label: "DeepSeek",
+          configured: false,
+          auth_type: "api_key",
+          api_key_required: true,
+          api_key_hint: null,
+          api_base: "https://api.deepseek.com",
+          default_api_base: "https://api.deepseek.com",
+          model_selectable: true,
+        },
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/settings") return jsonResponse(payload);
+        if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
+        if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }),
+    );
+
+    renderSettingsView({ initialSection: "models" });
+
+    expect(await screen.findByText("gpt-5.6-sol")).toBeInTheDocument();
+    expect(screen.queryByText("DeepSeek V4 Pro")).not.toBeInTheDocument();
   });
 
   it("keeps unsigned OAuth providers out of the active provider picker", async () => {
@@ -478,7 +560,7 @@ describe("SettingsView Apps catalog", () => {
     expect(screen.queryByRole("menuitem", { name: /GitHub Copilot/ })).not.toBeInTheDocument();
   });
 
-  it("does not fetch model lists for unsigned OAuth providers", async () => {
+  it("requires provider setup before exposing unsigned OAuth model picker", async () => {
     const payload: SettingsPayload = {
       ...settingsPayload(),
       agent: {
@@ -538,13 +620,8 @@ describe("SettingsView Apps catalog", () => {
 
     renderSettingsView({ initialSection: "models" });
 
-    fireEvent.click((await screen.findAllByRole("button", { name: "Edit" }))[0]);
-    const emptyModelTrigger = (await screen.findByText("Select model")).closest("button");
-    if (!emptyModelTrigger) throw new Error("model picker trigger was not found");
-    fireEvent.pointerDown(emptyModelTrigger);
-    expect(
-      await screen.findByText("Configure this provider before loading models."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Set up a provider first")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([input]) =>
         String(input).startsWith("/api/settings/provider-models"),
@@ -618,11 +695,12 @@ describe("SettingsView Apps catalog", () => {
   });
 
   it("can close the new configuration dialog without trapping the settings page", async () => {
+    const payload = modelReadySettingsPayload();
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === "/api/settings") return jsonResponse(settingsPayload());
+        if (url === "/api/settings") return jsonResponse(payload);
         if (url === "/api/settings/cli-apps") {
           return jsonResponse({ apps: [], installed_count: 0 });
         }
@@ -649,8 +727,68 @@ describe("SettingsView Apps catalog", () => {
     expect(addButton).toBeInTheDocument();
   });
 
+  it("shows provider setup before model configurations when no provider is ready", async () => {
+    const payload: SettingsPayload = {
+      ...settingsPayload(),
+      agent: { ...settingsPayload().agent, has_api_key: false },
+      providers: [{
+        name: "deepseek",
+        label: "DeepSeek",
+        configured: false,
+        auth_type: "api_key",
+        api_key_required: true,
+        api_key_hint: null,
+        api_base: "https://api.deepseek.com",
+        default_api_base: "https://api.deepseek.com",
+        model_selectable: true,
+      }],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/settings") return jsonResponse(payload);
+        if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
+        if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }),
+    );
+
+    renderSettingsView({ initialSection: "models" });
+
+    expect(await screen.findByText("Set up a provider first")).toBeInTheDocument();
+    expect(screen.getByText("DeepSeek")).toBeInTheDocument();
+    expect(screen.queryByText("Model configurations")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add configuration" })).not.toBeInTheDocument();
+  });
+
+  it("keeps model configuration pickers within the dialog grid", async () => {
+    const payload = modelReadySettingsPayload();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/settings") return jsonResponse(payload);
+        if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
+        if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }),
+    );
+
+    renderSettingsView({ initialSection: "models" });
+    fireEvent.click(await screen.findByRole("button", { name: "Add configuration" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "New model configuration" });
+    const pickerButtons = within(dialog)
+      .getAllByRole("button")
+      .filter((button) => button.getAttribute("aria-haspopup") === "menu");
+    expect(pickerButtons).toHaveLength(2);
+    expect(pickerButtons.every((button) => button.className.includes("w-full"))).toBe(true);
+    expect(dialog.innerHTML).toContain("sm:grid-cols-2");
+  });
+
   it("deletes custom model configurations but keeps built-ins protected", async () => {
-    const base = settingsPayload();
+    const base = modelReadySettingsPayload();
     const customPreset: SettingsPayload["model_presets"][number] = {
       ...base.model_presets[0],
       name: "custom-writing",

@@ -69,7 +69,11 @@ from nanobot.webui.sidebar_state import (
 from nanobot.webui.skills_api import webui_skill_detail_payload, webui_skills_payload
 from nanobot.webui.thread_disk import delete_webui_thread
 from nanobot.webui.transcript import build_webui_thread_response
-from nanobot.webui.workspaces import WebUIWorkspaceController
+from nanobot.webui.workspaces import (
+    WebUIWorkspaceController,
+    WorkspaceDirectoryError,
+    browse_workspace_directories,
+)
 
 if TYPE_CHECKING:
     from nanobot.bus.queue import MessageBus
@@ -462,6 +466,8 @@ class GatewayHTTPHandler:
             return self._handle_commands(request)
         if got == "/api/workspaces":
             return self._handle_workspaces(connection, request)
+        if got == "/api/workspaces/directories":
+            return self._handle_workspace_directories(connection, request)
         if got == "/api/webui/skills":
             return self._handle_webui_skills(request)
         m = re.match(r"^/api/webui/skills/([^/]+)$", got)
@@ -486,6 +492,21 @@ class GatewayHTTPHandler:
                 controls_available=self.workspace_controls_available(connection)
             )
         )
+
+    def _handle_workspace_directories(self, connection: Any, request: WsRequest) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        if not self.workspace_controls_available(connection):
+            return _http_error(403, "workspace controls are localhost-only")
+        path = _query_first(_parse_query(request.path), "path")
+        try:
+            payload = browse_workspace_directories(
+                path,
+                default_workspace=self.workspaces.default_scope().project_path,
+            )
+        except WorkspaceDirectoryError as e:
+            return _http_error(e.status, str(e))
+        return _http_json_response(payload)
 
     def _handle_webui_skills(self, request: WsRequest) -> Response:
         if not self.check_api_token(request):

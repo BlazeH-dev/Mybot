@@ -926,6 +926,11 @@
     "dialog": {
       "defaultProject": "Default workspace",
       "manual": "Pegar ruta",
+      "browse": "Explorar carpetas",
+      "up": "Subir",
+      "selectFolder": "Elegir esta carpeta",
+      "empty": "No hay carpetas para abrir aquí.",
+      "truncated": "Solo se muestran las primeras 200 carpetas.",
       "manualPlaceholder": "/Users/name/project",
       "usePath": "Use Path",
       "absolutePathRequired": "Enter an absolute folder path on this machine."

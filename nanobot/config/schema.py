@@ -433,14 +433,6 @@ class Config(BaseSettings):
         from nanobot.providers.registry import PROVIDERS, find_by_name
 
         resolved = preset or self.resolve_preset()
-        forced = resolved.provider
-        if forced != "auto":
-            spec = find_by_name(forced)
-            if spec:
-                p = getattr(self.providers, spec.name, None)
-                return (p, spec.name) if p else (None, None)
-            return None, None
-
         model_lower = (model or resolved.model).lower()
         model_normalized = model_lower.replace("-", "_")
         model_prefix = model_lower.split("/", 1)[0] if "/" in model_lower else ""
@@ -450,7 +442,8 @@ class Config(BaseSettings):
             kw = kw.lower()
             return kw in model_lower or kw.replace("-", "_") in model_normalized
 
-        # Explicit provider prefix wins — prevents `github-copilot/...codex` matching openai_codex.
+        # An explicit model prefix wins over a stale/default provider field and
+        # prevents `github-copilot/...codex` from matching openai_codex by keyword.
         for spec in PROVIDERS:
             if spec.is_transcription_only:
                 continue
@@ -458,6 +451,14 @@ class Config(BaseSettings):
             if p and model_prefix and normalized_prefix == spec.name:
                 if spec.is_oauth or spec.is_local or spec.is_direct or p.api_key:
                     return p, spec.name
+
+        forced = resolved.provider
+        if forced != "auto":
+            spec = find_by_name(forced)
+            if spec:
+                p = getattr(self.providers, spec.name, None)
+                return (p, spec.name) if p else (None, None)
+            return None, None
 
         # Match by keyword (order follows PROVIDERS registry)
         for spec in PROVIDERS:

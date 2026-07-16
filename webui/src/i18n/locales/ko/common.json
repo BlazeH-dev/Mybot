@@ -926,6 +926,11 @@
     "dialog": {
       "defaultProject": "Default workspace",
       "manual": "경로 붙여넣기",
+      "browse": "폴더 찾아보기",
+      "up": "상위",
+      "selectFolder": "이 폴더 선택",
+      "empty": "여기에는 열 수 있는 폴더가 없습니다.",
+      "truncated": "처음 200개 폴더만 표시됩니다.",
       "manualPlaceholder": "/Users/name/project",
       "usePath": "Use Path",
       "absolutePathRequired": "Enter an absolute folder path on this machine."

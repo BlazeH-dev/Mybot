@@ -177,6 +177,26 @@ def test_list_skills_filter_unavailable_includes_when_bin_requirement_met(
     ]
 
 
+def test_packaged_console_script_resolves_next_to_active_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripts_dir = tmp_path / "venv" / "bin"
+    scripts_dir.mkdir(parents=True)
+    python = scripts_dir / "python"
+    python.touch()
+    officecli = scripts_dir / "officecli"
+    officecli.write_text("#!/bin/sh\n", encoding="utf-8")
+    officecli.chmod(0o755)
+
+    monkeypatch.setattr("nanobot.agent.skills.sys.executable", str(python))
+    monkeypatch.setattr("nanobot.agent.skills.shutil.which", lambda _cmd: None)
+
+    from nanobot.agent.skills import _which_command
+
+    assert _which_command("officecli") == str(officecli)
+    assert _which_command("unrelated-command") is None
+
+
 def test_list_skills_filter_unavailable_false_keeps_unmet_requirements(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

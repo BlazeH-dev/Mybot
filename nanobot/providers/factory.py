@@ -9,6 +9,7 @@ from nanobot.config.schema import Config, InlineFallbackConfig, ModelPresetConfi
 from nanobot.providers.base import LLMProvider
 from nanobot.providers.fallback_provider import FallbackProvider
 from nanobot.providers.registry import find_by_name
+from nanobot.providers.unconfigured_provider import UnconfiguredProvider
 
 
 @dataclass(frozen=True)
@@ -230,6 +231,41 @@ def build_provider_snapshot(
     ]
     return ProviderSnapshot(
         provider=make_provider(config, preset=resolved),
+        model=resolved.model,
+        context_window_tokens=min([resolved.context_window_tokens, *fallback_windows]),
+        signature=provider_signature(config, preset=resolved),
+    )
+
+
+def build_startup_provider_snapshot(
+    config: Config,
+    *,
+    preset_name: str | None = None,
+    preset: ModelPresetConfig | None = None,
+) -> ProviderSnapshot:
+    """Build a gateway-safe snapshot, tolerating only a missing API key.
+
+    The normal runtime loader intentionally remains strict.  Once WebUI saves
+    credentials, the next incoming turn reloads a real provider snapshot.
+    """
+    try:
+        if preset_name is None and preset is None:
+            return build_provider_snapshot(config)
+        return build_provider_snapshot(config, preset_name=preset_name, preset=preset)
+    except ValueError as exc:
+        if not str(exc).startswith("No API key configured for provider '"):
+            raise
+
+    resolved = _resolve_model_preset(config, preset_name=preset_name, preset=preset)
+    provider_name = config.get_provider_name(resolved.model, preset=resolved) or resolved.provider
+    fallback_windows = [
+        fallback.context_window_tokens
+        for fallback in _resolve_fallback_presets(config, resolved)
+    ]
+    provider = UnconfiguredProvider(provider_name, resolved.model)
+    provider.generation = resolved.to_generation_settings()
+    return ProviderSnapshot(
+        provider=provider,
         model=resolved.model,
         context_window_tokens=min([resolved.context_window_tokens, *fallback_windows]),
         signature=provider_signature(config, preset=resolved),

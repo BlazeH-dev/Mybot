@@ -926,6 +926,11 @@
     "dialog": {
       "defaultProject": "Default workspace",
       "manual": "パスを貼り付け",
+      "browse": "フォルダーを参照",
+      "up": "上へ",
+      "selectFolder": "このフォルダーを選択",
+      "empty": "ここには開けるフォルダーがありません。",
+      "truncated": "最初の 200 フォルダーのみ表示しています。",
       "manualPlaceholder": "/Users/name/project",
       "usePath": "Use Path",
       "absolutePathRequired": "Enter an absolute folder path on this machine."

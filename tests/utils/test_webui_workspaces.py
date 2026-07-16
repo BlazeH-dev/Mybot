@@ -1,15 +1,53 @@
 import json
 
+import pytest
+
 from nanobot.security.workspace_access import default_workspace_scope
 from nanobot.session.manager import SessionManager
 from nanobot.webui.workspaces import (
     WebUIWorkspaceController,
+    WorkspaceDirectoryError,
+    browse_workspace_directories,
     read_webui_default_access_mode,
     read_webui_workspace_state,
     webui_workspace_state_path,
     write_webui_default_access_mode,
     workspaces_payload,
 )
+
+
+def test_browse_workspace_directories_lists_only_child_folders(tmp_path) -> None:
+    default = tmp_path / "default"
+    default.mkdir()
+    (default / "zeta").mkdir()
+    (default / "Alpha").mkdir()
+    (default / "note.txt").write_text("not a folder", encoding="utf-8")
+
+    payload = browse_workspace_directories(None, default_workspace=default)
+
+    assert payload == {
+        "path": str(default.resolve()),
+        "parent_path": str(tmp_path.resolve()),
+        "directories": [
+            {"name": "Alpha", "path": str((default / "Alpha").resolve())},
+            {"name": "zeta", "path": str((default / "zeta").resolve())},
+        ],
+        "truncated": False,
+    }
+
+
+def test_browse_workspace_directories_rejects_missing_and_non_directory_paths(tmp_path) -> None:
+    default = tmp_path / "default"
+    default.mkdir()
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("x", encoding="utf-8")
+
+    with pytest.raises(WorkspaceDirectoryError, match="does not exist"):
+        browse_workspace_directories(str(tmp_path / "missing"), default_workspace=default)
+    with pytest.raises(WorkspaceDirectoryError, match="not a directory"):
+        browse_workspace_directories(str(file_path), default_workspace=default)
+    with pytest.raises(WorkspaceDirectoryError, match="must be absolute"):
+        browse_workspace_directories("relative/path", default_workspace=default)
 
 
 def test_workspace_state_defaults_when_file_missing(tmp_path, monkeypatch) -> None:

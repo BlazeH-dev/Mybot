@@ -4,18 +4,36 @@ import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 
 import yaml
 
 # Default builtin skills directory (relative to this file)
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
+_PACKAGED_CONSOLE_SCRIPTS = {"officecli"}
 
 # Opening ---, YAML body (group 1), closing --- on its own line; supports CRLF.
 _STRIP_SKILL_FRONTMATTER = re.compile(
     r"^---\s*\r?\n(.*?)\r?\n---\s*\r?\n?",
     re.DOTALL,
 )
+
+
+def _which_command(command: str) -> str | None:
+    """Resolve a requirement from PATH or the active Python scripts directory."""
+    if resolved := shutil.which(command):
+        return resolved
+    if command not in _PACKAGED_CONSOLE_SCRIPTS:
+        return None
+
+    scripts_dir = Path(sys.executable).parent
+    suffixes = (".exe", ".cmd", ".bat", "") if os.name == "nt" else ("",)
+    for suffix in suffixes:
+        candidate = scripts_dir / f"{command}{suffix}"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 
 class SkillsLoader:
@@ -147,7 +165,7 @@ class SkillsLoader:
         required_bins = requires.get("bins", [])
         required_env_vars = requires.get("env", [])
         return ", ".join(
-            [f"CLI: {command_name}" for command_name in required_bins if not shutil.which(command_name)]
+            [f"CLI: {command_name}" for command_name in required_bins if not _which_command(command_name)]
             + [f"ENV: {env_name}" for env_name in required_env_vars if not os.environ.get(env_name)]
         )
 
@@ -165,7 +183,7 @@ class SkillsLoader:
         return {
             "bins": bins,
             "env": env,
-            "missing_bins": [value for value in bins if not shutil.which(value)],
+            "missing_bins": [value for value in bins if not _which_command(value)],
             "missing_env": [value for value in env if not os.environ.get(value)],
         }
 
@@ -209,7 +227,7 @@ class SkillsLoader:
         requires = skill_meta.get("requires", {})
         required_bins = requires.get("bins", [])
         required_env_vars = requires.get("env", [])
-        return all(shutil.which(cmd) for cmd in required_bins) and all(
+        return all(_which_command(cmd) for cmd in required_bins) and all(
             os.environ.get(var) for var in required_env_vars
         )
 

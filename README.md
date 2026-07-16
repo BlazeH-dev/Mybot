@@ -17,6 +17,9 @@ python3.11 -m venv venv
 source venv/bin/activate
 pip install -e .
 
+# 安装后会同时提供 officecli 启动器；首次使用时自动下载并校验固定版本 v1.0.135
+officecli --version
+
 # 2. 构建前端
 cd webui && bun install && bun run build && cd ..
 
@@ -30,6 +33,13 @@ cd webui && bun install && bun run build && cd ..
 # 4. 启动
 nanobot gateway
 ```
+
+以后可直接运行项目根目录的 `./start_gateway.sh`，无需重复进入目录和激活虚拟环境；也可以双击 `start_gateway.command` 在 macOS Terminal 中启动。
+
+OfficeCLI 不使用上游的 latest 安装脚本。项目启动器会根据
+`nanobot/skills/officecli/references/officecli-runtime.json` 选择当前平台资产，校验
+SHA-256，缓存到 `~/.nanobot/officecli/`，并在每次执行时关闭上游自动更新。首次使用需
+联网；下载完成后可直接复用本地缓存。
 
 启动后浏览器访问 **http://127.0.0.1:8765/webui**
 

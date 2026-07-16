@@ -80,6 +80,7 @@
   },
   "runtime_environment": {
     "OFFICECLI_SKIP_UPDATE": "1",
+    "OFFICECLI_NO_AUTO_RESIDENT": "1",
     "OFFICECLI_RESIDENT_FLUSH": "each"
   }
 }

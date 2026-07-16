@@ -58,7 +58,7 @@ nanobot/runtime/
   evals/             确定性评测与报告
 ```
 
-硬边界继续复用 `nanobot/security/`、workspace sandbox 和网络校验；`nanobot/runtime/` 负责策略、状态、审计和恢复，不取代硬边界。
+硬边界继续复用 `nanobot/security/`、现有 `WorkspaceScope` / workspace sandbox 和网络校验；`nanobot/runtime/` 负责策略、状态、审计和恢复，不取代或平行重建硬边界。WebUI 现有 Default Permission / Full Access 是会话级 workspace access profile；P3 将其作为 policy 输入，而不是另建一套路径或沙箱权限模型。
 
 ## 4. 不可破坏的设计契约
 
@@ -68,7 +68,7 @@ nanobot/runtime/
 - manifest 缺失时兼容旧 Skill；manifest 存在但损坏时仅该 Skill fail closed。
 - `disabledSkills` 是唯一启用/禁用入口，不建立平行配置。
 - 普通 Office 请求默认优先 `officecli`；用户明确要求 Python 时使用 `office-automation`。
-- OfficeCLI 版本、平台资产和 checksum 只有 provider contract 一个真相源；任务中不得静默安装/更新。
+- OfficeCLI 版本、平台资产和 checksum 只有 provider contract 一个真相源；Mybot 安装的同名 launcher 可在首次使用时自动准备并校验固定资产，Agent 任务不得调用上游 latest/install/update。
 - 定量结论必须来自 `verified_facts.json`；纯格式、提取和批注任务不强制跑事实层。
 
 ### 4.2 Plan 契约
@@ -78,13 +78,15 @@ nanobot/runtime/
 - WebUI `execution_mode=plan_only` 只开放 plan 与只读检查工具，create 后停在 `awaiting_confirmation`，同回合不得 confirm 或执行。
 - 普通 WebUI 复杂任务 create 后可自动激活；激活时 `approved_plan_hash` 必须等于当前 plan hash，并记录 `approval.mode=automatic`。
 - 手动/仅规划计划必须显式确认后激活；步骤依赖和 expected artifacts 由工具硬校验。
-- 自动激活只表示允许按计划推进，不批准高风险工具；写用户文件、外发、远程写等仍独立经过 P3 policy/approval。
+- 自动激活只表示允许按计划推进，不批准高风险工具；外发和远程写仍独立经过 P3 policy/approval。本地已有文件写入与高风险本地 Shell 是否 ask 由当前 WebUI access profile 决定，但无论何种 profile 都必须经过 P3 OCC / hard deny。
 - plan 是 artifact 和后续 checkpoint 的根；动态摘要只放用户消息尾部 Runtime Context，工具定义保持稳定以利缓存。
 
 ### 4.3 Policy 与三档 HITL
 
 - 工具调用先完成同步参数校验，再经过异步 policy gate：`allow / ask / deny`。
+- P3 复用当前会话的 `WorkspaceScope`：Default Permission 保持 workspace 受限；Full Access 允许项目外的本地文件/Shell 访问，并作为已选择的本地操作预授权 profile，而非一次性工具 approval。
 - workspace、SSRF、敏感信息等 hard deny 不能被配置、Skill 或用户审批放宽。
+- Default Permission 下修改已有本地文件和高风险本地 Shell 默认 ask；Full Access 下这两类本地操作可 allow，但仍受 OCC、command deny pattern 和 hard deny 约束。消息/邮件、远程写和其他外部副作用在两种 profile 下都保持 ask；审批必须参数绑定且超时拒绝。
 - `InteractionRequest` 统一承接 question、approval、需要人工确认的 plan confirmation、recovery decision：
   - `required`：没有明确回答就不继续。
   - `auto_resolve`：非阻塞偏好问题到 deadline 后使用确定性默认值，或让模型按最佳判断继续。

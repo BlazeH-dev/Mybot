@@ -25,6 +25,65 @@ _MAX_STATE_FILE_BYTES = 128 * 1024
 _DEFAULT_ACCESS_MODES = {"default", "full"}
 _LEGACY_RESTRICTED_DEFAULT_ACCESS_MODE = "restricted"
 _WEBUI_SCOPE_CHANNEL = "websocket"
+_MAX_BROWSE_DIRECTORIES = 200
+
+
+class WorkspaceDirectoryError(ValueError):
+    """A directory cannot be displayed by the local project picker."""
+
+    def __init__(self, message: str, *, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def browse_workspace_directories(
+    raw_path: str | None,
+    *,
+    default_workspace: Path,
+) -> dict[str, Any]:
+    """List immediate child directories for the browser-hosted project picker.
+
+    The endpoint that exposes this result is localhost-only.  It deliberately
+    resolves the requested directory and returns only directories, never file
+    names or file contents.
+    """
+    candidate = raw_path.strip() if isinstance(raw_path, str) else ""
+    if "\x00" in candidate:
+        raise WorkspaceDirectoryError("invalid folder path")
+    path = Path(candidate).expanduser() if candidate else default_workspace
+    if not path.is_absolute():
+        raise WorkspaceDirectoryError("folder path must be absolute")
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as e:
+        raise WorkspaceDirectoryError("folder does not exist") from e
+    if not resolved.is_dir():
+        raise WorkspaceDirectoryError("folder is not a directory")
+
+    directories: list[dict[str, str]] = []
+    try:
+        with os.scandir(resolved) as entries:
+            for entry in entries:
+                try:
+                    if not entry.is_dir(follow_symlinks=True):
+                        continue
+                    entry_path = Path(entry.path).resolve(strict=True)
+                except OSError:
+                    continue
+                directories.append({"name": entry.name, "path": str(entry_path)})
+    except PermissionError as e:
+        raise WorkspaceDirectoryError("folder cannot be read", status=403) from e
+    except OSError as e:
+        raise WorkspaceDirectoryError("folder cannot be read") from e
+
+    directories.sort(key=lambda item: (item["name"].casefold(), item["name"]))
+    parent = None if resolved.parent == resolved else str(resolved.parent)
+    return {
+        "path": str(resolved),
+        "parent_path": parent,
+        "directories": directories[:_MAX_BROWSE_DIRECTORIES],
+        "truncated": len(directories) > _MAX_BROWSE_DIRECTORIES,
+    }
 
 
 def webui_workspace_state_path() -> Path:

@@ -3,7 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ThreadComposer } from "@/components/thread/ThreadComposer";
+import type { NanobotClient } from "@/lib/nanobot-client";
 import type { CliAppInfo, McpPresetInfo, SlashCommand } from "@/lib/types";
+import { ClientProvider } from "@/providers/ClientProvider";
 
 vi.mock("@/lib/imageEncode", () => ({
   encodeImage: vi.fn(async (file: File) => ({
@@ -731,6 +733,66 @@ describe("ThreadComposer", () => {
 
     expect(await screen.findByRole("menuitem", { name: /Default workspace/ })).toBeInTheDocument();
     expect(screen.getByLabelText("Paste path")).toBeInTheDocument();
+  });
+
+  it("browses folders for project selection in the browser WebUI", async () => {
+    const onWorkspaceScopeChange = vi.fn();
+    const defaultScope = {
+      project_path: "/Users/test/.nanobot/workspace",
+      project_name: "workspace",
+      access_mode: "full" as const,
+      restrict_to_workspace: false,
+    };
+    const folders = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => "application/json" },
+        json: async () => ({
+          path: "/Users/test/.nanobot/workspace",
+          parent_path: "/Users/test/.nanobot",
+          directories: [{ name: "project-alpha", path: "/Users/test/project-alpha" }],
+          truncated: false,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => "application/json" },
+        json: async () => ({
+          path: "/Users/test/project-alpha",
+          parent_path: "/Users/test",
+          directories: [],
+          truncated: false,
+        }),
+      });
+    vi.stubGlobal("fetch", folders);
+
+    render(
+      <ClientProvider client={{} as NanobotClient} token="tok">
+        <ThreadComposer
+          onSend={vi.fn()}
+          placeholder="Ask anything..."
+          variant="hero"
+          workspaceScope={defaultScope}
+          workspaceDefaultScope={defaultScope}
+          workspaceControls={{ can_change_project: true, can_use_full_access: true }}
+          onWorkspaceScopeChange={onWorkspaceScopeChange}
+        />
+      </ClientProvider>,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Choose project" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Browse folders" }));
+    fireEvent.click(await screen.findByRole("button", { name: "project-alpha" }));
+    await waitFor(() => {
+      expect(screen.getByTitle("/Users/test/project-alpha")).toBeInTheDocument();
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Select this folder" }));
+
+    expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({
+      project_path: "/Users/test/project-alpha",
+      project_name: "project-alpha",
+    }));
+    expect(folders).toHaveBeenCalledTimes(2);
   });
 
   it("shows turn run timer when runStartedAt is set", () => {

@@ -3,6 +3,23 @@
 The following third-party components are redistributed as part of the packaged
 nanobot Python distribution (`pip install nanobot-ai`).
 
+Mybot also contains launchers for optional third-party runtimes that are downloaded
+on demand rather than bundled in the Python distribution.
+
+---
+
+## OfficeCLI — Office document runtime (Apache-2.0)
+
+- **Source**: https://github.com/iOfficeAI/OfficeCLI
+- **Version**: v1.0.135
+- **Delivery**: downloaded on first use from the upstream GitHub release, then
+  verified against the SHA-256 digest in
+  `nanobot/skills/officecli/references/officecli-runtime.json`
+- **License**: Apache License 2.0
+
+OfficeCLI is not committed to or bundled inside the Mybot Python package. The
+platform-specific upstream binary is cached in the user's nanobot data directory.
+
 ---
 
 ## Tabler Icons — interface icons (MIT)

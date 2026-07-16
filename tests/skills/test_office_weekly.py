@@ -88,7 +88,7 @@ def test_independent_office_skills_are_discoverable_but_shared_core_is_not() -> 
 
 def test_office_skill_availability_and_switches_are_independent(monkeypatch: Any) -> None:
     monkeypatch.setattr(
-        "nanobot.agent.skills.shutil.which",
+        "nanobot.agent.skills._which_command",
         lambda command: None if command == "officecli" else f"/usr/bin/{command}",
     )
 
@@ -111,6 +111,7 @@ def test_officecli_runtime_contract_is_pinned() -> None:
     assert contract["provider"] == "officecli"
     assert contract["validated_version"] == "1.0.135"
     assert contract["allowed_batch_operations"] == ["add", "set"]
+    assert contract["runtime_environment"]["OFFICECLI_NO_AUTO_RESIDENT"] == "1"
     assert {"raw-set", "plugins", "mcp", "watch", "install"}.issubset(
         contract["capabilities"]
     )

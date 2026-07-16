@@ -1,7 +1,17 @@
 # P3 Policy、三档 HITL 与最小文件 OCC
 
 > 状态：待执行。文件租约不属于本阶段必做。
-> 出口：工具执行前统一 allow/ask/deny；等待可持久化恢复；危险审批超时不放行；已有文件冲突拦截率 100%。
+> 出口：复用既有 workspace access / hard boundary 的工具执行前统一 allow/ask/deny；等待可持久化恢复；危险审批超时不放行；已有文件冲突拦截率 100%。
+
+## 0. 现有能力与复用边界
+
+P3 不是重建权限、路径或沙箱系统。当前 WebUI 已将每个会话的项目目录和
+`restricted|full` access mode 持久化为 `WorkspaceScope`；文件、Shell、网络校验和
+workspace sandbox 已消费该 scope 或现有 `nanobot/security/` hard boundary。
+
+- 必须复用 `WorkspaceScope`、`current_tool_workspace`、`workspace_policy`、现有 SSRF/command guard 与 `agent/tools/file_state.py`；不得在 `runtime/` 重复解析路径、判断 workspace 边界或重写 sandbox。
+- P3 policy 接收已解析的 scope 和规范化参数，负责风险分类、`allow / ask / deny`、审计、InteractionRequest 和恢复；hard boundary 仍由原有安全模块最终执行。
+- 当前 WebUI 的 Default Permission / Full Access 是会话级 access profile，不是参数绑定的一次性 approval；P3 不新增平行的 access-mode 配置或第二个权限菜单。
 
 ## 1. Policy Gate
 
@@ -18,16 +28,30 @@ PermissionDecision(
 )
 ```
 
-输入包含工具、规范化参数、request/task/plan、父任务约束和配置。规则优先级：
+输入包含工具、规范化参数、当前 `WorkspaceScope`、request/task/plan、父任务约束和配置。规则优先级：
 
 1. workspace、SSRF、敏感信息 hard deny，任何配置和审批都不能放宽。
 2. 配置 deny。
 3. 精确参数绑定的一次性 approval。
-4. 配置 ask/allow 与安全默认值。
+4. 当前 access profile 的本地操作规则。
+5. 配置 ask/allow 与安全默认值。
+
+### WebUI access profile 语义
+
+| 操作 | Default Permission（`restricted`） | Full Access（`full`） |
+| --- | --- | --- |
+| 项目外本地文件与 Shell 工作目录 | deny | allow |
+| 修改已有本地文件 | ask + OCC | allow + OCC |
+| 高风险本地 Shell | ask | allow，仍受 command deny pattern / hard deny 约束 |
+| 消息、邮件、远程写等外部副作用 | ask | ask |
+| SSRF、敏感信息与其他 hard deny | deny | deny |
+
+Full Access 是用户在当前 WebUI 会话中明确选择的本地访问预授权，不会绕过 OCC、
+hard deny，也不自动批准外部副作用；若工具名、目标、参数或 plan 发生变化，已有的一次性 approval 仍不可复用。
 
 ### 接线
 
-- `ToolRegistry.prepare_call` 只做同步解析、转换和 schema 校验。
+- `ToolRegistry.prepare_call` 只做同步解析、转换和 schema 校验；不得复制 workspace/path/sandbox 判定。
 - Runner/Runtime 在实际执行前调用异步 policy gate，负责持久化和事件 I/O。
 - deny 返回稳定结构化错误；allow 执行；ask 不执行工具，创建 approval。
 - 每次决策先写本地 audit，P5 接入完整 trace。
@@ -59,7 +83,7 @@ status: pending|answered|approved|denied|timed_out|expired|cancelled|superseded|
 
 - `required`：必要参数、文件、不可推断选择、需要人工确认的 plan、uncertain recovery。无回答就不继续，只能回答、取消或 `/stop`。
 - `auto_resolve`：非阻塞偏好问题，deadline 建议 60–240 秒。到期优先用声明的确定性默认值，否则返回 `timed_out` 让模型最佳判断；不得伪造用户答案。
-- `expire_and_deny`：修改用户原文件、消息/邮件、高风险 shell、远程写操作。到期 expired/denied，原工具不得执行。
+- `expire_and_deny`：Default Permission 下修改用户原文件和高风险本地 Shell，以及两种 profile 下的消息/邮件、远程写操作。到期 expired/denied，原工具不得执行；Full Access 下允许的本地写入仍必须先通过 OCC。
 
 普通聊天不能隐式消费 approval。客户端响应必须包含 request id、expected revision 和幂等键。
 
@@ -89,7 +113,7 @@ target / risk / reason / expires_at
 - plan 的自动激活状态不能替代工具 approval；自动 plan-and-execute 仍逐次经过 policy gate。
 - WebSocket 不是状态真相源。
 
-OfficeCLI 基线：只读 help/view/get/query/validate 通常 allow；任务目录新产物的常规 DOM 操作可 allow；修改用户文件、raw、MCP/plugin/install/update/config/watch 按参数 ask/deny；硬边界始终 deny。
+OfficeCLI 基线：只读 help/view/get/query/validate 通常 allow；任务目录新产物的常规 DOM 操作可 allow；修改用户文件与高风险本地 raw 操作按 access profile 走 ask/allow 且必须保留 OCC；MCP/plugin/install/update/config/watch 与其他外部副作用按参数 ask/deny；硬边界始终 deny。
 
 ## 4. 最小文件 OCC
 
@@ -111,6 +135,8 @@ OfficeCLI 基线：只读 help/view/get/query/validate 通常 allow；任务目�
 ## 测试与出口
 
 - hard deny 不能被配置、Skill、approval 或 child 放宽。
+- 同一工具调用在 Default / Full profile 下符合上述矩阵；Full Access 不绕过 OCC、SSRF、敏感信息、command deny pattern 或外部副作用审批。
+- policy 只消费现有 `WorkspaceScope` 与安全模块结果，不创建第二套 workspace/path/sandbox resolver。
 - required 不回答不继续；auto_resolve 到期恢复；expire_and_deny 到期不执行。
 - 等待期间 provider 不被调用；回答/deadline 只恢复一次，重复、迟到和错误 revision 被拒。
 - approval 的 approve/deny/expire、参数/计划 hash mismatch 和一次性消费通过。

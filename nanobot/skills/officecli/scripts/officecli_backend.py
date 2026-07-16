@@ -6,12 +6,14 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from nanobot.officecli_runtime import OFFICECLI_DIR_ENV, get_officecli_runtime_dir
 from nanobot.skills._shared.office_core.common import (
     load_facts,
     read_json,
@@ -379,37 +381,143 @@ class _OfficeCliRunner:
         self.info = info
         self.timeout_seconds = timeout_seconds
         self._home = tempfile.TemporaryDirectory(prefix="mybot-officecli-")
+        runtime_dir = os.environ.get(OFFICECLI_DIR_ENV) or str(get_officecli_runtime_dir())
+        runtime_environment = OFFICECLI_CONTRACT.get("runtime_environment", {})
+        contract_env = (
+            {str(key): str(value) for key, value in runtime_environment.items()}
+            if isinstance(runtime_environment, dict)
+            else {}
+        )
         self.env = {
             **os.environ,
+            **contract_env,
             "HOME": self._home.name,
-            "OFFICECLI_SKIP_UPDATE": "1",
-            "OFFICECLI_RESIDENT_FLUSH": "each",
+            OFFICECLI_DIR_ENV: runtime_dir,
         }
 
     def close(self) -> None:
         self._home.cleanup()
 
-    def run(self, args: list[str], *, accept_failure: bool = False) -> dict[str, Any]:
-        result = subprocess.run(
-            [self.info.binary, *args, "--json"],
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=self.timeout_seconds,
-            env=self.env,
-        )
+    @staticmethod
+    def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+        if process.poll() is not None:
+            return
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+            )
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
         try:
-            payload = json.loads(result.stdout) if result.stdout.strip() else {}
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            if os.name == "nt":
+                process.kill()
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            process.wait(timeout=3)
+
+    @staticmethod
+    def _completed_output_exists(path: Path | None) -> bool:
+        if path is None or not path.is_file() or path.stat().st_size == 0:
+            return False
+        if path.suffix.lower() == ".png":
+            with path.open("rb") as handle:
+                return handle.read(8) == b"\x89PNG\r\n\x1a\n"
+        return True
+
+    def run(
+        self,
+        args: list[str],
+        *,
+        accept_failure: bool = False,
+        timeout_seconds: int | None = None,
+        completed_output_path: Path | None = None,
+    ) -> dict[str, Any]:
+        # Some OfficeCLI view commands start a browser helper. A descendant may keep
+        # inherited stdout/stderr pipes open after the CLI itself exits, which makes
+        # subprocess.run(capture_output=True) wait until timeout despite a completed
+        # screenshot. Regular temporary files avoid that pipe-lifetime coupling.
+        with (
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdout_file,
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file,
+        ):
+            process = subprocess.Popen(
+                [self.info.binary, *args, "--json"],
+                text=True,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                env=self.env,
+                start_new_session=os.name != "nt",
+                creationflags=(
+                    subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+                ),
+            )
+            timeout = timeout_seconds or self.timeout_seconds
+            timed_out_after_output = False
+            try:
+                returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                self._terminate_process_tree(process)
+                if not self._completed_output_exists(completed_output_path):
+                    stderr_file.seek(0)
+                    detail = stderr_file.read().strip()
+                    suffix = f": {detail}" if detail else ""
+                    raise OfficeCliBackendError(
+                        f"OfficeCLI {args[0]!r} timed out after {timeout}s{suffix}"
+                    ) from None
+                returncode = 124
+                timed_out_after_output = True
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read()
+            stderr = stderr_file.read()
+        if timed_out_after_output:
+            payload = {
+                "success": True,
+                "data": str(completed_output_path),
+                "message": "Output completed; terminated a lingering OfficeCLI child process.",
+            }
+            return {
+                "argv": args,
+                "exit_code": returncode,
+                "stdout": payload,
+                "stderr": stderr.strip(),
+                "timed_out_after_output": True,
+            }
+        try:
+            payload = json.loads(stdout) if stdout.strip() else {}
         except json.JSONDecodeError as exc:
+            if returncode == 0 and self._completed_output_exists(completed_output_path):
+                payload = {
+                    "success": True,
+                    "data": str(completed_output_path),
+                    "message": stdout.strip() or str(completed_output_path),
+                }
+                return {
+                    "argv": args,
+                    "exit_code": returncode,
+                    "stdout": payload,
+                    "stderr": stderr.strip(),
+                    "unstructured_output": True,
+                }
             raise OfficeCliBackendError(
-                f"OfficeCLI returned invalid JSON for {args[0]!r}: {result.stdout[:500]!r}"
+                f"OfficeCLI returned invalid JSON for {args[0]!r}: {stdout[:500]!r}"
             ) from exc
 
-        success = result.returncode == 0 and payload.get("success") is not False
+        success = returncode == 0 and payload.get("success") is not False
         if not success and not accept_failure:
-            detail = payload.get("message") or result.stderr.strip() or result.stdout.strip()
+            detail = payload.get("message") or stderr.strip() or stdout.strip()
             raise OfficeCliBackendError(
-                f"OfficeCLI {args[0]!r} failed with exit {result.returncode}: {detail}"
+                f"OfficeCLI {args[0]!r} failed with exit {returncode}: {detail}"
             )
         serialized = json.dumps(payload, ensure_ascii=False)
         if "WARNING: UNSUPPORTED" in serialized:
@@ -419,9 +527,9 @@ class _OfficeCliRunner:
             )
         return {
             "argv": args,
-            "exit_code": result.returncode,
+            "exit_code": returncode,
             "stdout": payload,
-            "stderr": result.stderr.strip(),
+            "stderr": stderr.strip(),
         }
 
 
@@ -478,7 +586,9 @@ def render_with_officecli(
             preview_dir.mkdir(parents=True, exist_ok=True)
             preview_path = preview_dir / f"{output_path.stem}.png"
             screenshot = runner.run(
-                ["view", str(output_path), "screenshot", "-o", str(preview_path)]
+                ["view", str(output_path), "screenshot", "-o", str(preview_path)],
+                timeout_seconds=30,
+                completed_output_path=preview_path,
             )
             events.append(screenshot)
             previews = [str(path) for path in sorted(preview_dir.glob(f"{output_path.stem}*.png"))]

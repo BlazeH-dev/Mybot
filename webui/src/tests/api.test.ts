@@ -14,6 +14,7 @@ import {
   fetchSkillDetail,
   fetchSkills,
   fetchWebuiThread,
+  fetchWorkspaceDirectories,
   fetchWorkspaces,
   importMcpConfig,
   listSessions,
@@ -516,6 +517,27 @@ describe("webui API helpers", () => {
     await expect(fetchWorkspaces("tok")).resolves.toEqual(payload);
     expect(fetch).toHaveBeenCalledWith(
       "/api/workspaces",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+      }),
+    );
+  });
+
+  it("fetches directories for the browser project picker", async () => {
+    const payload = {
+      path: "/Users/me/projects",
+      parent_path: "/Users/me",
+      directories: [{ name: "mybot", path: "/Users/me/projects/mybot" }],
+      truncated: false,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => payload,
+    } as Response);
+
+    await expect(fetchWorkspaceDirectories("tok", payload.path)).resolves.toEqual(payload);
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/workspaces/directories?path=%2FUsers%2Fme%2Fprojects",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
       }),

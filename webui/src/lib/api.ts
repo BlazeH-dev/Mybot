@@ -19,6 +19,7 @@ import type {
   TranscriptionSettingsUpdate,
   WebSearchSettingsUpdate,
   WorkspacesPayload,
+  WorkspaceDirectoriesPayload,
   WebuiThreadPersistedPayload,
   WorkspaceScopePayload,
 } from "./types";
@@ -235,6 +236,22 @@ export async function fetchWorkspaces(
 ): Promise<WorkspacesPayload> {
   return request<WorkspacesPayload>(
     `${base}/api/workspaces`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchWorkspaceDirectories(
+  token: string,
+  path?: string | null,
+  base: string = "",
+): Promise<WorkspaceDirectoriesPayload> {
+  const query = new URLSearchParams();
+  if (path) query.set("path", path);
+  const suffix = query.size ? `?${query}` : "";
+  return request<WorkspaceDirectoriesPayload>(
+    `${base}/api/workspaces/directories${suffix}`,
     token,
     undefined,
     API_READ_TIMEOUT_MS,

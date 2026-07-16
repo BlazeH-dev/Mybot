@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { AlertTriangle, Check, ChevronDown, Folder, Hand } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Folder, FolderOpen, Hand } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
@@ -12,10 +12,13 @@ import {
 import { Input } from "@/components/ui/input";
 import type {
   WorkspaceAccessMode,
+  WorkspaceDirectoriesPayload,
   WorkspaceScopePayload,
   WorkspacesPayload,
 } from "@/lib/types";
+import { fetchWorkspaceDirectories } from "@/lib/api";
 import { getHostApi } from "@/lib/runtime";
+import { useOptionalClient } from "@/providers/ClientProvider";
 import { cn } from "@/lib/utils";
 import {
   isAbsoluteWorkspacePath,
@@ -47,6 +50,10 @@ export function WorkspaceProjectPicker({
   const [pathDraft, setPathDraft] = useState("");
   const [pathError, setPathError] = useState<string | null>(null);
   const [pickingFolder, setPickingFolder] = useState(false);
+  const [browsePath, setBrowsePath] = useState<string | null>(null);
+  const [browseResult, setBrowseResult] = useState<WorkspaceDirectoriesPayload | null>(null);
+  const [browsing, setBrowsing] = useState(false);
+  const clientContext = useOptionalClient();
   const currentProjectScope = selectedProjectScope(scope, defaultScope);
   const projectLabel = currentProjectScope
     ? currentProjectScope.project_name || projectNameFromPath(currentProjectScope.project_path)
@@ -84,6 +91,8 @@ export function WorkspaceProjectPicker({
         restrict_to_workspace: base.access_mode === "restricted",
       });
       setPathError(null);
+      setBrowsePath(null);
+      setBrowseResult(null);
       setOpen(false);
     },
     [defaultScope, onChange, scope, t],
@@ -101,6 +110,21 @@ export function WorkspaceProjectPicker({
       setPickingFolder(false);
     }
   }, [applyProjectPath, disabled, hostApi]);
+
+  const browseFolders = useCallback(async (path?: string | null) => {
+    if (!clientContext?.token || disabled) return;
+    setBrowsing(true);
+    setPathError(null);
+    try {
+      const result = await fetchWorkspaceDirectories(clientContext.token, path);
+      setBrowseResult(result);
+      setBrowsePath(result.path);
+    } catch (err) {
+      setPathError((err as Error).message);
+    } finally {
+      setBrowsing(false);
+    }
+  }, [clientContext?.token, disabled]);
 
   if (!visible || !defaultScope || !onChange) return null;
 
@@ -182,6 +206,72 @@ export function WorkspaceProjectPicker({
               if (event.key !== "Escape") event.stopPropagation();
             }}
           >
+            {clientContext?.token ? (
+              <div className="px-0.5 pb-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={disabled || browsing}
+                  onClick={() =>
+                    void browseFolders(
+                      browsePath ?? currentProjectScope?.project_path ?? defaultScope.project_path,
+                    )
+                  }
+                  className="h-8 w-full justify-start gap-2 rounded-xl px-2.5 text-[12px]"
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  {t("workspace.dialog.browse")}
+                </Button>
+              </div>
+            ) : null}
+            {browseResult ? (
+              <div className="mb-1.5 overflow-hidden rounded-xl border border-border/55 bg-background/55">
+                <div className="flex items-center gap-1 border-b border-border/45 p-1.5">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={!browseResult.parent_path || browsing}
+                    onClick={() => void browseFolders(browseResult.parent_path)}
+                    className="h-7 px-2 text-[11.5px]"
+                  >
+                    {t("workspace.dialog.up")}
+                  </Button>
+                  <span className="min-w-0 flex-1 truncate px-1 text-[11px] text-muted-foreground" title={browseResult.path}>
+                    {shortWorkspacePath(browseResult.path)}
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={disabled}
+                    onClick={() => applyProjectPath(browseResult.path)}
+                    className="h-7 px-2 text-[11.5px]"
+                  >
+                    {t("workspace.dialog.selectFolder")}
+                  </Button>
+                </div>
+                <div className="max-h-44 overflow-y-auto p-1">
+                  {browseResult.directories.map((directory) => (
+                    <button
+                      key={directory.path}
+                      type="button"
+                      disabled={browsing}
+                      onClick={() => void browseFolders(directory.path)}
+                      className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[12px] hover:bg-muted disabled:opacity-60"
+                    >
+                      <Folder className="h-3.5 w-3.5 shrink-0 text-primary" />
+                      <span className="truncate">{directory.name}</span>
+                    </button>
+                  ))}
+                  {!browseResult.directories.length ? (
+                    <p className="px-2 py-3 text-[11.5px] text-muted-foreground">{t("workspace.dialog.empty")}</p>
+                  ) : null}
+                </div>
+                {browseResult.truncated ? (
+                  <p className="border-t border-border/45 px-2 py-1.5 text-[10.5px] text-muted-foreground">{t("workspace.dialog.truncated")}</p>
+                ) : null}
+              </div>
+            ) : null}
             <form
               className="flex items-center gap-2"
               onSubmit={(event) => {

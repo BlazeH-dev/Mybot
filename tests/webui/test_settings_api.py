@@ -19,6 +19,7 @@ from nanobot.webui.settings_api import (
     update_agent_settings,
     update_model_configuration,
     update_network_safety_settings,
+    update_provider_settings,
     update_transcription_settings,
 )
 
@@ -143,6 +144,25 @@ def test_update_agent_settings_accepts_context_window_options(
     assert payload["agent"]["context_window_tokens"] == 262144
     saved = load_config(config_path)
     assert saved.agents.defaults.context_window_tokens == 262144
+
+
+def test_configuring_openai_selects_first_available_openai_preset(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    save_config(Config(), config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = update_provider_settings(
+        {"provider": ["openai"], "api_key": ["sk-configured-in-webui"]}
+    )
+
+    assert payload["agent"]["model_preset"] == "gpt-5-6-sol"
+    assert payload["agent"]["model"] == "gpt-5.6-sol"
+    assert payload["agent"]["provider"] == "openai"
+    saved = load_config(config_path)
+    assert saved.agents.defaults.model_preset == "gpt-5-6-sol"
 
 
 def test_update_model_configuration_accepts_context_window_options(

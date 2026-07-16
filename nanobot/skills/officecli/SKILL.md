@@ -14,7 +14,8 @@ Use the pinned OfficeCLI capability for general Word, Excel, and PowerPoint work
 ## Mybot rules
 
 - OfficeCLI is normally preferred for Office requests. If the user explicitly asks for the original Python workflow, use `office-automation` instead.
-- If this Skill is disabled or unavailable, do not install or enable it silently. Report the reason and use another enabled Skill only when that matches the request.
+- Mybot provides an `officecli` launcher that downloads only the pinned contract asset on first use, verifies its checksum, caches it under the nanobot data directory, and disables upstream auto-update. Never invoke upstream `install`/`update` or follow `latest` from an Agent task.
+- If the packaged launcher cannot provision the pinned binary, report the reason and use another enabled Skill only when that matches the request.
 - Before a data analysis or quantitative reporting task, run the shared Office core to create `workbook_schema.json` and `verified_facts.json`. Pure formatting, inspection, comments, or text extraction do not need an empty facts workflow.
 - Never invent quantitative claims. Values derived from user data must map to a fact id; numbers provided directly by the user should be recorded as user-provided facts when they become report claims.
 - Write new outputs under `.nanobot-runtime/artifacts/<task_id>/`. Modifying an existing user file is a high-risk operation and must pass Runtime Policy, approval, and file freshness checks.
@@ -51,4 +52,4 @@ The existing `compile_officecli.py` and render helpers are an optional grounded-
 
 ## Version source
 
-The project contract is `references/officecli-runtime.json`. The upstream capability baseline is documented in `references/upstream-snapshot.md`. Do not follow `latest` during a task.
+The project contract is `references/officecli-runtime.json`. The upstream capability baseline is documented in `references/upstream-snapshot.md`. The installed `officecli` console script is Mybot's pinned launcher rather than upstream's latest-version installer. Do not follow `latest` during a task.

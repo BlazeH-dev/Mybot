@@ -113,6 +113,7 @@ dev = [
 
 [project.scripts]
 nanobot = "nanobot.cli.commands:app"
+officecli = "nanobot.officecli_runtime:main"
 
 # Third-party tool plugins register here.  Built-in tools are discovered
 # automatically via pkgutil scanning in ToolLoader.discover().

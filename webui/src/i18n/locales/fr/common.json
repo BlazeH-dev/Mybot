@@ -926,6 +926,11 @@
     "dialog": {
       "defaultProject": "Default workspace",
       "manual": "Coller un chemin",
+      "browse": "Parcourir les dossiers",
+      "up": "Dossier parent",
+      "selectFolder": "Choisir ce dossier",
+      "empty": "Aucun dossier à ouvrir ici.",
+      "truncated": "Seuls les 200 premiers dossiers sont affichés.",
       "manualPlaceholder": "/Users/name/project",
       "usePath": "Use Path",
       "absolutePathRequired": "Enter an absolute folder path on this machine."

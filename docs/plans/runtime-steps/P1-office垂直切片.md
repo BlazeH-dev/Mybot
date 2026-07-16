@@ -24,7 +24,7 @@
 - 独立 Skill，固定 OfficeCLI v1.0.135 来源、snapshot 和 provider contract。
 - 保留 help/view/get/query、DOM、batch、validate、screenshot、raw、MCP、plugin、watch 等完整能力说明。
 - 不在 Skill 层删除高风险能力；P3 按目标和参数 allow/ask/deny。
-- Mybot 准备固定 binary；任务内不得无批准安装或更新。
+- Mybot 随 Python 包安装同名 launcher，首次使用时按 contract 准备固定 binary；任务内不得调用上游 latest/install/update。
 - 数据任务消费 shared facts；OfficeCLI 可使用自己的命令和中间表示。现有 DSL→batch 仅是可选兼容 helper。
 
 ### 路由与开关
@@ -54,10 +54,10 @@ OfficeCLI Skill：必要时的 schema/facts、命令或 batch、Office 成品、
 必须验证：
 
 - 两个 Skill 可独立发现、禁用和运行，`_shared` 不进入 summary。
-- 未安装 OfficeCLI 时 Python 链仍通过。
+- OfficeCLI 固定资产首次下载失败时 Python 链仍通过，并明确报告 unavailable 原因。
 - shared facts 与 P0 expected metrics 一致，产物关键数字无占位泄漏。
-- OfficeCLI contract、来源、版本和 checksum 完整；真实 binary case 由 `OFFICECLI_TEST_BIN` 触发，普通 CI 不动态下载。
-- 分发 binary 时维护 Apache-2.0 NOTICE 与第三方声明。
+- OfficeCLI contract、来源、版本和 checksum 完整；launcher 按平台首次下载并校验 v1.0.135，普通单元测试不访问网络，真实 binary case 可由 launcher 或 `OFFICECLI_TEST_BIN` 触发。
+- 按需下载 runtime 时维护 Apache-2.0 第三方声明。
 - WebUI `OfficeArtifactsPanel` 能列出、预览或下载两条路径的产物。
 - “仅规划”消息不能获得写文件、Shell、CLI、MCP 等执行型工具；普通复杂任务的 plan 状态可在 UI 中实时更新。
 

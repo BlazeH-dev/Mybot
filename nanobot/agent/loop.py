@@ -432,6 +432,17 @@ class AgentLoop:
             return
         try:
             snapshot = self._provider_snapshot_loader()
+        except ValueError as exc:
+            from nanobot.providers.unconfigured_provider import UnconfiguredProvider
+
+            if (
+                isinstance(self.provider, UnconfiguredProvider)
+                and str(exc).startswith("No API key configured for provider '")
+            ):
+                logger.debug("Provider remains unconfigured; waiting for WebUI settings update")
+                return
+            logger.exception("Failed to refresh provider config")
+            return
         except Exception:
             logger.exception("Failed to refresh provider config")
             return

@@ -926,6 +926,11 @@
     "dialog": {
       "defaultProject": "Default workspace",
       "manual": "Dán đường dẫn",
+      "browse": "Duyệt thư mục",
+      "up": "Lên trên",
+      "selectFolder": "Chọn thư mục này",
+      "empty": "Không có thư mục nào để mở ở đây.",
+      "truncated": "Chỉ hiển thị 200 thư mục đầu tiên.",
       "manualPlaceholder": "/Users/name/project",
       "usePath": "Use Path",
       "absolutePathRequired": "Enter an absolute folder path on this machine."

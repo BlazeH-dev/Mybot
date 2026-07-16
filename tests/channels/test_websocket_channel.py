@@ -2025,6 +2025,57 @@ async def test_commands_api_returns_slash_command_metadata(bus: MagicMock) -> No
 
 
 @pytest.mark.asyncio
+async def test_workspace_directories_api_browses_local_project_folders(
+    bus: MagicMock,
+    tmp_path,
+) -> None:
+    port = 29914
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "project-b").mkdir()
+    (workspace / "project-a").mkdir()
+    (workspace / "readme.md").write_text("not a folder", encoding="utf-8")
+    channel = WebSocketChannel(
+        {
+            "enabled": True,
+            "allowFrom": ["*"],
+            "host": "127.0.0.1",
+            "port": port,
+            "path": "/ws",
+            "websocketRequiresToken": False,
+        },
+        bus,
+        gateway=_basic_handler(bus, workspace_path=workspace),
+    )
+    channel.gateway.tokens.api_tokens["tok"] = time.monotonic() + 300
+
+    server_task = asyncio.create_task(channel.start())
+    await asyncio.sleep(0.3)
+
+    try:
+        denied = await _http_get(f"http://127.0.0.1:{port}/api/workspaces/directories")
+        assert denied.status_code == 401
+
+        response = await _http_get(
+            f"http://127.0.0.1:{port}/api/workspaces/directories",
+            headers={"Authorization": "Bearer tok"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "path": str(workspace.resolve()),
+            "parent_path": str(tmp_path.resolve()),
+            "directories": [
+                {"name": "project-a", "path": str((workspace / "project-a").resolve())},
+                {"name": "project-b", "path": str((workspace / "project-b").resolve())},
+            ],
+            "truncated": False,
+        }
+    finally:
+        await channel.stop()
+        await server_task
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_exposes_native_surface(bus: MagicMock) -> None:
     port = 29893
     channel = WebSocketChannel(

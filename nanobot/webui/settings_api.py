@@ -323,6 +323,34 @@ def _provider_configured_for_settings(spec: Any, provider_config: Any) -> bool:
     )
 
 
+def _active_model_provider_is_configured(config: Any) -> bool:
+    try:
+        preset = config.resolve_preset()
+    except Exception:
+        return False
+    provider_name = config.get_provider_name(preset.model, preset=preset) or preset.provider
+    spec = find_by_name(provider_name)
+    provider_config = getattr(config.providers, spec.name, None) if spec is not None else None
+    return bool(
+        spec is not None
+        and provider_config is not None
+        and _provider_configured_for_settings(spec, provider_config)
+    )
+
+
+def _select_first_preset_for_provider(config: Any, provider_name: str) -> bool:
+    """Select the first saved preset backed by a newly configured provider."""
+    for name, preset in config.model_presets.items():
+        candidate = config.get_provider_name(preset.model, preset=preset) or preset.provider
+        if candidate != provider_name:
+            continue
+        if config.agents.defaults.model_preset != name:
+            config.agents.defaults.model_preset = name
+            return True
+        return False
+    return False
+
+
 def _model_catalog_kind(spec: Any) -> str:
     if spec.name in _MODEL_LIST_CATALOG_PROVIDERS:
         return "catalog"
@@ -1076,6 +1104,10 @@ def update_provider_settings(query: QueryParams) -> dict[str, Any]:
             if provider_config.api_type != parsed_api_type:
                 provider_config.api_type = parsed_api_type
                 changed = True
+
+    provider_is_configured = _provider_configured_for_settings(spec, provider_config)
+    if changed and provider_is_configured and not _active_model_provider_is_configured(config):
+        changed = _select_first_preset_for_provider(config, spec.name) or changed
 
     if changed:
         save_config(config)

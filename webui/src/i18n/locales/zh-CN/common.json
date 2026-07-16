@@ -926,6 +926,11 @@
     "dialog": {
       "defaultProject": "默认工作区",
       "manual": "粘贴路径",
+      "browse": "浏览文件夹",
+      "up": "上一级",
+      "selectFolder": "选择此文件夹",
+      "empty": "此文件夹中没有可进入的子文件夹。",
+      "truncated": "仅显示前 200 个文件夹。",
       "manualPlaceholder": "/Users/name/project",
       "usePath": "使用路径",
       "absolutePathRequired": "请输入这台机器上的绝对文件夹路径。"

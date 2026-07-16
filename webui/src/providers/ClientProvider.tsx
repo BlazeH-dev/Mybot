@@ -35,3 +35,8 @@ export function useClient(): ClientContextValue {
   }
   return ctx;
 }
+
+/** Returns null in isolated component previews and tests outside the app shell. */
+export function useOptionalClient(): ClientContextValue | null {
+  return useContext(ClientContext);
+}

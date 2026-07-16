@@ -1052,6 +1052,10 @@ def _patch_cli_command_runtime(
         lambda _config: _test_provider_snapshot(provider_factory(_config), _config),
     )
     monkeypatch.setattr(
+        "nanobot.providers.factory.build_startup_provider_snapshot",
+        lambda _config: _test_provider_snapshot(provider_factory(_config), _config),
+    )
+    monkeypatch.setattr(
         "nanobot.providers.factory.load_provider_snapshot",
         lambda _config_path=None: _test_provider_snapshot(provider_factory(config), config),
     )

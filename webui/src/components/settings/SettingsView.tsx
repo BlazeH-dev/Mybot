@@ -849,7 +849,7 @@ export function SettingsView({
   );
 
   const openModelConfigurationDialog = () => {
-    if (!settings) return;
+    if (!settings || configuredModelProviderOptions.length === 0) return;
     const currentProvider = settings.agent.provider;
     const provider =
       configuredModelProviderOptions.find((option) => option.name === currentProvider)?.name ??
@@ -868,6 +868,7 @@ export function SettingsView({
   const openEditModelConfigurationDialog = (
     preset: SettingsPayload["model_presets"][number],
   ) => {
+    if (!settings || configuredModelProviderOptions.length === 0) return;
     setModelConfigurationForm({
       name: preset.name,
       label: preset.label,
@@ -1565,18 +1566,20 @@ export function SettingsView({
         />
       ) : null}
 
-      <ModelConfigurationDialog
-        open={modelConfigurationOpen}
-        draft={modelConfigurationForm}
-        token={token}
-        settings={settings}
-        providers={configuredModelProviderOptions}
-        saving={modelConfigurationSaving}
-        showProviderLogos={localPrefs.brandLogos}
-        onOpenChange={setModelConfigurationOpen}
-        onChangeDraft={setModelConfigurationForm}
-        onSave={handleSaveModelConfiguration}
-      />
+      {configuredModelProviderOptions.length > 0 ? (
+        <ModelConfigurationDialog
+          open={modelConfigurationOpen}
+          draft={modelConfigurationForm}
+          token={token}
+          settings={settings}
+          providers={configuredModelProviderOptions}
+          saving={modelConfigurationSaving}
+          showProviderLogos={localPrefs.brandLogos}
+          onOpenChange={setModelConfigurationOpen}
+          onChangeDraft={setModelConfigurationForm}
+          onSave={handleSaveModelConfiguration}
+        />
+      ) : null}
 
       <AlertDialog
         open={pendingModelDelete !== null}
@@ -2065,7 +2068,7 @@ function ModelConfigurationDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[520px] rounded-[28px] border-border/55 bg-card/95 p-0 shadow-[0_28px_90px_rgba(15,23,42,0.20)] backdrop-blur-xl dark:border-white/10">
+      <DialogContent className="max-w-[620px] rounded-[28px] border-border/55 bg-card/95 p-0 shadow-[0_28px_90px_rgba(15,23,42,0.20)] backdrop-blur-xl dark:border-white/10">
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -2102,8 +2105,8 @@ function ModelConfigurationDialog({
               />
             </label>
 
-            <div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
-              <label className="block">
+            <div className="grid min-w-0 gap-4 sm:grid-cols-2 sm:items-end">
+              <label className="block min-w-0">
                 <span className="mb-1.5 block text-[12px] font-medium text-muted-foreground">
                   {tx("settings.rows.model", "Model")}
                 </span>
@@ -2118,7 +2121,7 @@ function ModelConfigurationDialog({
                   />
                 ) : null}
               </label>
-              <div className="block">
+              <div className="min-w-0">
                 <span className="mb-1.5 block text-[12px] font-medium text-muted-foreground">
                   {tx("settings.rows.provider", "Provider")}
                 </span>
@@ -2127,6 +2130,7 @@ function ModelConfigurationDialog({
                   value={draft.provider}
                   emptyLabel={tx("settings.byok.noConfiguredProviders", "No configured providers")}
                   showProviderLogos={showProviderLogos}
+                  triggerClassName="h-9 w-full"
                   onChange={(provider) =>
                     onChangeDraft((prev) => ({
                       ...prev,
@@ -2204,6 +2208,38 @@ function ModelsSettings({
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
+  const hasConfiguredModelProvider = settings.providers.some(
+    (provider) => provider.configured && provider.model_selectable !== false,
+  );
+  const visiblePresets = settings.model_presets.filter((preset) => {
+    const provider = preset.is_default
+      ? editableDefaultProvider(settings)
+      : preset.provider;
+    const providerRow = settingsProviderRow(settings, provider);
+    return settingsProviderConfigured(settings, provider) && providerRow?.model_selectable !== false;
+  });
+
+  if (!hasConfiguredModelProvider) {
+    return (
+      <section>
+        <SettingsSectionTitle>
+          {tx("settings.models.setup", "Model setup")}
+        </SettingsSectionTitle>
+        <div className="rounded-[22px] border border-dashed border-border/65 bg-card/45 px-5 py-6">
+          <p className="text-[14px] font-medium text-foreground">
+            {tx("settings.models.setupRequired", "Set up a provider first")}
+          </p>
+          <p className="mt-1.5 max-w-[40rem] text-[12.5px] leading-5 text-muted-foreground">
+            {tx(
+              "settings.models.setupRequiredHelp",
+              "Add and save an API key under Providers below. Model configurations will appear after the provider is ready.",
+            )}
+          </p>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <div className="space-y-7">
       <section>
@@ -2228,7 +2264,7 @@ function ModelsSettings({
           </Button>
         </div>
         <div className="space-y-2">
-          {settings.model_presets.map((preset) => {
+          {visiblePresets.map((preset) => {
             const provider = preset.is_default
               ? editableDefaultProvider(settings)
               : preset.provider;
@@ -4686,12 +4722,14 @@ function ProviderPicker({
   value,
   emptyLabel,
   showProviderLogos = false,
+  triggerClassName,
   onChange,
 }: {
   providers: Array<{ name: string; label: string }>;
   value: string;
   emptyLabel: string;
   showProviderLogos?: boolean;
+  triggerClassName?: string;
   onChange: (provider: string) => void;
 }) {
   const selectedProvider = providers.find((provider) => provider.name === value) ?? null;
@@ -4708,6 +4746,7 @@ function ProviderPicker({
             "h-8 w-[210px] justify-between rounded-full border-input bg-background px-3 text-[13px] font-normal shadow-none",
             "hover:bg-accent/55 focus-visible:ring-2 focus-visible:ring-ring",
             disabled && "text-muted-foreground",
+            triggerClassName,
           )}
         >
           <span className="flex min-w-0 items-center gap-2">
@@ -4886,7 +4925,7 @@ function ModelIdPicker({
           type="button"
           variant="outline"
           className={cn(
-            "h-9 w-[min(360px,70vw)] justify-between rounded-full border-input bg-background px-3 text-[12px] font-normal shadow-none",
+            "h-9 w-full justify-between rounded-full border-input bg-background px-3 text-[12px] font-normal shadow-none",
             "hover:bg-accent/55 focus-visible:ring-2 focus-visible:ring-ring",
           )}
         >

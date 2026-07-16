@@ -810,7 +810,6 @@ def _is_persisted_desktop_bootstrap(config: Config) -> bool:
         defaults.model_preset is None
         and defaults.provider == DESKTOP_BOOTSTRAP_PROVIDER
         and defaults.model == DESKTOP_BOOTSTRAP_MODEL
-        and not config.model_presets
     )
 
 
@@ -977,7 +976,7 @@ def _run_gateway(
     from nanobot.channels.manager import ChannelManager
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
-    from nanobot.providers.factory import build_provider_snapshot, load_provider_snapshot
+    from nanobot.providers.factory import build_startup_provider_snapshot, load_provider_snapshot
     from nanobot.providers.image_generation import image_gen_provider_configs
     from nanobot.session.manager import SessionManager
     from nanobot.session.webui_turns import WebuiTurnCoordinator
@@ -990,7 +989,7 @@ def _run_gateway(
     bus = MessageBus()
     runtime_events = RuntimeEventBus()
     try:
-        provider_snapshot = build_provider_snapshot(config)
+        provider_snapshot = build_startup_provider_snapshot(config)
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(1) from exc
