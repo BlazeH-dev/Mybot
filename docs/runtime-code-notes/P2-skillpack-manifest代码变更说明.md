@@ -1,78 +1,299 @@
-# P2 Skill Pack Manifest 代码变更说明
+# P2 Skill Pack Manifest 与运行时开关代码说明
 
-> 当前状态：已执行（2026-07-16）。
 > 对应计划：`docs/plans/runtime-steps/P2-skillpack-manifest.md`
+> 当前状态：已完成（2026-07-16）。
 
-## 1. 阶段目标
+## 这一阶段解决什么问题
 
-在不破坏 legacy `SKILL.md` 的前提下，为 Skill 增加机器可读的声明、局部校验、结构化可用性和统一开关。坏 Skill 只能隔离自己，不能拖垮网关、污染 Agent prompt 或通过显式 `/skill` 重新进入执行候选。
+P1 已经有 `office-automation` 和 `officecli` 两个 Skill，但只有 `SKILL.md` 还不够解决工程治理问题：
 
-## 2. 代码变更
+- 程序怎样知道 Skill 的版本、入口、输入输出和 provider 依赖？
+- Skill 写坏了，是拖垮整个网关，还是只隔离自己？
+- “被用户禁用”“声明非法”“依赖缺失”是不是同一种状态？
+- WebUI 怎样告诉用户具体缺什么，而不是只显示“不可用”？
+- 第三方旧 Skill 没有 manifest，是否会被全部破坏？
 
-### 2.1 Typed manifest
+P2 的答案是：在保留 `SKILL.md` 人类/模型指令的同时，增加一个可选但严格的 `skill.yaml`，让程序可以机器化校验和诊断。
 
-- 新增 `nanobot/agent/skill_manifest.py`，使用 Pydantic 定义 manifest v1：`name`、`version`、`description`、`entrypoints`、`inputs`、`outputs`、`tools.required`、`providers.*`、`permissions.required`、`evals`。
-- 所有层级均使用 `extra="forbid"`。schema/type/version 错误返回 `invalid_manifest` 和具体字段路径，不接受未知字段后继续运行。
-- manifest 是可选文件；目录只有 `SKILL.md` 时继续使用原 frontmatter 和 `metadata.nanobot.requires`。
+## 最重要的分层
 
-### 2.2 SkillsLoader / Registry 语义
+```text
+SKILL.md
+  负责：教模型什么时候使用、按什么步骤使用
 
-- `nanobot/agent/skills.py` 在 workspace 优先、builtin 兜底的既有发现规则上旁路读取 `skill.yaml`；workspace 同名 Skill 的 markdown、manifest 和状态始终作为一个整体覆盖 builtin。
-- manifest 存在但 YAML/schema/name 非法时局部 fail closed，不退化成“没有 manifest”。
-- entrypoint/provider contract 必须是 Skill 目录内的安全相对路径；绝对路径、`..` 逃逸、缺文件和坏 JSON 都返回结构化原因。
-- OfficeCLI provider contract 会校验 provider 标识，并通过 `select_officecli_asset()` 校验当前 OS/CPU 对应的固定资产声明。版本、平台资产名和 SHA-256 仍只来自 `references/officecli-runtime.json`，manifest 不复制第二份真相。
-- legacy `requires.bins/env` 合并进统一状态，原因码包括 `disabled`、`invalid_manifest`、`missing_entrypoint`、`missing_contract`、`invalid_contract`、`missing_binary`、`missing_env`。
-- 状态定义：配置禁用为 `disabled`；manifest/contract 结构失效为 `invalid`；声明合法但运行依赖缺失为 `unavailable`；只有 enabled、valid 且无原因时为 `available`。
-- `list_skills()` 默认不返回 disabled，Agent summary、`load_skills_for_context()`、always Skill 和 `/skill` 只接受 available Skill；WebUI 可显式 `include_disabled=True` 获取完整 catalog。
+skill.yaml
+  负责：声明名称、版本、入口、输入输出、工具需求、provider、权限需求、eval
 
-### 2.3 Office Skill manifest 与打包
+provider contract
+  负责：具体外部运行时版本、平台资产、下载地址和 checksum
 
-- 新增 `nanobot/skills/office-automation/skill.yaml`，声明 Python Office 工作流的入口、输入输出、工具、权限需求和 eval。
-- 新增 `nanobot/skills/officecli/skill.yaml`，声明 OfficeCLI 入口、输入输出、工具、权限需求、eval，并只引用唯一 provider contract。
-- `pyproject.toml` 增加 `nanobot/skills/**/*.yaml` 构建包含规则，换机重新安装项目后 manifest 会随 Python 包交付。
-- OfficeCLI 的固定 binary 准备继续由 P1 后续补强的随包 `officecli` launcher 完成：首次执行只按 contract 下载 v1.0.135、验 SHA-256、原子缓存并关闭上游自更新；P2 catalog 校验不会调用 latest/install/update。
+Runtime Policy
+  负责：真正决定一次工具调用 allow / ask / deny
+```
 
-### 2.4 API 与 WebUI
+这四层不能合并：
 
-- `nanobot/webui/skills_api.py` 的列表和详情返回 version、enabled、valid、available、status、结构化 reasons、legacy requirements、工具/权限声明和 provider 状态，同时继续隐藏本地绝对路径。
-- `webui/src/components/settings/SkillsCatalogSettings.tsx` 展示 manifest 版本、disabled/invalid/unavailable 状态、逐条诊断、声明工具、声明权限和 provider 状态；中英文文案已补齐。
-- permissions 仅进入只读 payload/UI。P2 没有把它接入 ToolRegistry、`WorkspaceScope` 或任何 policy allow 路径，因此声明不能授予权限、解除禁用或放宽 hard boundary。
+- Skill 文档不能自己授权。
+- manifest 的 `permissions.required` 只能表达“我需要什么”，不能表达“我已获准”。
+- OfficeCLI 的固定二进制版本不能复制到多个 manifest 和脚本里。
+- Runtime 不能因为 Skill 自称安全就跳过 Policy。
 
-### 2.5 即时开关与单轮显式路由（2026-07-16）
+## 实际做了什么
 
-- Skills 设置详情页新增启用/禁用按钮。它仍只写入唯一的 `agents.defaults.disabledSkills`，但 WebUI 通过内部 `skills_reload` control 消息立即同步运行中的 `AgentLoop` 与 `SubagentManager`；当前正在执行的回合不改变，后续回合无需重启网关即可按新状态生效。
-- `GET /api/webui/skills` 和详情接口按磁盘上的最新配置计算 catalog，前端收到成功结果后刷新对话框候选，避免已禁用 Skill 短暂仍可选择。
-- 输入框 `@` 候选新增可用 Skill。选中或输入精确 `@skill-name` 会以 `selected_skills` 随 WebSocket 消息发送；AgentLoop 再以当前 loader 校验名称和可用性，禁用、未知或不可用项不能绕过开关。
-- 有显式选择时，`ContextBuilder` 将所选 `SKILL.md` 正文放入本轮 `# Selected Skills`，声明其为必须遵循的路由契约，并不再暴露可自动选择的 Skill 摘要；未选择时完全保留原有渐进披露和模型自主选择行为。
+### 1. 新增 typed manifest schema
 
-## 3. 为什么这么做
+文件：`nanobot/agent/skill_manifest.py`
 
-- 可选 manifest 保留第三方/旧 Skill 的兼容性；“文件一旦存在就严格校验”避免配置损坏被静默忽略。
-- 将 `enabled`、`valid`、`available` 分开后，UI 可以解释问题，Agent 又只看到真正能执行的候选。
-- workspace 整包覆盖 builtin，避免 markdown 来自 workspace、manifest 却误读 builtin 的混合来源。
-- provider contract 与 manifest 分工：manifest 描述依赖关系，contract 独占具体二进制版本、平台和 checksum，避免安全关键数据漂移。
-- 权限声明不直接生效，为 P3 Policy 保留“需求输入”和“授权决策”之间的硬边界。
+`SkillManifest` 使用 Pydantic 定义 v1 字段：
 
-## 4. 运行路径
+```text
+name / version / description
+entrypoints / inputs / outputs
+tools.required
+providers.<name>.required / contract
+permissions.required
+evals
+```
 
-1. Loader 发现 `SKILL.md`，workspace 同名项先占位并屏蔽 builtin。
-2. 若存在 `skill.yaml`，解析 typed schema、校验目录名和所有本地引用；若不存在，保留 legacy 行为。
-3. 读取 frontmatter 的 CLI/ENV requirements，并合并 manifest/provider 诊断。
-4. 计算 `enabled → valid → available → status`，但保留完整 reasons 供 API/UI 使用。
-5. Agent 侧只消费 available 列表；WebUI 侧消费包含 disabled/invalid/unavailable 的完整 catalog。
-6. 真正调用 OfficeCLI 时，随包 launcher 根据唯一 contract 准备并执行固定 runtime；准备失败只影响 `officecli`，不会改变 `office-automation` 的独立状态。
+所有 model 都设置 `extra="forbid"`。这意味着拼错字段不会被静默忽略。例如把 `entrypoints` 写成 `entrypoint`，Skill 会得到带字段路径的 `invalid_manifest`，而不是看似加载成功、运行时才莫名失败。
 
-## 5. 验证方式
+`version` 当前限定为字面量 `1`，便于以后升级 schema 时显式迁移，而不是让 Loader 猜格式。
 
-- `ruff check nanobot/ tests/agent/test_skill_manifest.py tests/webui/test_skills_api.py`
-- manifest/loader/API/Office/command/WebSocket 定向 pytest：覆盖合法和 legacy manifest、坏 YAML/schema、字段路径、workspace 覆盖、路径逃逸、缺 entrypoint/contract、disabled catalog、无效 Skill 不进 summary/context/`/skill`、两个 Office manifest 和 API 隐私边界。
-- WebUI `app-layout` 回归覆盖 catalog 状态、诊断和声明展示；TypeScript production build 通过。
-- 即时开关/显式路由定向回归：覆盖 selected Skill 注入并抑制自动候选、disabled/unknown 过滤、WebSocket 名称归一化、热刷新同步主 Agent 与子代理、配置持久化；前端 production build 通过。
-- 最终结果：后端 Skill/P2 定向回归 `101 passed`（含真实固定 OfficeCLI 集成）；WebUI 全量 `29 files / 401 tests passed`；production build 通过。
-- `pip wheel . --no-deps` 构建成功，并从 wheel 清单确认 `office-automation/skill.yaml`、`officecli/skill.yaml` 与 `nanobot/officecli_runtime.py` 均已随包交付。
+### 2. 在 SkillsLoader 中实现兼容加载
 
-## 6. 后续影响
+文件：`nanobot/agent/skills.py`
 
-- P3 可以读取 permissions 作为“申请了什么”的输入，但必须由独立 policy 决定 allow/ask/deny，不能直接信任 manifest。
-- P5 Eval 可直接消费 `evals` 标识和结构化 unavailable 原因。
-- 后续新增 provider 时，应继续把可变版本/平台/checksum 放入 provider contract，而不是扩散到 manifest 或 Skill 文档。
+发现顺序仍是：
+
+```text
+workspace/skills/<name>  优先
+nanobot/skills/<name>    builtin 兜底
+```
+
+workspace 同名 Skill 会整包覆盖 builtin。这里的“整包”很重要：不能出现 workspace 的 `SKILL.md` 配 builtin 的 `skill.yaml`，否则说明文字和机器声明可能属于两个版本。
+
+加载规则是：
+
+1. 目录必须先有 `SKILL.md`，它仍是 Skill 的发现入口。
+2. 没有 `skill.yaml`：按 legacy frontmatter 继续工作。
+3. 存在 `skill.yaml`：必须成功解析和校验。
+4. manifest 存在但损坏：只隔离这个 Skill，不退化为 legacy 模式。
+
+第 4 点叫“局部 fail closed”：
+
+- fail closed：有风险或状态不明时拒绝使用。
+- 局部：只影响目标 Skill，不让一个坏插件拖垮整个 Agent。
+
+### 3. 校验安全相对路径与 provider contract
+
+manifest 中的 entrypoint 和 contract 必须满足：
+
+- 非空。
+- 不是绝对路径。
+- 不包含 `..`。
+- resolve 后仍位于 Skill 目录内。
+- 声明的文件真实存在。
+
+这是为了防止一个 workspace Skill 用 manifest 指向 `~/.ssh`、其他 Skill 或任意宿主文件。
+
+对于 OfficeCLI，Loader 还会：
+
+1. 读取 `references/officecli-runtime.json`。
+2. 确认 `provider` 确实是 `officecli`。
+3. 调用 `select_officecli_asset()`。
+4. 按当前 OS/CPU 检查是否存在平台资产、版本和合法 SHA-256。
+
+注意：catalog 校验只检查 contract，不在列表页擅自运行上游 install/update。
+
+### 4. 把状态拆成 enabled、valid、available
+
+`get_skill_status()` 返回四个关键结果：
+
+| 字段 | 含义 | 例子 |
+| --- | --- | --- |
+| `enabled` | 用户是否允许候选 | `disabledSkills` 中存在该名称时为 false |
+| `valid` | manifest/contract 结构是否合法 | YAML 损坏、name 不匹配、contract 非法时为 false |
+| `available` | 当前机器能否真正运行 | enabled + valid + 没有缺 binary/env 等原因 |
+| `status` | 给 UI 的归一化状态 | disabled / invalid / unavailable / available |
+
+为什么不只用一个布尔值？因为修复方式不同：
+
+- disabled：用户点“启用”。
+- invalid：开发者修 manifest。
+- unavailable：安装依赖或配置环境。
+- available：可以进入 Agent 候选。
+
+结构化 `reasons` 还包含稳定 code、message 和可选 field，例如：
+
+```text
+disabled
+invalid_manifest
+missing_entrypoint
+missing_contract
+invalid_contract
+missing_binary
+missing_env
+```
+
+### 5. Agent 与 WebUI 消费不同视图
+
+Agent 只应看到真正可执行的 Skill：
+
+- `build_skills_summary()` 只列 available Skill。
+- `load_skills_for_context()` 再次检查 availability。
+- always Skill 和 `/skill` 不能绕过 disabled/invalid/unavailable。
+
+WebUI 则需要看到完整 catalog，才能帮助用户修复问题：
+
+- 展示来源、版本和状态。
+- 展示逐条 availability diagnostics。
+- 展示 required tools、permissions 和 providers。
+- 不向浏览器暴露本地绝对路径等隐私信息。
+
+这个设计体现了“执行面最小化、管理面可解释”。
+
+### 6. 为两个 Office Skill 添加 manifest
+
+新增：
+
+```text
+nanobot/skills/office-automation/skill.yaml
+nanobot/skills/officecli/skill.yaml
+```
+
+Python Skill 声明自己的脚本入口、xlsx/会议纪要输入、facts/docx/pptx/quality report 输出，以及文件读写和进程执行需求。
+
+OfficeCLI Skill 声明 Office 文档输入、成品/validation/run/preview 输出，并引用唯一的 `references/officecli-runtime.json`。
+
+`pyproject.toml` 把 `nanobot/skills/**/*.yaml` 纳入包构建，否则开发目录能用、安装 wheel 后 manifest 却会消失。
+
+### 7. 复用唯一开关并支持热刷新
+
+P2 没有新造 `skill_enabled.json`，继续使用：
+
+```text
+agents.defaults.disabledSkills
+```
+
+设置页修改后：
+
+1. API 持久化 disabled list。
+2. WebUI 发送内部 `skills_reload` control message。
+3. 运行中的 AgentLoop 更新 `context.skills.disabled_skills`。
+4. SubagentManager 同步相同 disabled set。
+5. 当前正在执行的回合不突变，从下一轮开始生效。
+
+这样既避免重启网关，也避免执行到一半工具集合突然变化。
+
+### 8. 支持单轮显式 Skill 路由
+
+WebUI 输入框可以选择 `@skill-name`，通过 WebSocket 的 `selected_skills` 字段发送，而不是把它当普通聊天文字。
+
+运行时处理：
+
+1. WebSocket 只做名称格式、数量上限等基础归一化。
+2. AgentLoop 用最新 Loader 再检查存在性、enabled 和 availability。
+3. 合法选择进入本轮 `# Selected Skills` 上下文。
+4. 有显式选择时，隐藏自动候选 summary，减少模型改路由的可能。
+5. 未选择时保留原来的渐进披露和自主路由。
+
+这是“用户指定本轮方法”，不是永久修改全局配置。
+
+## 一次加载的完整路径
+
+```text
+扫描 workspace Skill
+  -> 同名名称占位，屏蔽 builtin
+  -> 扫描剩余 builtin Skill
+  -> 检查 disabledSkills
+  -> 读取可选 skill.yaml
+       ├── 不存在：legacy frontmatter
+       └── 存在：Pydantic 严格校验
+  -> 校验 entrypoint / provider contract / bins / env
+  -> 计算 enabled / valid / available / status / reasons
+       ├── Agent：只保留 available
+       └── WebUI：保留完整 catalog 和诊断
+```
+
+## 为什么这样设计
+
+### 为什么 manifest 是可选的
+
+nanobot 原有 Skill 和第三方 Skill 只依赖 `SKILL.md`。如果强制所有旧 Skill 一次迁移，会产生很大的兼容成本。可选 manifest 让新能力逐步增强。
+
+### 为什么“存在就严格”
+
+如果坏 manifest 被当成不存在，开发者会误以为声明生效，实际却偷偷走 legacy 路径。安全和运行依赖都可能与预期不一致，因此必须显式失败。
+
+### 为什么 permissions 只展示不授权
+
+插件是潜在不可信输入。允许插件通过自己的 manifest 获得文件、网络或命令权限，相当于让申请人自己审批自己。P3 必须基于真实工具参数、workspace scope 和 hard boundary 独立判断。
+
+### 为什么版本/checksum 放 provider contract
+
+manifest 描述 Skill 依赖哪个 provider；contract 描述 provider 的具体可执行资产。两者变化频率和责任不同，分开后不会在多个位置复制安全关键版本信息。
+
+## 验证与证据
+
+主要测试覆盖：
+
+- 合法 manifest 与无 manifest legacy Skill。
+- YAML/schema/name 错误及准确字段路径。
+- workspace 整包覆盖 builtin。
+- 绝对路径、`..` 和 contract 路径逃逸。
+- 缺 entrypoint、contract、binary、env。
+- disabled/invalid/unavailable 不进入 summary、context 和 `/skill`。
+- WebUI catalog 保留诊断但隐藏本地敏感路径。
+- 即时开关同步主 Agent 与 Subagent。
+- `selected_skills` 的名称归一化和运行时复核。
+- wheel 中包含两个 `skill.yaml`、contract 和 launcher。
+
+历史阶段验收记录为：后端定向回归 `101 passed`，WebUI 当时全量 `401 tests passed`，production build 通过。它们是当次快照，当前结果应以重新运行测试为准。
+
+## 边界与未做内容
+
+- P2 没有实现权限管理后台。
+- manifest permissions 不会注册或解锁工具。
+- P2 没有自动安装任意 provider。
+- P2 没有把 Skill 变成复杂插件进程或工作流引擎。
+- availability 是当前环境诊断，不代表具体一次高风险调用会被 Policy 放行。
+
+## 面试怎么讲
+
+### 30 秒回答
+
+> P2 我给 Skill 增加了可选的 typed manifest，但保留原 `SKILL.md` 兼容。manifest 一旦存在就严格校验，损坏只隔离当前 Skill；Loader 把状态拆成 enabled、valid、available，并向 Agent 和 WebUI提供不同视图。版本和 checksum 放独立 provider contract，permissions 只声明不授权，真正权限仍由 P3 Policy 决定。
+
+### 高频追问
+
+**fail closed 会不会让系统太脆弱？**
+
+这里是局部 fail closed：坏 Skill 自己不可执行，但网关和其他 Skill 正常运行。相比全局崩溃和静默忽略，这个边界兼顾安全与可用性。
+
+**为什么 Agent 看不到 unavailable Skill，WebUI 却要看到？**
+
+Agent 看到它只会产生无意义调用；用户需要看到它才能知道如何修复。执行候选和诊断 catalog 的目标不同。
+
+**显式 `@skill` 能否绕过禁用？**
+
+不能。浏览器提交只是意图，AgentLoop 会用当前 Loader 再检查 availability。客户端输入永远不能作为授权事实。
+
+**workspace Skill 为什么优先？**
+
+允许项目定制或覆盖 builtin，但必须整包覆盖，避免说明和 manifest 混源。
+
+## 自测：读完 P2 应该能回答
+
+1. `SKILL.md`、`skill.yaml`、provider contract、Policy 的职责分别是什么？
+2. enabled、valid、available 有什么区别？
+3. 为什么 manifest 可选，但存在后不能回退？
+4. 为什么 permissions 声明不能直接授权？
+5. 显式选择 Skill 的消息怎样防止绕过 disabled 状态？
+6. 为什么包构建必须显式包含 YAML 文件？
+
+## 对后续阶段的影响
+
+- P3 可以把 permissions 当成风险提示输入，但不能信任它做授权。
+- P5 可以用 `evals` 标识和 availability reason 做结构化评测。
+- P6 Research Skill 若落地，应直接复用同一 manifest、开关和诊断机制。
+- P8 子 Agent 与主 Agent 共享最新 disabled set，避免派生后重新暴露已禁用 Skill。

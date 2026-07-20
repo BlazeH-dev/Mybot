@@ -33,6 +33,20 @@ P1 要验证的不是某一个 Office 库，而是一条可治理、可测试、
 
 P1 继续复用现有 Agent 工具与 Skill 渐进披露机制，没有为 Office 在 `loop.py` 或 `runner.py` 中写私有分支。
 
+## 先建立三个核心认识
+
+### 垂直切片不是“只做一层”
+
+垂直切片是从用户入口一直打通到最终产物：上传文件、选择 Skill、抽取事实、生成中间表示、渲染 Office 文件、校验、展示和测试都要跑通。它比只写一个 `render_pptx.py` 更能暴露真实架构问题。
+
+### LLM 负责组织，确定性代码负责数字
+
+模型可以决定报告结构、标题和叙述，但 GMV、订单、转化率等数字由 Python 脚本从 Excel 计算，再通过 fact id 引用。这样把“语言生成能力”和“数值正确性”拆开。
+
+### Skill 是方法说明，不是权限
+
+`SKILL.md` 告诉模型如何完成 Office 工作，真正执行文件写入、Shell、OfficeCLI 时仍要经过 P3 的 Policy、Sandbox 和 approval。这个分层是后续 Runtime 通用化的基础。
+
 ## 代码变更
 
 ### 1. 共享 Office 确定性核心
@@ -276,6 +290,51 @@ Python Skill 是一个窄而确定的 grounded report/deck 工作流；OfficeCLI
 
 定量分析和定量结论必须使用 `verified_facts.json`。纯格式调整、查看、批注、文本抽取等任务不需要为了形式完整而创建空 facts 文件。
 
+## 一次完整任务怎样运行
+
+假设用户上传 `sales_data.xlsx` 和 `meeting_notes.md`，要求生成周报和汇报 PPT：
+
+1. WebSocket 保存受控附件路径，并把路径作为本轮 Runtime metadata 传给 AgentLoop。
+2. 复杂任务先调用静态 `plan(create)`。PlanTool 生成 task id、步骤和 `plan_hash`。
+3. P4 接入后，PlanTool 同时把输入复制到 task artifact 的 `inputs/`，后续不再依赖可能变化的原上传文件。
+4. Skill 先运行 `inspect_workbook.py`，确认 sheet、列名、数据类型和样例。
+5. `extract_facts.py` 根据 metric spec 做 `sum`、`ratio`、`top_by_sum`，写出 `verified_facts.json`。
+6. 模型生成 report/slide DSL，数字位置只引用 fact id。
+7. Python Skill 走 `python-docx/python-pptx`；OfficeCLI Skill 可把 DSL 编译成可重放 batch，或直接使用 OfficeCLI 的更完整能力。
+8. validator 检查标题、章节、fact 引用、PPT 页数、计划步骤和预期产物。
+9. 最终文件和 sidecar 写入 `.nanobot-runtime/artifacts/<task_id>/`，WebUI 展示计划与产物。
+
+面试时可以把这条链概括为：
+
+```text
+LLM 做规划和内容组织
++ 确定性脚本做事实计算
++ 受约束渲染器做文件生成
++ Runtime 做权限、恢复、追踪和验收
+```
+
+## 关键实现为什么可靠
+
+### `verified_facts.json` 怎样防数字幻觉
+
+每条 fact 不只有一个值，还包含 `fact_id`、展示值、来源 workbook/sheet/columns/rows、计算方法和 confidence。DSL 中引用 `${fact:...}` 或 `fact_ref`，渲染时再替换为展示值。
+
+因此可以分别检查：
+
+- 计算是否正确。
+- 数字是否有来源。
+- DSL 是否引用了不存在的 fact。
+- 最终文件是否残留占位符。
+- 同一个事实在 DOCX 和 PPTX 中是否一致。
+
+### 为什么 OfficeCLI 要固定版本和 checksum
+
+如果任务运行时跟随 latest，同一份代码今天和下周可能生成不同结果，CI 也无法复现。固定 v1.0.135、平台资产名和 SHA-256 后，版本选择来自唯一 contract；launcher 只负责安全准备和执行，不维护第二份版本表。
+
+### 为什么 plan 做成静态工具
+
+动态生成工具 schema 会改变每轮 tool definitions，破坏稳定 prompt 前缀和缓存，也让恢复协议更复杂。静态 `plan` 工具只用 action 区分 create/get/confirm/update/complete，schema 稳定，计划内容作为数据持久化。
+
 ## 验证方式
 
 ### P1 Skill 回归
@@ -390,3 +449,36 @@ bun run build
 3. `docs/修改记录.md`
 
 该规则已写入仓库根目录 `AGENTS.md`，并同样适用于 P0-P8 其他阶段的对应 runtime code notes。
+
+## 面试怎么讲
+
+### 30 秒回答
+
+> P1 我做了两个独立 Office Skill。Python Skill 是窄而确定的周报/PPT 工作流，OfficeCLI Skill 是固定版本的通用 Office CLI 能力。它们共享 workbook 检查和 verified facts，但不强制共享 DSL。模型负责规划和叙述，数字由确定性脚本计算，所有关键数字通过 fact id 进入产物。这样既能做真实交付，也能比较两种引擎，并让后续 policy、artifact、trace 对 Skill 保持通用。
+
+### 高频追问
+
+**为什么不把两个实现放在同一个 Skill 里加 `--backend`？**
+
+因为它们不是同一工作流的两个渲染器：OfficeCLI 还有 inspect、DOM、raw、plugin、MCP 等独立能力。合并会混淆能力发现、依赖、开关、路由和权限边界。
+
+**模型如果直接在文字里写数字怎么办？**
+
+Skill 约束定量结论必须先产出 facts；validator 和 P5 的 `data_consistency` 检查 expected quantitative key 与 fact id。它不是从语言风格上“劝模型别幻觉”，而是建立可验证的数据链。
+
+**自动激活 plan 是否等于自动批准危险操作？**
+
+不等于。plan 只确认任务契约；每个具体工具调用仍单独经过 P3 Policy。自动计划可以执行普通安全步骤，高风险写入、外发或网络仍可能进入 approval。
+
+**为什么 shared core 没有 `SKILL.md`？**
+
+它是两个 Skill 的代码依赖，不是第三个用户可选择能力。没有 `SKILL.md` 可以避免它进入 Skills summary，减少模型误路由。
+
+## 自测：读完 P1 应该能回答
+
+1. 什么是垂直切片，为什么 P1 不只是文件渲染？
+2. verified facts 的字段怎样支持追溯和验证？
+3. Python Skill 与 OfficeCLI Skill 的边界是什么？
+4. plan hash 解决什么问题，为什么确认后计划变化要重新确认？
+5. 为什么 Skill 路由不写进 AgentLoop 的 Office 专用分支？
+6. 为什么固定 OfficeCLI 版本、checksum 和禁用自更新？
