@@ -11,6 +11,7 @@ import {
 import type { StreamError } from "@/lib/nanobot-client";
 import type {
   InboundEvent,
+  InteractionRequestPayload,
   ExecutionMode,
   OutboundCliAppMention,
   OutboundImageGeneration,
@@ -441,6 +442,13 @@ export function useNanobotStream(
   runStartedAt: number | null;
   /** Latest sustained goal for this ``chatId`` (``goal_state`` WS events). */
   goalState: GoalStateWsPayload | undefined;
+  interactions: InteractionRequestPayload[];
+  respondInteraction: (
+    requestId: string,
+    expectedRevision: number,
+    response: Record<string, unknown>,
+  ) => void;
+  confirmPlanInteraction: (taskId: string, planHash: string) => boolean;
   send: (content: string, images?: SendImage[], options?: SendOptions) => void;
   transcribeAudio: (dataUrl: string, options?: { durationMs?: number }) => Promise<string>;
   stop: () => void;
@@ -464,6 +472,7 @@ export function useNanobotStream(
   /** Unix epoch seconds when the current user turn started; cleared on ``idle``. */
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [goalState, setGoalState] = useState<GoalStateWsPayload | undefined>(undefined);
+  const [interactions, setInteractions] = useState<InteractionRequestPayload[]>([]);
   const [streamError, setStreamError] = useState<StreamError | null>(null);
   const buffer = useRef<StreamBuffer | null>(null);
   const activeAssistantRef = useRef<ActiveAssistantCursor | null>(null);
@@ -705,6 +714,7 @@ export function useNanobotStream(
     setStreamError(null);
     setRunStartedAt(chatId ? client.getRunStartedAt(chatId) : null);
     setGoalState(chatId ? client.getGoalState(chatId) : undefined);
+    setInteractions((prev) => (prev.length ? [] : prev));
     buffer.current = null;
     activeAssistantRef.current = null;
     closedAssistantStreamIdsRef.current.clear();
@@ -802,6 +812,16 @@ export function useNanobotStream(
         } else {
           setRunStartedAt(null);
         }
+        return;
+      }
+
+      if (ev.event === "interaction_request" || ev.event === "interaction_updated") {
+        const interaction = ev.interaction;
+        setIsStreaming(false);
+        setInteractions((prev) => {
+          const without = prev.filter((item) => item.request_id !== interaction.request_id);
+          return interaction.status === "pending" ? [...without, interaction] : without;
+        });
         return;
       }
 
@@ -1113,11 +1133,39 @@ export function useNanobotStream(
     [client],
   );
 
+  const respondInteraction = useCallback((
+    requestId: string,
+    expectedRevision: number,
+    response: Record<string, unknown>,
+  ) => {
+    if (!chatId) return;
+    client.respondInteraction(chatId, requestId, expectedRevision, response);
+  }, [chatId, client]);
+
+  const confirmPlanInteraction = useCallback((taskId: string, planHash: string): boolean => {
+    if (!chatId || !taskId || !planHash) return false;
+    const interaction = interactions.find((item) => {
+      if (item.kind !== "plan_confirmation" || item.status !== "pending") return false;
+      const payloadPlanHash = typeof item.payload?.plan_hash === "string"
+        ? item.payload.plan_hash
+        : null;
+      return item.task_id === taskId && (item.plan_hash ?? payloadPlanHash) === planHash;
+    });
+    if (!interaction) return false;
+    client.respondInteraction(chatId, interaction.request_id, interaction.revision, {
+      approved: true,
+    });
+    return true;
+  }, [chatId, client, interactions]);
+
   return {
     messages,
     isStreaming,
     runStartedAt,
     goalState,
+    interactions,
+    respondInteraction,
+    confirmPlanInteraction,
     send,
     transcribeAudio,
     stop,

@@ -1,0 +1,42 @@
+{
+  "case_id": "office_baseline",
+  "metrics": [
+    "artifact_completion",
+    "file_openable",
+    "data_consistency",
+    "openxml_validation",
+    "visual_sanity",
+    "replayability"
+  ],
+  "expected_artifacts": [
+    "../office_weekly/sales_data.xlsx",
+    "../office_weekly/meeting_notes.md"
+  ],
+  "files": ["../office_weekly/sales_data.xlsx"],
+  "screenshots": ["../../../webui/public/brand/nanobot_logo.png"],
+  "page_count": 1,
+  "expected_facts": {
+    "total_gmv_cny": 1710000,
+    "total_orders": 570,
+    "conversion_rate": 0.0780821918,
+    "top_region_by_gmv": "East"
+  },
+  "actual_facts": {
+    "total_gmv_cny": 1710000,
+    "total_orders": 570,
+    "conversion_rate": 0.0780821918,
+    "top_region_by_gmv": "East"
+  },
+  "fact_ids": [
+    "total_gmv_cny",
+    "total_orders",
+    "conversion_rate",
+    "top_region_by_gmv"
+  ],
+  "evidence": {
+    "openxml_valid": true,
+    "input_snapshot_verified": true,
+    "artifact_checksums_verified": true,
+    "engine_version_recorded": true
+  }
+}

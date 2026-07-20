@@ -11,13 +11,21 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMResponse, ToolCallRequest
+from nanobot.runtime.policy import PermissionDecision
 
 
 def _make_loop(tmp_path: Path) -> AgentLoop:
     bus = MessageBus()
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
-    return AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+    loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+    loop.policy.evaluate = MagicMock(return_value=PermissionDecision(
+        action="allow",
+        reason="message suppression unit test preauthorizes the send",
+        matched_rules=("test.allow",),
+        risk_level="high",
+    ))
+    return loop
 
 
 class TestMessageToolSuppressLogic:

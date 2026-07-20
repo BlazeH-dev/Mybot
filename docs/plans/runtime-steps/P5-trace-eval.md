@@ -1,11 +1,11 @@
 # P5 Trace 与 Eval Harness
 
-> 状态：待执行。S5.0 紧随 P3；P5 Core 在 P4/P8 后收口。Judge/Verifier、多模型和 KV cache 为选做。
+> 状态：S5.0 与 P5 Core 已完成（2026-07-18）。Judge/Verifier、多模型和 KV cache 为选做。
 > 出口：关键 Agent 行为可回归，任务可追踪，安全/数字/文件硬门可量化。
 
 ## 1. 三层测试结构
 
-1. 纯脚本/状态机单测：事实、schema、policy、OCC、artifact、预算。
+1. 纯脚本/状态机单测：事实、schema、policy、OCC、artifact、生命周期熔断。
 2. 轻量 cassette Agent smoke：无 API key、无网络复现关键模型行为。
 3. 真模型 benchmark：手动跑质量、成本、时长和模型差异，不进入 CI。
 
@@ -25,7 +25,7 @@
 - plan-only create→confirm→update→complete，以及普通 WebUI create→automatic activation→update→complete；
 - required/auto_resolve/expire_and_deny 的回答或 deadline 恢复；
 - approval/注入诱导越权副作用防护与文件冲突；
-- checkpoint 恢复。Subagent 权限/预算优先用 fake provider 确定性测试。
+- checkpoint 恢复。Subagent 权限、无任务配额、取消与循环熔断优先用 fake provider 确定性测试。
 
 验收：replay 不发网络请求，等待期间 provider 未被调用，prompt 行为变化可读失败，总 CI < 60 秒。
 
@@ -40,7 +40,7 @@
 - plan、tool call/result；
 - policy、InteractionRequest 策略/等待/回答/超时、approval；
 - file conflict、input/artifact/checkpoint；
-- Subagent 预算、child span、汇总与取消。
+- Subagent quota mode、child span、usage、汇总、取消与循环熔断。
 
 字段对齐 OpenTelemetry GenAI 语义约定；自有字段使用 `mybot.*`。默认脱敏输入输出摘要。人类等待时间与模型/工具执行时间分开。
 
@@ -112,11 +112,11 @@ untrusted_content_safety
 
 ## 阶段出口
 
-- [ ] 关键 cassette 无网络通过，三档 HITL、计划、冲突、恢复有回归。
-- [ ] JSONL trace 对齐 OTel，父子 span 与人类等待时间可查。
-- [ ] ≥5 个确定性 case 和红队硬门进入报告/CI。
-- [ ] 数字、权限、文件、approval 超时、恢复和 replayability 有基线。
-- [ ] 越权副作用、泄漏、未确认外发和 child 绕过为 0。
-- [ ] 使用 Subagent 的任务有单/多 Agent 成功率、时长和 token 对比。
-- [ ] trace 可导出标准查看器；eval 报告可读。
-- [ ] 选做项未完成不影响 P5 Core 出口。
+- [x] 关键 cassette 无网络通过，三档 HITL、计划、冲突、恢复有回归。
+- [x] JSONL trace 对齐 OTel，父子 span 与人类等待时间可查。
+- [x] ≥5 个确定性 case 和红队硬门进入报告/CI。
+- [x] 数字、权限、文件、approval 超时、恢复和 replayability 有基线。
+- [x] 越权副作用、泄漏、未确认外发和 child 绕过为 0。
+- [x] 使用 Subagent 的任务有单/多 Agent 成功率、时长和 token 对比。
+- [x] trace 可导出标准查看器；eval 报告可读。
+- [x] 选做项未完成不影响 P5 Core 出口。

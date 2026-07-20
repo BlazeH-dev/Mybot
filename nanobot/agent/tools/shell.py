@@ -397,16 +397,20 @@ class ExecTool(Tool):
         if guard_error:
             return guard_error
 
-        if self.sandbox:
+        sandbox = self.sandbox or ("auto" if access.restrict_to_workspace else "")
+        if sandbox:
             if _IS_WINDOWS:
-                logger.warning(
-                    "Sandbox '{}' is not supported on Windows; running unsandboxed",
-                    self.sandbox,
+                return (
+                    "Error: sandbox_unavailable: native Windows sandboxing is unsupported; "
+                    "use WSL2 or explicitly select Full Access."
                 )
-            else:
-                workspace = workspace_root or cwd
-                command = wrap_command(self.sandbox, command, workspace, cwd)
-                cwd = str(Path(workspace).resolve())
+            workspace = workspace_root or cwd
+            try:
+                command = wrap_command(sandbox, command, workspace, cwd)
+            except Exception as exc:
+                code = getattr(exc, "code", "sandbox_unavailable")
+                return f"Error: {code}: {exc}"
+            cwd = str(Path(workspace).resolve())
 
         effective_timeout = self._resolve_timeout(timeout)
         env = self._build_env()

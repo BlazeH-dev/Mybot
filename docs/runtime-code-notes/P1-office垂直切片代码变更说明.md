@@ -5,6 +5,9 @@
 > 2026-07-14 修订：撤销“单 Skill + OfficeCLI 默认后端 + legacy Python 后端”的结构，改为两个地位独立、可分别启用或禁用的 Skill。
 > 2026-07-16 修复：新增随 Python 包安装的固定版本 launcher，首次调用按 provider contract 下载、校验并缓存 v1.0.135，不再要求用户手工准备 binary。
 > 2026-07-16：阶段计划仅合并重复背景与步骤，双 Skill、facts、路由、contract、测试和 plan 契约不变。
+> 2026-07-18：plan-only 确认已接入持久化 `InteractionRequest`，以 `awaiting_plan_confirmation` 挂起并在 typed WebSocket/WebUI 回复后恢复原 tool call。
+> 2026-07-20：修复 plan-only 完成后计划卡片右下角“执行计划”缺失；挂起工具保留已成功的 plan result 事件，按钮直接响应 hash-bound `plan_confirmation`。
+> 2026-07-20：计划确认不再额外展示通用 InteractionRequest 卡片；页面只保留计划卡片右下角“执行计划”入口。
 
 ## 阶段目标
 
@@ -199,7 +202,7 @@ tests/agent/tools/test_plan_tool.py
 - create 规范化计划并计算不可变 contract hash。
 - 普通 WebUI 回合发送 `execution_mode=default`；复杂任务调用 create 后计划自动进入 active，模型可直接执行并持续更新步骤。
 - 输入框“计划”按钮发送 `execution_mode=plan_only`；AgentLoop 只暴露 plan、文件读取/搜索和网页读取工具，禁止 Shell、写文件、CLI、MCP 与其他副作用。
-- plan-only create 保持 `awaiting_confirmation`；同一回合禁止 confirm，必须由用户在后续回合确认。
+- plan-only create 的 plan 记录保持 `awaiting_confirmation`，Runner 以 `awaiting_plan_confirmation` 停止，并创建绑定 task id、plan hash 和原 `tool_call_id` 的持久化 `InteractionRequest`；同一回合禁止 confirm。
 - confirm 必须提交精确 hash，并记录确认消息 id；计划卡片的“执行计划”按钮会发送带 task id 与 hash 的显式确认消息。
 - update_step 检查依赖顺序。
 - complete 核对计划产物与实际交付路径。
@@ -207,7 +210,11 @@ tests/agent/tools/test_plan_tool.py
 
 WebUI 新增 `PlanProgressCard`，直接消费现有结构化 tool progress event，因此实时流和 transcript 重放使用同一数据源。卡片只显示最新计划快照，展示 pending / in_progress / done / skipped，并在待确认状态提供执行按钮。
 
-P3 计划用持久化 `InteractionRequest` 承接通用问题、需要人工确认的 plan-only/手动计划、恢复决定和高风险审批：`required` 必须回答，`auto_resolve` 到 deadline 后按默认值或最佳判断继续，安全 approval 固定 `expire_and_deny`。普通 WebUI 自动激活计划不创建 plan confirmation，但其每个工具调用仍经过独立 policy/approval。等待时当前 LLM 调用已结束，task/turn 逻辑挂起并释放 Runner 资源；回答或 deadline 恢复同一执行链。P4 checkpoint 只服务 active/completed 且 `approved_plan_hash` 绑定当前 hash 的计划任务。
+plan-only create 属于“工具已成功、turn 待人工恢复”；Runner 因此在 tool progress 中保留 plan JSON 的 `end` 事件，不再把它降级为无 result 的 error。卡片右下角“执行计划”优先查找 task id + plan hash 精确匹配的 pending `plan_confirmation`，并调用 typed interaction response；仅对无持久化交互的旧历史保留聊天确认兼容路径。
+
+pending `plan_confirmation` 仍保留在 `useNanobotStream` 状态中用于 revision-bound 确认，但 `InteractionRequests` 不渲染该 kind；因此不会在输入框上方再出现重复的计划确认卡。
+
+P3 已用持久化 `InteractionRequest` 承接通用问题、plan-only/手动计划确认、恢复决定和高风险审批：`required` 必须回答，`auto_resolve` 到 deadline 后按默认值或最佳判断继续，安全 approval 固定 `expire_and_deny`。普通 WebUI 自动激活计划不创建 plan confirmation，但其每个工具调用仍经过独立 policy/approval。等待时当前 LLM 调用已结束，task/turn 逻辑挂起并释放 Runner 资源；typed 回答或 deadline 恢复同一执行链，普通聊天不能绕过待处理交互。P4 checkpoint 只服务 active/completed 且 `approved_plan_hash` 绑定当前 hash 的计划任务。
 
 ### 7. WebUI artifact 面板
 
@@ -364,14 +371,15 @@ bun run build
 - OfficeCLI compiler、contract、约束和真实 binary 集成入口保留。
 - 静态 Plan Tool、artifact 面板和现有测试未回归。
 - WebUI 仅规划按钮、默认复杂任务自动 plan-and-execute、计划步骤卡片和执行入口已落地。
+- plan-only 确认已通过 typed `InteractionRequest` 持久化挂起/恢复，保留原 `tool_call_id` 和 plan hash 绑定。
 
 后续阶段接续：
 
 - P2（已完成）：两个 Skill 已增加正式 manifest，并由 `SkillsLoader` 提供 Registry、局部 fail closed、结构化 availability 与统一 disabled 语义；缺失 manifest 继续兼容。
-- P3：实现参数级 allow/ask/deny、三档持久化 `InteractionRequest`、参数绑定 `expire_and_deny` approval、文件 fresh-read hash 和不可放宽的 workspace/network/sensitive 边界。
-- P4：实现不可变输入快照、artifact/lineage 和已激活、hash 绑定计划任务的 checkpoint/resume；恢复状态使用 completed/pending/uncertain。
-- P5：记录 Skill、引擎、facts、policy、artifact 和成本时长 trace，安全目标是“不可信内容无法诱导未授权副作用或泄漏”。
-- P8：支持最多 5 个直接子 Agent、禁止嵌套、权限只收紧、隔离上下文/产物、父 Agent 汇总事实与结果，并比较单 Agent 顺序执行和双 Agent 并行执行的成本与时长；共享 workspace 文件租约仅作选做增强。
+- P3（已完成）：已实现参数级 allow/ask/deny、三档持久化 `InteractionRequest`、参数绑定 `expire_and_deny` approval、文件 fresh-read hash 和不可放宽的 workspace/network/sensitive 边界。
+- P4（已完成）：已实现不可变输入快照、artifact/lineage 和已激活、hash 绑定计划任务的 checkpoint/resume；恢复状态使用 completed/pending/uncertain。
+- P5 Core（已完成）：已记录 Skill、引擎、facts、policy、artifact 和成本时长 trace，并以确定性 eval/红队验证“不可信内容无法诱导未授权副作用或泄漏”。
+- P8（已完成）：已支持最多 5 个直接子 Agent、禁止嵌套、权限只收紧、隔离上下文/产物、父 Agent 汇总事实与结果以及单/多 Agent 对比；共享 workspace 文件租约仅作选做增强。
 
 ## 维护约定
 

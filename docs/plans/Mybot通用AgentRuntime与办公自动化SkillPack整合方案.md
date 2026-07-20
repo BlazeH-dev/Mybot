@@ -1,6 +1,6 @@
 # Mybot 通用 Agent Runtime 与 Office Skill Pack 整合方案
 
-> 当前基线：2026-07-16。历史修订统一见 `docs/修改记录.md`，本文只保留当前有效决策。
+> 当前基线：2026-07-20。历史修订统一见 `docs/修改记录.md`，本文只保留当前有效决策。
 
 ## 1. 定位与目标
 
@@ -9,7 +9,7 @@ Mybot 基于 nanobot v0.2.1 二次开发，不重写 Agent 框架，而是在现
 目标是证明四件事：
 
 1. **能扩展**：通过 Skill Pack 增加领域能力，不在核心循环写领域私有分支。
-2. **能治理**：工具、文件、网络、MCP 和 Subagent 受统一权限、HITL、预算与硬边界约束。
+2. **能治理**：工具、文件、网络、MCP 和 Subagent 受统一权限、HITL、生命周期熔断与硬边界约束。
 3. **能交付**：输入、计划、事实、中间产物和最终文件可追踪、可验证、可恢复。
 4. **能证明**：关键行为有确定性测试、trace、指标和可复现 demo。
 
@@ -62,7 +62,7 @@ nanobot/security/sandbox/
   launcher.py        Agent 触发子进程的统一启动边界
   seatbelt.py        macOS Seatbelt provider
   bwrap.py           Linux / WSL2 Bubblewrap provider
-  network.py         默认断网、域名绑定代理与审计
+  network.py         默认断网、严格 fetch argv、域名/端口/DNS IP 绑定与审计
 ```
 
 硬边界继续归属 `nanobot/security/`。P3 在现有 `WorkspaceScope`、workspace path guard、SSRF 和 `agent/tools/sandbox.py` 基础上补齐 OS 强制沙箱，不在 `nanobot/runtime/` 平行重建路径判断。`nanobot/runtime/` 负责策略、状态、审计和恢复；WebUI 现有 Default Permission / Full Access 继续作为会话级 access profile，并确定性映射为 sandbox/policy 组合。
@@ -92,7 +92,7 @@ nanobot/security/sandbox/
 
 - 静态内建 `plan` 工具固定提供 `create/get/confirm/update_step/complete`。
 - plan hash 只覆盖不可变契约；修改计划后旧确认失效。
-- WebUI `execution_mode=plan_only` 只开放 plan 与只读检查工具，create 后停在 `awaiting_confirmation`，同回合不得 confirm 或执行。
+- WebUI `execution_mode=plan_only` 只开放 plan 与只读检查工具；plan 记录停在 `awaiting_confirmation`，Runtime turn 以 `awaiting_plan_confirmation` 持久化挂起，同回合不得 confirm 或执行。
 - 普通 WebUI 复杂任务 create 后可自动激活；激活时 `approved_plan_hash` 必须等于当前 plan hash，并记录 `approval.mode=automatic`。
 - 手动/仅规划计划必须显式确认后激活；步骤依赖和 expected artifacts 由工具硬校验。
 - 自动激活只表示允许按计划推进，不批准高风险工具；外发和远程写仍独立经过 P3 policy/approval。本地已有文件写入与高风险本地 Shell 是否 ask 由当前 WebUI access profile 决定，但无论何种 profile 都必须经过 P3 OCC / hard deny。
@@ -103,7 +103,7 @@ nanobot/security/sandbox/
 - `sandbox_mode` 使用 `read_only|workspace_write|danger_full_access`：plan-only 映射 `read_only`，Default Permission 映射 `workspace_write`，Full Access 映射 `danger_full_access`。
 - `workspace_write` 必须由 OS provider 强制：macOS 使用 Seatbelt，Linux/WSL2 使用 Bubblewrap；原生 Windows 首版不宣称支持。provider 缺失时返回 `sandbox_unavailable`，不得静默无沙箱执行；用户只能显式切换 Full Access 或修复 provider。
 - workspace 默认仅项目目录与当前 task artifact 目录可写；builtin Skill、上传媒体和必要系统运行库只读；`~/.nanobot`、凭据、Runtime interactions/checkpoint/trace 控制文件和项目 `.git` 默认不可由普通 sandbox 命令写入。
-- sandbox 内命令默认断网。需要网络时先规范化目标域名并经过 policy；批准只形成绑定当前 tool call/command hash/domain/expiry 的最小例外，SSRF、内网、metadata 和敏感目标仍 hard deny。
+- sandbox 内命令默认断网。Core 网络例外只支持直接 `curl`：禁止 shell 组合、redirect、proxy/resolve/config/interface 等目标改写，批准绑定当前 tool call/command hash/domain/port/审批时公网 DNS 地址/expiry，并以 `--resolve` 固定目标；SSRF、内网、metadata 和敏感目标仍 hard deny。
 - 沙箱覆盖 Agent 触发的 Shell 一次性/持久 session、CLI Apps 与 OfficeCLI 子进程；预配置 MCP server、channel bootstrap 和网关自身进程首版不纳入同一 OS 边界，必须在文档和 UI 标明，并继续受调用级 policy/SSRF 约束。
 - `danger_full_access` 表示用户明确关闭本地 OS 文件/网络沙箱，不等于关闭 Runtime policy：消息、邮件、远程写、凭据访问、OCC 和 hard deny 仍独立生效。
 
@@ -143,7 +143,8 @@ nanobot/security/sandbox/
 ### 4.6 Subagent 治理
 
 - 每个父任务最多 5 个直接 child，禁止嵌套。
-- 权限只能继承或收紧；每个 child 必须有 token、时间、工具调用预算。
+- 权限只能继承或收紧；child 不设置 token、总时长或工具调用配额，避免长任务因父 Agent 低估工作量而失败。
+- 保留用户/父任务取消、网关关闭、单次 LLM 请求超时和 200 轮异常循环熔断；触发循环熔断时返回部分进展。
 - child 只接收必要目标、约束和 artifact 引用，不复制完整父会话。
 - child 默认只写自己的 artifact 子目录，父 Agent 负责事实共享、冲突处理和最终汇总。
 - 任何使用 Subagent 的任务都要记录父子 trace，并与单 Agent 顺序执行比较成功率、时长和 token 成本。
@@ -156,11 +157,11 @@ nanobot/security/sandbox/
 | [P0 准备](runtime-steps/P0-准备.md)                                   | 已完成 | 固定 Office fixture、Python 3.11 CI smoke            | fixture 可复算，workflow 可运行；远端状态以最新 Actions 记录为准 |
 | [P1 Office 垂直切片](runtime-steps/P1-office垂直切片.md)                  | 已完成 | 双 Office Skill、共享 facts、仅规划/自动执行、计划步骤 UI       | 两条 Office 路径和两种计划模式可验证                         |
 | [P2 Manifest](runtime-steps/P2-skillpack-manifest.md)             | 已执行 | typed manifest、局部 fail closed、availability、开关     | 坏 Skill 不拖垮网关且不能进入候选                          |
-| [P3 Sandbox/Policy/HITL/OCC](runtime-steps/P3-policy权限层.md)       | 待执行 | OS sandbox、policy gate、三档 InteractionRequest、approval、文件 OCC | 无静默降级，硬边界不可绕过，等待可恢复，冲突拦截 100%             |
-| [S5.0 轻量回放](runtime-steps/P5-trace-eval.md)                       | 待执行 | 3–4 个关键 cassette smoke                            | 无 API key、无网络即可回归关键 Agent 行为                  |
-| [P4 Artifact/Checkpoint](runtime-steps/P4-artifact-checkpoint.md) | 待执行 | 输入快照、artifact/lineage、计划任务恢复                      | kill→resume 可验证，uncertain 不自动重试               |
-| [P8 Subagent](runtime-steps/P8-多agent编排.md)                       | 待执行 | 数量/嵌套/权限/预算/上下文/产物治理                              | 父子 trace 完整并有单/多 Agent 对比                     |
-| [P5 Core Trace/Eval](runtime-steps/P5-trace-eval.md)              | 待执行 | JSONL/OTel trace、确定性 eval、红队、报告                   | 安全/数字/文件硬门进入 CI/benchmark                     |
+| [P3 Sandbox/Policy/HITL/OCC](runtime-steps/P3-policy权限层.md)       | 已完成 | OS sandbox、policy gate、三档 InteractionRequest、approval、文件 OCC | 无静默降级，硬边界不可绕过，等待可恢复，冲突拦截 100%             |
+| [S5.0 轻量回放](runtime-steps/P5-trace-eval.md)                       | 已完成 | 4 个关键 cassette smoke                              | 无 API key、无网络即可回归关键 Agent 行为                  |
+| [P4 Artifact/Checkpoint](runtime-steps/P4-artifact-checkpoint.md) | 已完成 | 输入快照、artifact/lineage、计划任务恢复                      | kill→resume 可验证，uncertain 不自动重试               |
+| [P8 Subagent](runtime-steps/P8-多agent编排.md)                       | 已完成 | 数量/嵌套/权限/生命周期/上下文/产物治理                            | 父子 trace 完整并有单/多 Agent 对比                     |
+| [P5 Core Trace/Eval](runtime-steps/P5-trace-eval.md)              | 已完成 | JSONL/OTel trace、确定性 eval、红队、报告                   | 安全/数字/文件硬门进入 CI/benchmark                     |
 | [P6 Research](runtime-steps/P6-通用性扩展.md)                          | 待执行 | 1–2 天最小 Research Skill                            | 不改 Runtime 核心即可复用治理设施                         |
 | [P7 交付物](runtime-steps/P7-面试交付物.md)                               | 持续  | benchmark、README、demo、答辩稿                         | 陌生人可复现，表述与实际完成度一致                             |
 
@@ -228,7 +229,7 @@ Skill 开关
 → approval 超时拒绝 + file_conflict
 → input snapshot + lineage
 → kill/resume
-→ Subagent 父子 trace 与预算
+→ Subagent 父子 trace、取消与循环熔断
 → eval/benchmark
 ```
 
@@ -250,4 +251,4 @@ Skill 开关
 - 用户/IDE 修改不会被过期读取静默覆盖。
 - 已激活且 hash 绑定的计划任务可从可验证 checkpoint 恢复，未知副作用转人工。
 - Office 与 Research 都能形成可追踪产物和确定性报告。
-- Subagent 权限、预算、上下文、产物和成本均可核对。
+- Subagent 权限、上下文、产物、usage、取消和循环熔断均可核对。

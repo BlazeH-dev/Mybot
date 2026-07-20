@@ -94,6 +94,43 @@ class FileStates:
             return "Warning: file has been modified since last read. Re-read to verify content before editing."
         return None
 
+    def check_fresh(self, path: str | Path) -> str | None:
+        """Return a stable P3 OCC conflict code for an existing file.
+
+        The content hash is always compared, even when mtime is unchanged. This
+        is the hard preflight used by write/edit/apply_patch; unlike the legacy
+        warning helper it never permits an overwrite after a stale read.
+        """
+        p = str(Path(path).resolve())
+        entry = self._state.get(p)
+        if entry is None:
+            return (
+                "file_conflict:not_read: existing file must be read by the current "
+                "actor before it can be modified"
+            )
+        try:
+            current_hash = _hash_file(p)
+        except OSError:
+            current_hash = None
+        if entry.content_hash != current_hash:
+            entry.can_dedup = False
+            return (
+                "file_conflict:modified_since_read: file content changed after the "
+                "current actor read it"
+            )
+        return None
+
+    def preflight_existing(self, paths: list[str | Path]) -> str | None:
+        """Validate every existing target before any multi-file write occurs."""
+        for path in paths:
+            resolved = Path(path).resolve()
+            if not resolved.exists():
+                continue
+            conflict = self.check_fresh(resolved)
+            if conflict:
+                return f"{conflict}: {resolved}"
+        return None
+
     def is_unchanged(self, path: str | Path, offset: int = 1, limit: int | None = None) -> bool:
         """Return True if file was previously read with same params and content is unchanged."""
         p = str(Path(path).resolve())

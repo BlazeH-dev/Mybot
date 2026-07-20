@@ -28,6 +28,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.paths import get_media_dir
 from nanobot.config.schema import Base
+from nanobot.runtime.interactions import InteractionError
 from nanobot.security.workspace_access import (
     WORKSPACE_SCOPE_METADATA_KEY,
     WorkspaceScopeError,
@@ -356,6 +357,7 @@ class WebSocketChannel(BaseChannel):
         self._media = gateway.media
         self._transcripts = gateway.transcripts
         self._workspaces = gateway.workspaces
+        self._interactions = gateway.interactions
 
         self._stream_text_buffers: dict[tuple[str, str], list[str]] = {}
 
@@ -410,6 +412,18 @@ class WebSocketChannel(BaseChannel):
         """Replay goal/run strip state after subscribe (same-process refresh)."""
         await self._maybe_push_active_goal_state(chat_id)
         await self._maybe_push_turn_run_wall_clock(chat_id)
+        self._interactions.expire_due()
+        for request in self._interactions.list_pending():
+            binding = request.payload.get("binding") if isinstance(request.payload, dict) else None
+            request_chat_id = (
+                request.payload.get("chat_id")
+                if isinstance(request.payload, dict)
+                else None
+            )
+            if request_chat_id is None and isinstance(binding, dict):
+                request_chat_id = binding.get("chat_id")
+            if request_chat_id == chat_id:
+                await self.send_interaction_request(chat_id, request.as_dict())
 
     async def _send_event(self, connection: Any, event: str, **fields: Any) -> None:
         """Send a control event (attached, error, ...) to a single connection."""
@@ -790,6 +804,76 @@ class WebSocketChannel(BaseChannel):
             event, payload = await webui_transcription_event(envelope)
             await self._send_event(connection, event, **payload)
             return
+        if t == "interaction_response":
+            cid = envelope.get("chat_id")
+            request_id = envelope.get("request_id")
+            revision = envelope.get("expected_revision")
+            idempotency_key = envelope.get("idempotency_key")
+            response = envelope.get("response")
+            if not _is_valid_chat_id(cid):
+                await self._send_event(connection, "error", detail="invalid chat_id")
+                return
+            if not isinstance(request_id, str) or not isinstance(revision, int):
+                await self._send_event(connection, "error", detail="invalid_interaction_response")
+                return
+            if not isinstance(idempotency_key, str) or not isinstance(response, dict):
+                await self._send_event(connection, "error", detail="invalid_interaction_response")
+                return
+            try:
+                existing = self._interactions.get(request_id)
+                binding = (
+                    existing.payload.get("binding")
+                    if isinstance(existing.payload, dict)
+                    else None
+                )
+                request_chat_id = (
+                    existing.payload.get("chat_id")
+                    if isinstance(existing.payload, dict)
+                    else None
+                )
+                if request_chat_id is None and isinstance(binding, dict):
+                    request_chat_id = binding.get("chat_id")
+                if request_chat_id != cid:
+                    raise InteractionError("request_chat_mismatch", request_id)
+                updated = self._interactions.respond(
+                    request_id,
+                    expected_revision=revision,
+                    idempotency_key=idempotency_key,
+                    response=response,
+                )
+            except InteractionError as exc:
+                await self._send_event(
+                    connection,
+                    "error",
+                    detail="interaction_rejected",
+                    reason=exc.code,
+                    chat_id=cid,
+                    request_id=request_id,
+                )
+                return
+
+            await self.send_interaction_updated(cid, updated.as_dict())
+            scope = self._workspaces.scope_for_session_key(f"websocket:{cid}")
+            approved = updated.status.value == "approved"
+            content = (
+                f"[Typed interaction response for {request_id}: "
+                f"{'approved' if approved else updated.status.value}]"
+            )
+            metadata = {
+                "webui": True,
+                "interaction_response": True,
+                "interaction_request_id": request_id,
+                WORKSPACE_SCOPE_METADATA_KEY: scope.metadata(),
+            }
+            self._transcripts.append_user_message(cid, content, metadata=metadata)
+            await self._handle_message(
+                sender_id=client_id,
+                chat_id=cid,
+                content=content,
+                metadata=metadata,
+                is_dm=False,
+            )
+            return
         if t == "message":
             cid = envelope.get("chat_id")
             content = envelope.get("content")
@@ -1006,6 +1090,17 @@ class WebSocketChannel(BaseChannel):
                 msg.metadata,
             )
             return
+        agent_ui = msg.metadata.get(OUTBOUND_META_AGENT_UI)
+        if isinstance(agent_ui, dict) and agent_ui.get("kind") == "interaction_request":
+            interaction = agent_ui.get("interaction")
+            if isinstance(interaction, dict):
+                await self.send_interaction_request(msg.chat_id, interaction)
+            return
+        if isinstance(agent_ui, dict) and agent_ui.get("kind") == "interaction_updated":
+            interaction = agent_ui.get("interaction")
+            if isinstance(interaction, dict):
+                await self.send_interaction_updated(msg.chat_id, interaction)
+            return
         text = msg.content
         wire_text = self._media.rewrite_local_markdown_images(text)
         payload: dict[str, Any] = {
@@ -1029,7 +1124,6 @@ class WebSocketChannel(BaseChannel):
             payload["latency_ms"] = int(lat)
         if msg.metadata.get("_tool_events"):
             payload["tool_events"] = msg.metadata["_tool_events"]
-        agent_ui = msg.metadata.get(OUTBOUND_META_AGENT_UI)
         if agent_ui is not None:
             payload["agent_ui"] = agent_ui
         # Mark intermediate agent breadcrumbs (tool-call hints, generic
@@ -1139,6 +1233,34 @@ class WebSocketChannel(BaseChannel):
             return
         for connection in conns:
             await self._safe_send_to(connection, raw, label=" file_edit ")
+
+    async def send_interaction_request(
+        self,
+        chat_id: str,
+        interaction: dict[str, Any],
+    ) -> None:
+        payload = {
+            "event": "interaction_request",
+            "chat_id": chat_id,
+            "interaction": interaction,
+        }
+        raw = json.dumps(payload, ensure_ascii=False)
+        for connection in list(self._subs.get(chat_id, ())):
+            await self._safe_send_to(connection, raw, label=" interaction_request ")
+
+    async def send_interaction_updated(
+        self,
+        chat_id: str,
+        interaction: dict[str, Any],
+    ) -> None:
+        payload = {
+            "event": "interaction_updated",
+            "chat_id": chat_id,
+            "interaction": interaction,
+        }
+        raw = json.dumps(payload, ensure_ascii=False)
+        for connection in list(self._subs.get(chat_id, ())):
+            await self._safe_send_to(connection, raw, label=" interaction_updated ")
 
     async def send_delta(
         self,

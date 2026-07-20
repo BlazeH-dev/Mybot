@@ -2155,8 +2155,8 @@ def test_settings_payload_reports_workspace_sandbox(monkeypatch, tmp_path) -> No
     assert sandbox["restrict_to_workspace"] is True
     assert sandbox["level"] == "system"
     assert sandbox["enforced"] is True
-    assert sandbox["provider"] == "macos_app_sandbox"
-    assert sandbox["provider_label"] == "macOS App Sandbox"
+    assert sandbox["provider"] == "seatbelt"
+    assert sandbox["provider_label"] == "macOS Seatbelt"
 
 
 def test_settings_payload_includes_native_runtime_surface(monkeypatch, tmp_path) -> None:

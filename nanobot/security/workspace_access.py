@@ -19,6 +19,8 @@ _PROVIDER_LABELS = {
     "unknown": "Unknown system sandbox",
     "macos_app_sandbox": "macOS App Sandbox",
     "bwrap": "Bubblewrap",
+    "seatbelt": "macOS Seatbelt",
+    "unsupported": "Unsupported platform",
 }
 
 _CURRENT_WORKSPACE_SCOPE: ContextVar["WorkspaceScope | None"] = ContextVar(
@@ -172,7 +174,6 @@ def workspace_sandbox_status(
     """Return how workspace restriction is enforced in the current host."""
 
     workspace_root = str(Path(workspace).expanduser().resolve(strict=False))
-    provider = _env_system_provider(environ)
     if not restrict_to_workspace:
         return WorkspaceSandboxStatus(
             restrict_to_workspace=False,
@@ -184,6 +185,9 @@ def workspace_sandbox_status(
             summary="Workspace restriction is disabled.",
         )
 
+    # Explicit environments are retained as a compatibility/test seam. Real
+    # runtime status is based on a provider smoke, never an environment claim.
+    provider = _env_system_provider(environ) if environ is not None else None
     if provider:
         label = _provider_label(provider)
         return WorkspaceSandboxStatus(
@@ -194,6 +198,27 @@ def workspace_sandbox_status(
             provider=provider,
             provider_label=label,
             summary=f"Workspace restriction is system-enforced by {label}.",
+        )
+
+    if environ is None:
+        from nanobot.security.sandbox import SandboxManager, SandboxMode
+
+        status = SandboxManager().status(
+            mode=SandboxMode.WORKSPACE_WRITE,
+            workspace=workspace_root,
+        )
+        return WorkspaceSandboxStatus(
+            restrict_to_workspace=True,
+            workspace_root=workspace_root,
+            level="system" if status.enforced else "unavailable",
+            enforced=status.enforced,
+            provider=status.provider,
+            provider_label=_provider_label(status.provider),
+            summary=(
+                f"Workspace restriction is system-enforced by {_provider_label(status.provider)}."
+                if status.enforced
+                else f"Workspace sandbox unavailable: {status.reason or status.provider}."
+            ),
         )
 
     return WorkspaceSandboxStatus(

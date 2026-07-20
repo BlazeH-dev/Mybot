@@ -8,6 +8,7 @@ from typing import Any
 
 from loguru import logger as default_logger
 
+from nanobot.runtime.interactions import InteractionManager
 from nanobot.webui.gateway_tokens import GatewayTokenStore
 from nanobot.webui.media_gateway import WebUIMediaGateway
 from nanobot.webui.transcript import WebUITranscriptRecorder
@@ -26,6 +27,7 @@ class GatewayServices:
     workspaces: WebUIWorkspaceController
     session_manager: Any | None
     cron_service: Any | None
+    interactions: InteractionManager
 
 
 def build_gateway_services(
@@ -54,6 +56,7 @@ def build_gateway_services(
         default_workspace=workspace_path,
         default_restrict_to_workspace=default_restrict_to_workspace,
     )
+    interactions = InteractionManager(workspace_path)
     http = GatewayHTTPHandler(
         config=config,
         session_manager=session_manager,
@@ -78,4 +81,5 @@ def build_gateway_services(
         workspaces=workspaces,
         session_manager=session_manager,
         cron_service=cron_service,
+        interactions=interactions,
     )

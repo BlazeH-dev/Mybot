@@ -65,7 +65,7 @@ def test_run_cli_app_uses_installed_registry_app(
 
     tool = CliAppsTool(
         workspace=workspace,
-        restrict_to_workspace=True,
+        restrict_to_workspace=False,
         runtime=CliAppsRuntimeConfig(run_timeout=5),
     )
     assert tool.name == "run_cli_app"

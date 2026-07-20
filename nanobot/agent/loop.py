@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import os
 import time
 from contextlib import AsyncExitStack, nullcontext, suppress
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -34,7 +36,7 @@ from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, res
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.self import MyTool
-from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.bus.events import OUTBOUND_META_AGENT_UI, InboundMessage, OutboundMessage
 from nanobot.bus.progress import build_bus_progress_callback
 from nanobot.bus.queue import MessageBus
 from nanobot.bus.runtime_events import (
@@ -46,6 +48,27 @@ from nanobot.command import CommandContext, CommandRouter, register_builtin_comm
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
 from nanobot.providers.base import LLMProvider
 from nanobot.providers.factory import ProviderSnapshot
+from nanobot.runtime.approvals import ApprovalBinding, ApprovalManager, normalized_params_hash
+from nanobot.runtime.checkpoint import CheckpointError, CheckpointStore
+from nanobot.runtime.interactions import (
+    InteractionKind,
+    InteractionManager,
+    InteractionStatus,
+    InteractionStrategy,
+)
+from nanobot.runtime.policy import (
+    PermissionDecision,
+    PolicyEngine,
+    PolicyGateOutcome,
+    sandbox_mode_for_scope,
+)
+from nanobot.runtime.trace import TraceHook, emit_trace_event
+from nanobot.security.sandbox.network import (
+    command_hash,
+    command_network_targets,
+    encode_address_binding,
+    resolve_public_addresses,
+)
 from nanobot.security.workspace_access import (
     WorkspaceScopeResolver,
     bind_workspace_scope,
@@ -167,16 +190,20 @@ class AgentLoop:
 
     _RUNTIME_CHECKPOINT_KEY = "runtime_checkpoint"
     _PENDING_USER_TURN_KEY = "pending_user_turn"
+    _RUNTIME_TRACE_EVENTS_KEY = "runtime_trace_events"
 
     # Event-driven state transition table.
     # Handlers return an event string; the driver looks up the next state here.
     _TRANSITIONS: dict[tuple[TurnState, str], TurnState] = {
         (TurnState.RESTORE, "ok"): TurnState.COMPACT,
+        (TurnState.RESTORE, "child_interaction"): TurnState.DONE,
+        (TurnState.RESTORE, "waiting"): TurnState.DONE,
         (TurnState.COMPACT, "ok"): TurnState.COMMAND,
         (TurnState.COMMAND, "dispatch"): TurnState.BUILD,
         (TurnState.COMMAND, "shortcut"): TurnState.DONE,
         (TurnState.BUILD, "ok"): TurnState.RUN,
         (TurnState.RUN, "ok"): TurnState.SAVE,
+        (TurnState.RUN, "suspended"): TurnState.DONE,
         (TurnState.SAVE, "ok"): TurnState.RESPOND,
         (TurnState.RESPOND, "ok"): TurnState.DONE,
     }
@@ -232,6 +259,12 @@ class AgentLoop:
         self._provider_signature = provider_signature
         self._default_selection_signature = preset_helpers.default_selection_signature(provider_signature)
         self.workspace = workspace
+        self.interactions = InteractionManager(workspace)
+        self.approvals = ApprovalManager(self.interactions)
+        self.policy = PolicyEngine(
+            audit_path=workspace / ".nanobot-runtime" / "trace" / "policy-audit.jsonl"
+        )
+        self.checkpoints = CheckpointStore(workspace)
         self.model = model or provider.get_default_model()
         self.max_iterations = (
             max_iterations if max_iterations is not None else defaults.max_tool_iterations
@@ -534,12 +567,26 @@ class AgentLoop:
         else:
             effective_key = f"{channel}:{chat_id}"
 
+        request_metadata = dict(metadata or {})
+        session = self.sessions.get_or_create(effective_key)
+        current_plan = (
+            session.metadata.get("plan_state")
+            if session is not None and isinstance(session.metadata, dict)
+            else None
+        )
+        if isinstance(current_plan, dict) and current_plan.get("task_id"):
+            request_metadata["_runtime_task_id"] = str(current_plan["task_id"])
+            request_metadata["_runtime_plan_hash"] = str(current_plan.get("plan_hash") or "")
+            request_metadata["_runtime_plan_status"] = str(current_plan.get("status") or "")
+            request_metadata["_runtime_approved_plan_hash"] = str(
+                current_plan.get("approved_plan_hash") or ""
+            )
         request_ctx = RequestContext(
             channel=channel,
             chat_id=chat_id,
             message_id=message_id,
             session_key=effective_key,
-            metadata=dict(metadata or {}),
+            metadata=request_metadata,
         )
 
         for name in self.tools.tool_names:
@@ -743,7 +790,16 @@ class AgentLoop:
             if pending_queue is None:
                 return []
 
-            def _to_user_message(pending_msg: InboundMessage) -> dict[str, Any]:
+            def _to_user_message(pending_msg: InboundMessage) -> dict[str, Any] | None:
+                if pending_msg.metadata.get("interaction_response") is True:
+                    request_id = pending_msg.metadata.get("interaction_request_id")
+                    if isinstance(request_id, str):
+                        try:
+                            request = self.interactions.get(request_id)
+                        except Exception:
+                            request = None
+                        if request is not None and request.child_id:
+                            return None
                 content = pending_msg.content
                 media = pending_msg.media if pending_msg.media else None
                 if media:
@@ -755,9 +811,11 @@ class AgentLoop:
             items: list[dict[str, Any]] = []
             while len(items) < limit:
                 try:
-                    items.append(_to_user_message(pending_queue.get_nowait()))
+                    normalized = _to_user_message(pending_queue.get_nowait())
                 except asyncio.QueueEmpty:
                     break
+                if normalized is not None:
+                    items.append(normalized)
 
             # Block if nothing drained but sub-agents spawned in this dispatch
             # are still running.  Keeps the runner loop alive so subsequent
@@ -765,20 +823,36 @@ class AgentLoop:
             if (not items
                     and session is not None
                     and self.subagents.get_running_count_by_session(session.key) > 0):
-                try:
-                    msg = await asyncio.wait_for(pending_queue.get(), timeout=300)
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "Timeout waiting for sub-agent completion in session {}",
-                        session.key,
-                    )
-                    return items
-                items.append(_to_user_message(msg))
+                wait_deadline = time.monotonic() + 300
+                while not items:
+                    remaining = wait_deadline - time.monotonic()
+                    if remaining <= 0:
+                        logger.warning(
+                            "Timeout waiting for sub-agent completion in session {}",
+                            session.key,
+                        )
+                        return items
+                    try:
+                        pending_msg = await asyncio.wait_for(
+                            pending_queue.get(),
+                            timeout=remaining,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Timeout waiting for sub-agent completion in session {}",
+                            session.key,
+                        )
+                        return items
+                    normalized = _to_user_message(pending_msg)
+                    if normalized is not None:
+                        items.append(normalized)
                 while len(items) < limit:
                     try:
-                        items.append(_to_user_message(pending_queue.get_nowait()))
+                        normalized = _to_user_message(pending_queue.get_nowait())
                     except asyncio.QueueEmpty:
                         break
+                    if normalized is not None:
+                        items.append(normalized)
 
             return items
 
@@ -808,6 +882,215 @@ class AgentLoop:
             "or call complete_goal if the work is truly finished."
         ) if _goal_lines else SUSTAINED_GOAL_CONTINUE_PROMPT
         session_metadata = session.metadata if session is not None else None
+        plan = session_metadata.get("plan_state") if isinstance(session_metadata, dict) else None
+        if not isinstance(plan, dict):
+            plan = {}
+        task_id = str(plan.get("task_id")) if plan.get("task_id") else None
+        plan_hash = str(plan.get("plan_hash")) if plan.get("plan_hash") else None
+        sandbox_mode = sandbox_mode_for_scope(
+            effective_scope,
+            plan_only=execution_mode_from_metadata(metadata) == EXECUTION_MODE_PLAN_ONLY,
+        )
+        trace_task_id = task_id or (active_session_key or "ephemeral").replace(":", "_")
+        initial_trace_events = []
+        if session is not None:
+            queued = session.metadata.pop(self._RUNTIME_TRACE_EVENTS_KEY, [])
+            if isinstance(queued, list):
+                initial_trace_events = [item for item in queued if isinstance(item, dict)]
+        trace_workspace = effective_scope.project_path
+        if not isinstance(trace_workspace, Path):
+            trace_workspace = self.workspace if isinstance(self.workspace, Path) else None
+        if trace_workspace is not None:
+            trace_hook = TraceHook(
+                trace_workspace / ".nanobot-runtime" / "trace" / f"{trace_task_id}.jsonl",
+                task_id=trace_task_id,
+                actor="main",
+                model=self.model,
+                initial_events=initial_trace_events,
+            )
+            if isinstance(hook, CompositeHook):
+                hook = CompositeHook([*hook._hooks, trace_hook])
+            else:
+                hook = CompositeHook([hook, trace_hook])
+
+        async def _policy_gate(*, tool_call, tool, params, spec) -> PolicyGateOutcome:
+            if tool.name == "request_user_input":
+                raw_strategy = str(params.get("strategy") or "required")
+                strategy = InteractionStrategy(raw_strategy)
+                expires_at = None
+                if strategy == InteractionStrategy.AUTO_RESOLVE:
+                    timeout_seconds = int(params.get("timeout_seconds") or 60)
+                    expires_at = (
+                        datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
+                    ).isoformat()
+                payload = {"chat_id": chat_id}
+                if params.get("default") is not None:
+                    payload["default"] = params["default"]
+                request = self.interactions.create(
+                    kind=InteractionKind.QUESTION,
+                    strategy=strategy,
+                    task_id=task_id,
+                    turn_id=message_id,
+                    plan_hash=plan_hash,
+                    tool_call_id=tool_call.id,
+                    continuation={"tool_name": tool.name},
+                    payload=payload,
+                    questions=list(params.get("questions") or []),
+                    expires_at=expires_at,
+                )
+                interaction = request.as_dict()
+                emit_trace_event("mybot.interaction.requested", {
+                    "kind": request.kind.value,
+                    "strategy": request.strategy.value,
+                    "request_id": request.request_id,
+                })
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=channel,
+                    chat_id=chat_id,
+                    content="Waiting for your input.",
+                    metadata={
+                        "_progress": True,
+                        OUTBOUND_META_AGENT_UI: {
+                            "kind": "interaction_request",
+                            "interaction": interaction,
+                        },
+                    },
+                ))
+                return PolicyGateOutcome(
+                    decision=PermissionDecision(
+                        action="ask",
+                        reason="the task is waiting for typed user input",
+                        matched_rules=("interaction.question",),
+                        risk_level="low",
+                    ),
+                    interaction=interaction,
+                )
+            decision = self.policy.evaluate(
+                tool=tool,
+                params=params,
+                scope=effective_scope,
+                sandbox_mode=sandbox_mode,
+                task_id=task_id,
+                plan_hash=plan_hash,
+                child_id=None,
+            )
+            emit_trace_event("mybot.policy.decision", {
+                "tool_name": tool.name,
+                **decision.as_dict(),
+            })
+            if decision.action != "ask":
+                return PolicyGateOutcome(decision=decision)
+
+            params_digest = normalized_params_hash(params)
+            raw_command = str(params.get("command") or params.get("cmd") or "")
+            network_domains: tuple[str, ...] = ()
+            network_ports: tuple[int, ...] = ()
+            network_addresses: tuple[str, ...] = ()
+            if tool.name == "exec" and raw_command:
+                try:
+                    network_domains, network_ports, minimal_network_command = (
+                        command_network_targets(raw_command)
+                    )
+                    if network_domains and not minimal_network_command:
+                        return PolicyGateOutcome(decision=PermissionDecision(
+                            action="deny",
+                            reason=(
+                                "network escalation only supports a single direct curl command "
+                                "without shell composition or redirects"
+                            ),
+                            matched_rules=("hard.network_command_shape",),
+                            risk_level="critical",
+                            target=raw_command[:500],
+                            hard_deny=True,
+                        ))
+                    network_addresses = tuple(
+                        encode_address_binding(domain, address)
+                        for domain in network_domains
+                        for address in resolve_public_addresses(domain)
+                    )
+                except ValueError as exc:
+                    return PolicyGateOutcome(decision=PermissionDecision(
+                        action="deny",
+                        reason=str(exc),
+                        matched_rules=("hard.ssrf",),
+                        risk_level="critical",
+                        target=raw_command[:500],
+                        hard_deny=True,
+                    ))
+            binding = ApprovalBinding(
+                tool_name=tool.name,
+                normalized_params_hash=params_digest,
+                task_id=task_id,
+                plan_hash=plan_hash,
+                step_id=None,
+                child_id=None,
+                target=decision.target,
+                risk=decision.risk_level,
+                reason=decision.reason,
+                sandbox_mode=sandbox_mode.value,
+                chat_id=chat_id,
+                provider=effective_scope.sandbox_status.provider,
+                command_hash=command_hash(raw_command) if raw_command else None,
+                writable_roots=(str(effective_scope.project_path),),
+                network_domains=network_domains,
+                ports=network_ports,
+                network_addresses=network_addresses,
+            )
+            approved = self.approvals.find_approved(binding)
+            if approved is not None:
+                self.interactions.consume(
+                    approved.request_id,
+                    expected_revision=approved.revision,
+                    idempotency_key=f"tool:{tool_call.id}",
+                )
+                return PolicyGateOutcome(
+                    decision=PermissionDecision(
+                        action="allow",
+                        reason="matched a parameter-bound one-shot approval",
+                        matched_rules=("approval.one_shot",),
+                        risk_level=decision.risk_level,
+                        target=decision.target,
+                    ),
+                    execution_context=(
+                        {
+                            "network_grant": {
+                                "domains": list(binding.network_domains),
+                                "ports": list(binding.ports),
+                                "command_hash": binding.command_hash,
+                                "expires_at": approved.expires_at,
+                                "addresses": list(binding.network_addresses),
+                            }
+                        }
+                        if binding.network_domains and binding.command_hash
+                        else None
+                    ),
+                )
+
+            request = self.approvals.request(
+                binding,
+                tool_call_id=tool_call.id,
+                turn_id=message_id,
+            )
+            interaction = request.as_dict()
+            emit_trace_event("mybot.interaction.requested", {
+                "kind": request.kind.value,
+                "strategy": request.strategy.value,
+                "request_id": request.request_id,
+                "tool_name": tool.name,
+            })
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                content=decision.reason,
+                metadata={
+                    "_progress": True,
+                    OUTBOUND_META_AGENT_UI: {
+                        "kind": "interaction_request",
+                        "interaction": interaction,
+                    },
+                },
+            ))
+            return PolicyGateOutcome(decision=decision, interaction=interaction)
         try:
             result = await self.runner.run(AgentRunSpec(
                 initial_messages=initial_messages,
@@ -838,6 +1121,10 @@ class AgentLoop:
                 ),
                 goal_active_predicate=lambda: sustained_goal_active(session.metadata) if session is not None else False,
                 goal_continue_message=_goal_continue,
+                policy_gate=_policy_gate,
+                actor="main",
+                task_id=task_id,
+                plan_hash=plan_hash,
             ))
         finally:
             reset_workspace_scope(workspace_token)
@@ -875,6 +1162,7 @@ class AgentLoop:
                     self._schedule_background,
                     active_session_keys=self._pending_queues.keys(),
                 )
+                await self._resume_expired_interactions()
                 continue
             except asyncio.CancelledError:
                 # Preserve real task cancellation so shutdown can complete cleanly.
@@ -937,6 +1225,41 @@ class AgentLoop:
                 if t in self._active_tasks.get(k, [])
                 else None
             )
+
+    async def _resume_expired_interactions(self) -> None:
+        """Resolve due deadlines and resume their original WebUI session once."""
+        for request in self.interactions.expire_due():
+            payload = request.payload if isinstance(request.payload, dict) else {}
+            binding = payload.get("binding") if isinstance(payload.get("binding"), dict) else {}
+            chat_id = payload.get("chat_id") or binding.get("chat_id")
+            if not isinstance(chat_id, str) or not chat_id:
+                continue
+            await self.bus.publish_outbound(OutboundMessage(
+                channel="websocket",
+                chat_id=chat_id,
+                content="",
+                metadata={
+                    "_progress": True,
+                    OUTBOUND_META_AGENT_UI: {
+                        "kind": "interaction_updated",
+                        "interaction": request.as_dict(),
+                    },
+                },
+            ))
+            await self.bus.publish_inbound(InboundMessage(
+                channel="websocket",
+                sender_id="runtime",
+                chat_id=chat_id,
+                content=(
+                    f"[Interaction deadline for {request.request_id}: "
+                    f"{request.status.value}; resolution={request.resolution}]"
+                ),
+                metadata={
+                    "webui": True,
+                    "interaction_response": True,
+                    "interaction_request_id": request.request_id,
+                },
+            ))
 
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message: per-session serial, cross-session concurrent."""
@@ -1021,7 +1344,15 @@ class AgentLoop:
                     try:
                         key = self._effective_session_key(msg)
                         session = self.sessions.get_or_create(key)
-                        if self._restore_runtime_checkpoint(session):
+                        plan = session.metadata.get("plan_state")
+                        if isinstance(plan, dict) and self.checkpoints.eligible(plan):
+                            self._clear_pending_user_turn(session)
+                            self.sessions.save(session)
+                            logger.info(
+                                "Preserved durable planned-task checkpoint for cancelled session {}",
+                                key,
+                            )
+                        elif self._restore_runtime_checkpoint(session):
                             self._clear_pending_user_turn(session)
                             self.sessions.save(session)
                             logger.info(
@@ -1344,8 +1675,16 @@ class AgentLoop:
         msg = ctx.msg
 
         if msg.media:
+            original_media = list(msg.media)
             new_content, image_only = self._prepare_message_media(msg.content, msg.media)
-            ctx.msg = dataclasses.replace(msg, content=new_content, media=image_only)
+            metadata = dict(msg.metadata or {})
+            metadata["_runtime_input_paths"] = original_media
+            ctx.msg = dataclasses.replace(
+                msg,
+                content=new_content,
+                media=image_only,
+                metadata=metadata,
+            )
             msg = ctx.msg
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
@@ -1357,6 +1696,50 @@ class AgentLoop:
             ctx.session = self.sessions.get_or_create(ctx.session_key)
         await self._runtime_events().session_turn_started(msg, ctx.session_key)
         self.workspace_scopes.persist_message_scope(ctx.session, msg)
+
+        request_id = (
+            msg.metadata.get("interaction_request_id")
+            if msg.metadata.get("interaction_response") is True
+            else None
+        )
+        if isinstance(request_id, str):
+            try:
+                request = self.interactions.get(request_id)
+            except Exception:
+                request = None
+            if request is not None and request.child_id:
+                ctx.suppress_response = True
+                return "child_interaction"
+            if self._materialize_interaction_response(ctx.session, request_id):
+                ctx.msg = dataclasses.replace(msg, content="", media=[])
+                msg = ctx.msg
+
+        checkpoint, _ = self._runtime_checkpoint_snapshot(ctx.session)
+        checkpoint_phase = str(checkpoint.get("phase") or "") if checkpoint else ""
+        if checkpoint_phase in {
+            "awaiting_question",
+            "awaiting_approval",
+            "awaiting_plan_confirmation",
+            "awaiting_recovery_decision",
+        }:
+            ctx.outbound = OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=(
+                    "This task is waiting for the typed interaction card to be resolved; "
+                    "ordinary chat cannot consume or bypass it."
+                ),
+                metadata=dict(msg.metadata or {}),
+            )
+            return "waiting"
+        if await self._prepare_uncertain_recovery(
+            ctx.session,
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            turn_id=msg.metadata.get("message_id"),
+        ):
+            ctx.suppress_response = True
+            return "waiting"
 
         if self._restore_runtime_checkpoint(ctx.session):
             self.sessions.save(ctx.session)
@@ -1482,6 +1865,9 @@ class AgentLoop:
         ctx.all_messages = all_msgs
         ctx.stop_reason = stop_reason
         ctx.had_injections = had_injections
+        if stop_reason.startswith("awaiting_"):
+            ctx.suppress_response = True
+            return "suspended"
         await turn_continuation.maybe_continue_turn(ctx)
         return "ok"
 
@@ -1654,6 +2040,19 @@ class AgentLoop:
         """Persist the latest in-flight turn state into session metadata."""
         session.metadata[self._RUNTIME_CHECKPOINT_KEY] = payload
         self.sessions.save(session)
+        plan = session.metadata.get("plan_state")
+        if isinstance(plan, dict):
+            task_id = str(plan.get("task_id") or "")
+            interactions = [
+                request.request_id
+                for request in self.interactions.list_pending(task_id=task_id or None)
+            ]
+            self.checkpoints.write(
+                plan=plan,
+                runner_payload=payload,
+                session_key=session.key,
+                interactions=interactions,
+            )
 
     def _mark_pending_user_turn(self, session: Session) -> None:
         session.metadata[self._PENDING_USER_TURN_KEY] = True
@@ -1664,6 +2063,9 @@ class AgentLoop:
     def _clear_runtime_checkpoint(self, session: Session) -> None:
         if self._RUNTIME_CHECKPOINT_KEY in session.metadata:
             session.metadata.pop(self._RUNTIME_CHECKPOINT_KEY, None)
+        plan = session.metadata.get("plan_state")
+        if isinstance(plan, dict) and plan.get("task_id"):
+            self.checkpoints.delete(str(plan["task_id"]))
 
     @staticmethod
     def _checkpoint_message_key(message: dict[str, Any]) -> tuple[Any, ...]:
@@ -1677,13 +2079,265 @@ class AgentLoop:
             message.get("thinking_blocks"),
         )
 
+    def _queue_runtime_trace_event(
+        self,
+        session: Session,
+        name: str,
+        attributes: dict[str, Any],
+    ) -> None:
+        queued = session.metadata.setdefault(self._RUNTIME_TRACE_EVENTS_KEY, [])
+        if not isinstance(queued, list):
+            queued = []
+            session.metadata[self._RUNTIME_TRACE_EVENTS_KEY] = queued
+        queued.append({"name": name, "attributes": dict(attributes)})
+        self.sessions.save(session)
+
+    def _runtime_checkpoint_snapshot(
+        self,
+        session: Session,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """Return the runner checkpoint and its validated durable envelope, if any."""
+        checkpoint = session.metadata.get(self._RUNTIME_CHECKPOINT_KEY)
+        if isinstance(checkpoint, dict):
+            plan = session.metadata.get("plan_state")
+            if isinstance(plan, dict) and self.checkpoints.eligible(plan):
+                try:
+                    durable = self.checkpoints.load(
+                        str(plan.get("task_id")),
+                        expected_plan_hash=str(plan.get("plan_hash")),
+                    )
+                except CheckpointError as exc:
+                    logger.error("Durable checkpoint rejected: {}: {}", exc.code, exc.message)
+                else:
+                    return checkpoint, durable
+            return checkpoint, None
+        plan = session.metadata.get("plan_state")
+        if not isinstance(plan, dict) or not self.checkpoints.eligible(plan):
+            return None, None
+        try:
+            durable = self.checkpoints.load(
+                str(plan.get("task_id")),
+                expected_plan_hash=str(plan.get("plan_hash")),
+            )
+        except CheckpointError as exc:
+            logger.error("Durable checkpoint rejected: {}: {}", exc.code, exc.message)
+            return None, None
+        runner = durable.get("runner")
+        if not isinstance(runner, dict):
+            return None, durable
+        session.metadata[self._RUNTIME_CHECKPOINT_KEY] = runner
+        return runner, durable
+
+    def _materialize_interaction_response(
+        self,
+        session: Session,
+        request_id: str,
+    ) -> bool:
+        """Replace an awaiting tool result with its typed durable resolution."""
+        try:
+            request = self.interactions.get(request_id)
+        except Exception:
+            logger.exception("Could not load interaction response {}", request_id)
+            return False
+        if request.status == InteractionStatus.PENDING:
+            return False
+
+        checkpoint, _ = self._runtime_checkpoint_snapshot(session)
+        if not isinstance(checkpoint, dict):
+            return False
+
+        interaction = checkpoint.get("interaction")
+        if not isinstance(interaction, dict) or interaction.get("request_id") != request_id:
+            return False
+        completed = checkpoint.get("completed_tool_results")
+        if not isinstance(completed, list):
+            return False
+
+        resolution = {
+            "request_id": request.request_id,
+            "kind": request.kind.value,
+            "status": request.status.value,
+            "response": request.response,
+            "resolution": request.resolution,
+        }
+        replaced = False
+        for item in reversed(completed):
+            if (
+                isinstance(item, dict)
+                and (
+                    item.get("tool_call_id") == request.tool_call_id
+                    or (
+                        request.tool_call_id is None
+                        and request.kind == InteractionKind.PLAN_CONFIRMATION
+                        and item.get("name") == "plan"
+                    )
+                )
+            ):
+                item["content"] = json.dumps(resolution, ensure_ascii=False)
+                replaced = True
+                break
+        if not replaced and request.kind == InteractionKind.RECOVERY_DECISION:
+            pending = checkpoint.get("pending_tool_calls")
+            uncertain_ids = {
+                str(item)
+                for item in request.payload.get("uncertain_tool_call_ids", [])
+            }
+            if isinstance(pending, list):
+                remaining: list[dict[str, Any]] = []
+                for call in pending:
+                    if not isinstance(call, dict) or str(call.get("id") or "") not in uncertain_ids:
+                        if isinstance(call, dict):
+                            remaining.append(call)
+                        continue
+                    function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                    completed.append({
+                        "role": "tool",
+                        "tool_call_id": call.get("id"),
+                        "name": function.get("name") or "tool",
+                        "content": json.dumps(resolution, ensure_ascii=False),
+                    })
+                    replaced = True
+                checkpoint["pending_tool_calls"] = remaining
+        if not replaced:
+            return False
+
+        checkpoint["phase"] = "tools_completed"
+        checkpoint.pop("interaction", None)
+        session.metadata[self._RUNTIME_CHECKPOINT_KEY] = checkpoint
+        self._set_runtime_checkpoint(session, checkpoint)
+        consume_here = (
+            request.kind in {InteractionKind.QUESTION, InteractionKind.RECOVERY_DECISION}
+            or (
+                request.kind == InteractionKind.APPROVAL
+                and request.status != InteractionStatus.APPROVED
+            )
+        )
+        if consume_here:
+            try:
+                self.interactions.consume(
+                    request.request_id,
+                    expected_revision=request.revision,
+                    idempotency_key=f"resume:{session.key}:{request.request_id}",
+                )
+            except Exception:
+                logger.exception("Could not consume resolved interaction {}", request_id)
+                return False
+        try:
+            created_at = datetime.fromisoformat(request.created_at)
+            resolved_at = datetime.fromisoformat(request.resolved_at or datetime.now(timezone.utc).isoformat())
+            human_wait_ms = max(0, int((resolved_at - created_at).total_seconds() * 1000))
+        except (TypeError, ValueError):
+            human_wait_ms = 0
+        trace_attributes = {
+            "request_id": request.request_id,
+            "kind": request.kind.value,
+            "status": request.status.value,
+            "mybot.human_wait_ms": human_wait_ms,
+        }
+        self._queue_runtime_trace_event(
+            session,
+            "mybot.interaction.resumed",
+            trace_attributes,
+        )
+        emit_trace_event("mybot.interaction.resumed", trace_attributes)
+        return True
+
+    async def _prepare_uncertain_recovery(
+        self,
+        session: Session,
+        *,
+        channel: str,
+        chat_id: str,
+        turn_id: str | None,
+    ) -> bool:
+        plan = session.metadata.get("plan_state")
+        if not isinstance(plan, dict) or not self.checkpoints.eligible(plan):
+            return False
+        try:
+            durable = self.checkpoints.load(
+                str(plan.get("task_id")),
+                expected_plan_hash=str(plan.get("plan_hash")),
+            )
+        except CheckpointError:
+            return False
+        recovery = self.checkpoints.recovery_plan(durable)
+        if not recovery.uncertain:
+            return False
+
+        existing = next((
+            request
+            for request in self.interactions.list_pending(task_id=str(plan.get("task_id")))
+            if request.kind == InteractionKind.RECOVERY_DECISION
+            and set(request.payload.get("uncertain_tool_call_ids", [])) == set(recovery.uncertain)
+        ), None)
+        request = existing or self.interactions.create(
+            kind=InteractionKind.RECOVERY_DECISION,
+            strategy=InteractionStrategy.REQUIRED,
+            task_id=str(plan.get("task_id")),
+            turn_id=turn_id,
+            plan_hash=str(plan.get("plan_hash")),
+            tool_call_id=recovery.uncertain[0],
+            continuation={"action": "recover_uncertain_tools"},
+            payload={
+                "chat_id": chat_id,
+                "uncertain_tool_call_ids": list(recovery.uncertain),
+                "checkpoint_state_hash": durable.get("state_hash"),
+            },
+            questions=[{
+                "id": "recovery_action",
+                "header": "Recovery",
+                "question": (
+                    "A previous external side effect may have happened. Choose whether to "
+                    "retry, mark it completed, or cancel the task."
+                ),
+                "options": [
+                    {"label": "Retry", "description": "Retry only after checking the target."},
+                    {"label": "Mark completed", "description": "Do not repeat the side effect."},
+                    {"label": "Cancel", "description": "Stop this recovery."},
+                ],
+            }],
+        )
+        runner = durable.get("runner")
+        if isinstance(runner, dict):
+            runner["phase"] = "awaiting_recovery_decision"
+            runner["interaction"] = request.as_dict()
+            session.metadata[self._RUNTIME_CHECKPOINT_KEY] = runner
+            self._set_runtime_checkpoint(session, runner)
+        await self.bus.publish_outbound(OutboundMessage(
+            channel=channel,
+            chat_id=chat_id,
+            content="Recovery confirmation is required before any uncertain side effect is retried.",
+            metadata={
+                "_progress": True,
+                OUTBOUND_META_AGENT_UI: {
+                    "kind": "interaction_request",
+                    "interaction": request.as_dict(),
+                },
+            },
+        ))
+        trace_attributes = {
+            "request_id": request.request_id,
+            "uncertain_tool_call_ids": list(recovery.uncertain),
+        }
+        self._queue_runtime_trace_event(
+            session,
+            "mybot.recovery.awaiting_decision",
+            trace_attributes,
+        )
+        emit_trace_event("mybot.recovery.awaiting_decision", trace_attributes)
+        return True
+
     def _restore_runtime_checkpoint(self, session: Session) -> bool:
         """Materialize an unfinished turn into session history before a new request."""
         from datetime import datetime
 
-        checkpoint = session.metadata.get(self._RUNTIME_CHECKPOINT_KEY)
+        checkpoint, durable = self._runtime_checkpoint_snapshot(session)
         if not isinstance(checkpoint, dict):
             return False
+
+        recovery = self.checkpoints.recovery_plan(durable) if durable is not None else None
+        pending_ids = set(recovery.pending) if recovery is not None else set()
+        uncertain_ids = set(recovery.uncertain) if recovery is not None else set()
 
         assistant_message = checkpoint.get("assistant_message")
         completed_tool_results = checkpoint.get("completed_tool_results") or []
@@ -1704,12 +2358,24 @@ class AgentLoop:
                 continue
             tool_id = tool_call.get("id")
             name = ((tool_call.get("function") or {}).get("name")) or "tool"
+            if str(tool_id) in uncertain_ids:
+                recovery_payload = {
+                    "status": "uncertain",
+                    "safe_to_retry": False,
+                    "reason": "external side effect requires an explicit recovery decision",
+                }
+            else:
+                recovery_payload = {
+                    "status": "pending_recovery",
+                    "safe_to_retry": str(tool_id) in pending_ids or recovery is None,
+                    "reason": "tool had not completed before interruption",
+                }
             restored_messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tool_id,
                     "name": name,
-                    "content": "Error: Task interrupted before this tool finished.",
+                    "content": json.dumps(recovery_payload, ensure_ascii=False),
                     "timestamp": datetime.now().isoformat(),
                 }
             )

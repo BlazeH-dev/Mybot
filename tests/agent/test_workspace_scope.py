@@ -6,11 +6,14 @@ from types import SimpleNamespace
 import pytest
 
 from nanobot.agent.tools.cli_apps import CliAppsTool
+from nanobot.agent.tools.context import RequestContext
 from nanobot.agent.tools.filesystem import ReadFileTool
 from nanobot.agent.tools.image_generation import ImageGenerationError, ImageGenerationTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
+from nanobot.apps.cli.service import CliAppManager, CliAppsRuntimeConfig
+from nanobot.config.schema import ImageGenerationToolConfig, ProviderConfig
 from nanobot.security.workspace_access import (
     WORKSPACE_SCOPE_METADATA_KEY,
     WorkspaceScopeError,
@@ -20,8 +23,6 @@ from nanobot.security.workspace_access import (
     validate_workspace_scope_payload,
     workspace_scope_from_metadata,
 )
-from nanobot.apps.cli.service import CliAppManager, CliAppsRuntimeConfig
-from nanobot.config.schema import ImageGenerationToolConfig, ProviderConfig
 
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
@@ -338,6 +339,16 @@ async def test_spawn_tool_forwards_current_workspace_scope(tmp_path: Path) -> No
 
     manager = Manager()
     tool = SpawnTool(manager)  # type: ignore[arg-type]
+    tool.set_context(RequestContext(
+        channel="websocket",
+        chat_id="chat",
+        metadata={
+            "_runtime_task_id": "parent",
+            "_runtime_plan_hash": "plan",
+            "_runtime_plan_status": "active",
+            "_runtime_approved_plan_hash": "plan",
+        },
+    ))
     token = bind_workspace_scope(scope)
     try:
         result = await tool.execute(task="inspect")

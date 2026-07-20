@@ -162,7 +162,17 @@ async def test_spawn_tool_rejects_when_at_concurrency_limit(tmp_path):
     from nanobot.agent.tools.context import RequestContext
 
     tool = SpawnTool(mgr)
-    tool.set_context(RequestContext(channel="test", chat_id="c1", session_key="test:c1"))
+    tool.set_context(RequestContext(
+        channel="test",
+        chat_id="c1",
+        session_key="test:c1",
+        metadata={
+            "_runtime_task_id": "task-1",
+            "_runtime_plan_hash": "plan-1",
+            "_runtime_plan_status": "active",
+            "_runtime_approved_plan_hash": "plan-1",
+        },
+    ))
 
     # First spawn succeeds
     result = await tool.execute(task="first task")

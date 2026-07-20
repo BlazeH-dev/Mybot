@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "measurement_kind": "deterministic_fake_provider",
+  "single": {
+    "success_rate": 1.0,
+    "wall_clock_ms": 120,
+    "p95_wall_clock_ms": 120,
+    "input_tokens": 100,
+    "output_tokens": 20,
+    "cost_usd": 0.0,
+    "parent_context_tokens": 100,
+    "failures": 0,
+    "cancellations": 0,
+    "loop_guard_stops": 0,
+    "child_count": 0
+  },
+  "multi": {
+    "success_rate": 1.0,
+    "wall_clock_ms": 90,
+    "p95_wall_clock_ms": 90,
+    "input_tokens": 140,
+    "output_tokens": 28,
+    "cost_usd": 0.0,
+    "parent_context_tokens": 60,
+    "failures": 0,
+    "cancellations": 0,
+    "loop_guard_stops": 0,
+    "child_count": 2
+  },
+  "delta": {
+    "success_rate": 0.0,
+    "wall_clock_ms": -30.0,
+    "p95_wall_clock_ms": -30.0,
+    "input_tokens": 40.0,
+    "output_tokens": 8.0,
+    "cost_usd": 0.0,
+    "parent_context_tokens": -40.0,
+    "failures": 0.0,
+    "cancellations": 0.0,
+    "loop_guard_stops": 0.0
+  }
+}

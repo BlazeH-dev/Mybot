@@ -234,8 +234,8 @@ class TestPathAppendPlatform:
 class TestSandboxPlatform:
 
     @pytest.mark.asyncio
-    async def test_bwrap_skipped_on_windows(self):
-        """bwrap must be silently skipped on Windows, not crash."""
+    async def test_bwrap_fails_closed_on_windows(self):
+        """Native Windows must not silently continue without an OS sandbox."""
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"ok", b"")
         mock_proc.returncode = 0
@@ -248,9 +248,8 @@ class TestSandboxPlatform:
             tool = ExecTool(sandbox="bwrap")
             result = await tool.execute(command="dir")
 
-        assert "ok" in result
-        spawned_cmd = mock_spawn.call_args[0][0]
-        assert "bwrap" not in spawned_cmd
+        assert "sandbox_unavailable" in result
+        mock_spawn.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_bwrap_applied_on_unix(self):

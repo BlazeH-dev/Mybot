@@ -21,12 +21,12 @@
 | P0 准备                    | 已执行 | 已建立 Office golden fixture 与 CI smoke 回归门。见 [P0-准备阶段代码变更说明.md](./P0-准备阶段代码变更说明.md)。                                                  |
 | P1 Office 垂直切片           | 已执行 | 已落地双 Office Skill、共享 verified facts、WebUI 仅规划/自动 plan-and-execute、计划步骤卡片、OfficeCLI 固定契约与 artifact 面板。见 [P1-office垂直切片代码变更说明.md](./P1-office垂直切片代码变更说明.md)。 |
 | P2 Skill Pack Manifest   | 已执行 | 已落地可选 typed manifest、局部 fail closed、结构化 availability、复用 disabledSkills 与 WebUI 诊断。见 [P2-skillpack-manifest代码变更说明.md](./P2-skillpack-manifest代码变更说明.md)。 |
-| P3 Sandbox / Policy 权限层  | 待执行 | 已记录 Codex 风格 OS sandbox、三轴权限模型、三档 InteractionRequest、审批超时不放行与最小文件 OCC；代码未落地。见 [P3-policy权限层代码变更说明.md](./P3-policy权限层代码变更说明.md)。 |
-| P4 Artifact / Checkpoint | 待执行 | 已记录合法 `awaiting_*` 与 completed/pending/uncertain 分离的恢复边界；代码未落地。见 [P4-artifact-checkpoint代码变更说明.md](./P4-artifact-checkpoint代码变更说明.md)。 |
-| P5 Trace / Eval          | 待执行 | 已记录 P5 Core 与选做评测边界；代码未落地。见 [P5-trace-eval代码变更说明.md](./P5-trace-eval代码变更说明.md)。 |
+| P3 Sandbox / Policy 权限层  | 已完成 | 已落地 Seatbelt/Bubblewrap、统一 policy、三档 InteractionRequest、参数绑定 approval、网络 DNS/IP 绑定和文件 OCC。见 [P3-policy权限层代码变更说明.md](./P3-policy权限层代码变更说明.md)。 |
+| P4 Artifact / Checkpoint | 已完成 | 已落地输入快照、artifact/lineage、hash-bound checkpoint、pending/uncertain 恢复与 kill→resume。见 [P4-artifact-checkpoint代码变更说明.md](./P4-artifact-checkpoint代码变更说明.md)。 |
+| P5 Trace / Eval          | 已完成 | 已落地 cassette、OTel-shaped trace、确定性 metric/report、红队与 committed benchmark。见 [P5-trace-eval代码变更说明.md](./P5-trace-eval代码变更说明.md)。 |
 | P6 通用性扩展                 | 待执行 | 已记录 1–2 天 Research 最小闭环；代码未落地。见 [P6-通用性扩展代码变更说明.md](./P6-通用性扩展代码变更说明.md)。 |
 | P7 面试交付物                 | 持续规划 | 已记录 benchmark、README、demo 与答辩证据边界。见 [P7-面试交付物代码变更说明.md](./P7-面试交付物代码变更说明.md)。 |
-| P8 多 Agent 编排            | 待执行 | 已记录治理主线与选做文件租约边界；代码未落地。见 [P8-多agent编排代码变更说明.md](./P8-多agent编排代码变更说明.md)。 |
+| P8 多 Agent 编排            | 已完成 | 已落地 active-plan gate、最多 5 child、禁止嵌套、权限/生命周期/artifact/HITL/trace 与单多 Agent 对比；child 无工作量配额，文件租约仍为选做。见 [P8-多agent编排代码变更说明.md](./P8-多agent编排代码变更说明.md)。 |
 
 ## 维护约定
 

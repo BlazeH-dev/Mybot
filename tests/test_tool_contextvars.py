@@ -11,6 +11,19 @@ from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.cron.service import CronService
 
 
+def _planned_context(channel: str, chat_id: str) -> RequestContext:
+    return RequestContext(
+        channel=channel,
+        chat_id=chat_id,
+        metadata={
+            "_runtime_task_id": "parent",
+            "_runtime_plan_hash": "plan",
+            "_runtime_plan_status": "active",
+            "_runtime_approved_plan_hash": "plan",
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_message_tool_keeps_task_local_context() -> None:
     seen: list[tuple[str, str, str]] = []
@@ -66,6 +79,7 @@ async def test_spawn_tool_keeps_task_local_context() -> None:
             origin_message_id: str | None = None,
             temperature: float | None = None,
             workspace_scope=None,
+            **kwargs,
         ) -> str:
             seen.append((origin_channel, origin_chat_id, session_key))
             return f"{origin_channel}:{origin_chat_id}:{task}"
@@ -73,14 +87,14 @@ async def test_spawn_tool_keeps_task_local_context() -> None:
     tool = SpawnTool(_Manager())
 
     async def task_one() -> str:
-        tool.set_context(RequestContext(channel="whatsapp", chat_id="chat-a"))
+        tool.set_context(_planned_context("whatsapp", "chat-a"))
         entered.set()
         await release.wait()
         return await tool.execute(task="one")
 
     async def task_two() -> str:
         await entered.wait()
-        tool.set_context(RequestContext(channel="telegram", chat_id="chat-b"))
+        tool.set_context(_planned_context("telegram", "chat-b"))
         release.set()
         return await tool.execute(task="two")
 
@@ -180,12 +194,13 @@ async def test_spawn_tool_basic_set_context_and_execute() -> None:
             origin_message_id=None,
             temperature=None,
             workspace_scope=None,
+            **kwargs,
         ):
             seen.append((origin_channel, origin_chat_id, session_key))
             return f"ok: {task}"
 
     tool = SpawnTool(_Manager())
-    tool.set_context(RequestContext(channel="feishu", chat_id="chat-abc"))
+    tool.set_context(_planned_context("feishu", "chat-abc"))
 
     result = await tool.execute(task="do something")
     assert result == "ok: do something"
@@ -194,7 +209,7 @@ async def test_spawn_tool_basic_set_context_and_execute() -> None:
 
 @pytest.mark.asyncio
 async def test_spawn_tool_default_values_without_set_context() -> None:
-    """Without set_context, default cli:direct should be used."""
+    """Without an active plan context, spawn must fail closed."""
     seen: list[tuple[str, str, str]] = []
 
     class _Manager:
@@ -214,14 +229,16 @@ async def test_spawn_tool_default_values_without_set_context() -> None:
             origin_message_id=None,
             temperature=None,
             workspace_scope=None,
+            **kwargs,
         ):
             seen.append((origin_channel, origin_chat_id, session_key))
             return "ok"
 
     tool = SpawnTool(_Manager())
 
-    await tool.execute(task="test")
-    assert seen == [("cli", "direct", "cli:direct")]
+    result = await tool.execute(task="test")
+    assert "requires an active parent plan" in result
+    assert seen == []
 
 
 @pytest.mark.asyncio

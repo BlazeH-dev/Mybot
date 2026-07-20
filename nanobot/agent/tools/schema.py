@@ -197,6 +197,11 @@ class ObjectSchema(Schema):
         nullable: bool = False,
         **kwargs: Any,
     ) -> None:
+        if not isinstance(description, str):
+            raise TypeError(
+                "ObjectSchema description must be a string; fields named 'description' "
+                "must be passed through properties={...}"
+            )
         self._properties = dict(properties or {}, **kwargs)
         self._required = list(required or [])
         self._root_description = description

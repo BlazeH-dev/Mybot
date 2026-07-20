@@ -1,0 +1,15 @@
+{
+  "case_id": "subagent_governance",
+  "metrics": ["subagent_governance", "replayability"],
+  "evidence": {
+    "max_five": true,
+    "nested_denied": true,
+    "permission_not_widened": true,
+    "quota_free_execution": true,
+    "loop_guard_present": true,
+    "artifact_isolated": true,
+    "input_snapshot_verified": true,
+    "artifact_checksums_verified": true,
+    "engine_version_recorded": true
+  }
+}

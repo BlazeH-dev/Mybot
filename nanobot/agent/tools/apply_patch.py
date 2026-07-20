@@ -259,6 +259,14 @@ class ApplyPatchTool(_FsTool):
                     _format_summary(summary) for summary in summaries
                 )
 
+            conflict = (
+                self._file_states.preflight_existing(list(writes))
+                if self._enforce_occ
+                else None
+            )
+            if conflict:
+                return f"Error: {conflict}"
+
             backups: dict[Path, bytes | None] = {}
             for path in writes:
                 backups[path] = path.read_bytes() if path.exists() else None

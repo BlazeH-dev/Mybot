@@ -1,0 +1,13 @@
+{
+  "case_id": "interaction_resume",
+  "metrics": ["interaction_resume", "approval_binding"],
+  "evidence": {
+    "single_consume": true,
+    "waiting_provider_calls_zero": true,
+    "deadline_result_correct": true,
+    "params_bound": true,
+    "plan_bound": true,
+    "one_shot": true,
+    "expired_never_allowed": true
+  }
+}

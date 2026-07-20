@@ -1,6 +1,58 @@
 export type Role = "user" | "assistant" | "tool" | "system";
 export type ExecutionMode = "default" | "plan_only";
 
+export type InteractionKind =
+  | "question"
+  | "approval"
+  | "plan_confirmation"
+  | "recovery_decision";
+export type InteractionStrategy = "required" | "auto_resolve" | "expire_and_deny";
+export type InteractionStatus =
+  | "pending"
+  | "answered"
+  | "approved"
+  | "denied"
+  | "timed_out"
+  | "expired"
+  | "cancelled"
+  | "superseded"
+  | "consumed";
+
+export interface InteractionQuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface InteractionQuestion {
+  id: string;
+  question: string;
+  header: string;
+  options?: InteractionQuestionOption[] | null;
+  multiple?: boolean | null;
+}
+
+export interface InteractionRequestPayload {
+  request_id: string;
+  revision: number;
+  kind: InteractionKind;
+  strategy: InteractionStrategy;
+  status: InteractionStatus;
+  task_id?: string | null;
+  turn_id?: string | null;
+  plan_hash?: string | null;
+  step_id?: string | null;
+  child_id?: string | null;
+  tool_call_id?: string | null;
+  continuation?: Record<string, unknown>;
+  payload?: Record<string, unknown>;
+  questions?: InteractionQuestion[];
+  created_at: string;
+  expires_at?: string | null;
+  response?: Record<string, unknown> | null;
+  resolution?: Record<string, unknown> | null;
+  resolved_at?: string | null;
+}
+
 /** "trace" rows are intermediate agent breadcrumbs (tool-call hints,
  * progress pings) that should not be rendered as conversational replies. */
 export type MessageKind = "message" | "trace";
@@ -773,6 +825,8 @@ export interface InboundTurnMetadata {
 export type InboundEvent =
   | { event: "ready"; chat_id: string; client_id: string }
   | { event: "attached"; chat_id: string }
+  | { event: "interaction_request"; chat_id: string; interaction: InteractionRequestPayload }
+  | { event: "interaction_updated"; chat_id: string; interaction: InteractionRequestPayload }
   | ({
       event: "message";
       chat_id: string;
@@ -921,6 +975,14 @@ export type Outbound =
   | { type: "attach"; chat_id: string }
   | { type: "set_workspace_scope"; chat_id: string; workspace_scope: WorkspaceScopePayload }
   | { type: "transcribe_audio"; request_id: string; data_url: string; duration_ms?: number }
+  | {
+      type: "interaction_response";
+      chat_id: string;
+      request_id: string;
+      expected_revision: number;
+      idempotency_key: string;
+      response: Record<string, unknown>;
+    }
   | {
       type: "message";
       chat_id: string;

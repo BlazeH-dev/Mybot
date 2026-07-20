@@ -1,14 +1,14 @@
-"""Sandbox backends for shell command execution.
+"""Compatibility wrapper around the P3 OS sandbox launcher."""
 
-To add a new backend, implement a function with the signature:
-    _wrap_<name>(command: str, workspace: str, cwd: str) -> str
-and register it in _BACKENDS below.
-"""
-
+import os
+import platform
 import shlex
 from pathlib import Path
 
 from nanobot.config.paths import get_media_dir
+from nanobot.security.sandbox import SandboxLauncher, SandboxMode
+from nanobot.security.sandbox.seatbelt import profile_text
+from nanobot.security.sandbox.seatbelt import wrap_argv as seatbelt_argv
 
 
 def _bwrap(command: str, workspace: str, cwd: str) -> str:
@@ -37,28 +37,55 @@ def _bwrap(command: str, workspace: str, cwd: str) -> str:
         "/etc/ld.so.cache",
     ]
 
-    args = ["bwrap", "--new-session", "--die-with-parent"]
-    for p in required:
-        args += ["--ro-bind", p, p]
-    for p in optional:
-        args += ["--ro-bind-try", p, p]
+    args: list[str] = ["bwrap", "--new-session", "--die-with-parent", "--unshare-net"]
+    for path in required:
+        args += ["--ro-bind", path, path]
+    for path in optional:
+        args += ["--ro-bind-try", path, path]
     args += [
         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-        "--tmpfs", str(ws.parent),        # mask config dir
-        "--dir", str(ws),                 # recreate workspace mount point
+        "--tmpfs", str(ws.parent),
+        "--dir", str(ws),
         "--bind", str(ws), str(ws),
-        "--ro-bind-try", str(media), str(media),  # read-only access to media
+        "--ro-bind-try", str(media), str(media),
         "--chdir", sandbox_cwd,
         "--", "sh", "-c", command,
     ]
     return shlex.join(args)
 
 
-_BACKENDS = {"bwrap": _bwrap}
+def _seatbelt(command: str, workspace: str, cwd: str) -> str:
+    ws = Path(workspace).resolve()
+    media = get_media_dir().resolve()
+    profile = profile_text(
+        mode=SandboxMode.WORKSPACE_WRITE,
+        workspace=ws,
+        readable_roots=(media,),
+    )
+    return shlex.join(seatbelt_argv(profile, ("sh", "-c", command)))
+
+
+def _auto(command: str, workspace: str, cwd: str) -> str:
+    launcher = SandboxLauncher()
+    spec = launcher.prepare_shell(
+        command=command,
+        workspace=workspace,
+        cwd=cwd,
+        env={"HOME": os.environ.get("HOME", "/tmp")},
+        mode=SandboxMode.WORKSPACE_WRITE,
+        readable_roots=(get_media_dir().resolve(),),
+    )
+    return shlex.join(spec.argv)
+
+
+_BACKENDS = {"auto": _auto, "bwrap": _bwrap, "seatbelt": _seatbelt}
 
 
 def wrap_command(sandbox: str, command: str, workspace: str, cwd: str) -> str:
     """Wrap *command* using the named sandbox backend."""
+    if sandbox == "auto":
+        system = platform.system().lower()
+        sandbox = "seatbelt" if system == "darwin" else "bwrap" if system == "linux" else "auto"
     if backend := _BACKENDS.get(sandbox):
         return backend(command, workspace, cwd)
     raise ValueError(f"Unknown sandbox backend {sandbox!r}. Available: {list(_BACKENDS)}")

@@ -27,7 +27,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libolm-dev build-essential
+        run: >
+          sudo apt-get update &&
+          sudo apt-get install -y libolm-dev build-essential bubblewrap
 
       - name: Install dependencies
         run: |
@@ -35,7 +37,7 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Lint with ruff
-        run: python -m ruff check nanobot/
+        run: python -m ruff check nanobot/ tests/runtime/
 
       - name: Run tests
         # P0 starts with a deterministic smoke gate. The full upstream suite
@@ -43,6 +45,7 @@ jobs:
         # dependent tests; broaden this command as runtime phases harden.
         run: >
           python -m pytest
+          tests/runtime/
           tests/fixtures/office_weekly/test_fixture.py
           tests/skills/test_office_weekly.py
           tests/agent/tools/test_plan_tool.py
@@ -50,3 +53,17 @@ jobs:
           tests/command/test_model_command.py
           tests/webui/test_settings_api.py
           -q
+
+      - name: Generate deterministic Runtime reports
+        run: |
+          python -m nanobot.runtime.evals.report \
+            tests/fixtures/runtime_eval/*.json \
+            --json /tmp/runtime-eval.json \
+            --markdown /tmp/runtime-eval.md
+          python -m nanobot.runtime.evals.subagent_compare \
+            --json /tmp/subagent-comparison.json \
+            --markdown /tmp/subagent-comparison.md
+          cmp /tmp/runtime-eval.json benchmarks/latest.json
+          cmp /tmp/runtime-eval.md benchmarks/latest.md
+          cmp /tmp/subagent-comparison.json benchmarks/subagent-comparison.json
+          cmp /tmp/subagent-comparison.md benchmarks/subagent-comparison.md

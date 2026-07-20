@@ -20,6 +20,7 @@ import httpx
 
 from nanobot.apps.protocol import app_manifest, compact_dict
 from nanobot.config.paths import get_runtime_subdir
+from nanobot.security.sandbox import SandboxLauncher, SandboxMode, SandboxUnavailableError
 from nanobot.security.workspace_policy import is_path_within
 
 CLI_ANYTHING_REGISTRY_URL = "https://hkuds.github.io/CLI-Anything/registry.json"
@@ -1215,6 +1216,7 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
         working_dir: str | None = None,
         timeout: int | None = None,
         restrict_to_workspace: bool = False,
+        sandbox_mode: SandboxMode | None = None,
     ) -> str:
         app = self.get_app(name)
         installed = self._load_installed()
@@ -1230,15 +1232,35 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
             clean_args = ["--json", *clean_args]
         effective_timeout = max(1, min(timeout or self.runtime.run_timeout, 600))
         artifact_snapshot = self._artifact_snapshot(cwd)
+        mode = sandbox_mode or (
+            SandboxMode.WORKSPACE_WRITE
+            if restrict_to_workspace
+            else SandboxMode.DANGER_FULL_ACCESS
+        )
+        env = {
+            "HOME": str(cwd),
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+            "PATH": os.environ.get("PATH", ""),
+        }
         try:
+            launch = SandboxLauncher().prepare_argv(
+                argv=(resolved, *clean_args),
+                command_text=shlex.join((resolved, *clean_args)),
+                workspace=self.workspace,
+                cwd=cwd,
+                env=env,
+                mode=mode,
+            )
             result = subprocess.run(
-                [resolved, *clean_args],
-                cwd=str(cwd),
+                list(launch.argv),
+                cwd=launch.cwd,
                 capture_output=True,
                 text=True,
                 timeout=effective_timeout,
-                env=os.environ.copy(),
+                env=launch.env,
             )
+        except SandboxUnavailableError as exc:
+            raise CliAppError(f"{exc.code}: {exc.message}") from exc
         except subprocess.TimeoutExpired:
             return f"CLI app '{name}' timed out after {effective_timeout}s"
         output = [

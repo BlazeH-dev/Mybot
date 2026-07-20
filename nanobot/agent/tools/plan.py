@@ -17,8 +17,17 @@ from nanobot.agent.execution_mode import (
     EXECUTION_MODE_PLAN_ONLY,
     execution_mode_from_metadata,
 )
-from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.agent.tools.base import Tool, ToolSuspensionResult, tool_parameters
 from nanobot.agent.tools.context import ContextAware, RequestContext
+from nanobot.bus.events import OUTBOUND_META_AGENT_UI, OutboundMessage
+from nanobot.runtime.artifacts import ArtifactStore
+from nanobot.runtime.interactions import (
+    InteractionKind,
+    InteractionManager,
+    InteractionStatus,
+    InteractionStrategy,
+)
+from nanobot.runtime.trace import emit_trace_event
 from nanobot.session.plan_state import PLAN_STATE_KEY, parse_plan_state, plan_state_raw
 
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -139,9 +148,12 @@ def _contract_hash(plan: dict[str, Any]) -> str:
 class PlanTool(Tool, ContextAware):
     """Create and maintain an explicit, persisted plan contract."""
 
-    def __init__(self, workspace: Path, sessions: Any) -> None:
+    def __init__(self, workspace: Path, sessions: Any, bus: Any | None = None) -> None:
         self._workspace = workspace.expanduser().resolve()
         self._sessions = sessions
+        self._bus = bus
+        self._interactions = InteractionManager(self._workspace)
+        self._artifacts = ArtifactStore(self._workspace)
         self._request_ctx: ContextVar[RequestContext | None] = ContextVar(
             "plan_tool_request_ctx",
             default=None,
@@ -155,7 +167,7 @@ class PlanTool(Tool, ContextAware):
     def create(cls, ctx: Any) -> Tool:
         sessions = getattr(ctx, "sessions", None)
         assert sessions is not None
-        return cls(Path(ctx.workspace), sessions)
+        return cls(Path(ctx.workspace), sessions, getattr(ctx, "bus", None))
 
     def set_context(self, ctx: RequestContext) -> None:
         self._request_ctx.set(ctx)
@@ -247,6 +259,16 @@ class PlanTool(Tool, ContextAware):
         self._write_plan(path, plan)
         session.metadata[PLAN_STATE_KEY] = plan
         self._sessions.save(session)
+        task_id = plan.get("task_id")
+        if isinstance(task_id, str) and task_id:
+            self._artifacts.register(
+                task_id=task_id,
+                artifact_id="plan",
+                path=path,
+                type="plan",
+                source_artifacts=list(plan.get("input_artifacts") or []),
+                status=str(plan.get("status") or "created"),
+            )
 
     @staticmethod
     def _result(path: Path, plan: dict[str, Any], **extra: Any) -> str:
@@ -325,6 +347,7 @@ class PlanTool(Tool, ContextAware):
             ctx = self._request_ctx.get()
             execution_mode = execution_mode_from_metadata(ctx.metadata if ctx else None)
             auto_activate = execution_mode == EXECUTION_MODE_DEFAULT
+            confirmation_request = None
             plan: dict[str, Any] = {
                 "schema_version": 1,
                 "task_id": normalized_task_id,
@@ -345,8 +368,53 @@ class PlanTool(Tool, ContextAware):
                     "message_id": ctx.message_id if ctx else None,
                     "mode": "automatic",
                 }
+            elif ctx is not None and ctx.channel == "websocket" and self._bus is not None:
+                request = self._interactions.create(
+                    kind=InteractionKind.PLAN_CONFIRMATION,
+                    strategy=InteractionStrategy.REQUIRED,
+                    task_id=normalized_task_id,
+                    turn_id=ctx.message_id,
+                    plan_hash=plan["plan_hash"],
+                    continuation={"tool_name": "plan", "action": "confirm"},
+                    payload={
+                        "chat_id": ctx.chat_id,
+                        "goal": plan["goal"],
+                        "plan_hash": plan["plan_hash"],
+                    },
+                )
+                confirmation_request = request
+                plan["interaction_request_id"] = request.request_id
+                await self._bus.publish_outbound(OutboundMessage(
+                    channel=ctx.channel,
+                    chat_id=ctx.chat_id,
+                    content="Plan confirmation is required.",
+                    metadata={
+                        "_progress": True,
+                        OUTBOUND_META_AGENT_UI: {
+                            "kind": "interaction_request",
+                            "interaction": request.as_dict(),
+                        },
+                    },
+                ))
+            input_paths = (
+                ctx.metadata.get("_runtime_input_paths", [])
+                if ctx is not None and isinstance(ctx.metadata, dict)
+                else []
+            )
+            if isinstance(input_paths, list) and input_paths:
+                snapshots = self._artifacts.snapshot_inputs(
+                    normalized_task_id,
+                    [path for path in input_paths if isinstance(path, str)],
+                )
+                plan["input_artifacts"] = [item.artifact_id for item in snapshots]
             self._save(session, path, plan)
-            return self._result(
+            emit_trace_event("mybot.plan.created", {
+                "task_id": normalized_task_id,
+                "plan_hash": plan["plan_hash"],
+                "activation_mode": "automatic" if auto_activate else "explicit",
+                "execution_mode": execution_mode,
+            })
+            result = self._result(
                 path,
                 plan,
                 next_action=(
@@ -358,6 +426,17 @@ class PlanTool(Tool, ContextAware):
                     )
                 ),
             )
+            if confirmation_request is not None:
+                return ToolSuspensionResult(
+                    result,
+                    stop_reason="awaiting_plan_confirmation",
+                    payload={
+                        "status": "awaiting_plan_confirmation",
+                        "reason": "the plan requires explicit typed confirmation",
+                        "interaction": confirmation_request.as_dict(),
+                    },
+                )
+            return result
 
         plan = self._read_plan(path)
         if plan is None:
@@ -385,6 +464,23 @@ class PlanTool(Tool, ContextAware):
                     "Error: plan hash mismatch; the plan changed or the confirmation is stale. "
                     f"Expected current hash {actual_hash}. Show the current plan and ask again."
                 )
+            request_id = plan.get("interaction_request_id")
+            if isinstance(request_id, str):
+                try:
+                    request = self._interactions.get(request_id)
+                except ValueError:
+                    return "Error: plan confirmation interaction is missing or corrupt."
+                if not (
+                    request.status == InteractionStatus.ANSWERED
+                    and request.response
+                    and request.response.get("approved") is True
+                ):
+                    return "Error: plan still requires an explicit typed confirmation."
+                self._interactions.consume(
+                    request_id,
+                    expected_revision=request.revision,
+                    idempotency_key=f"plan-confirm:{actual_hash}",
+                )
             plan["status"] = "active"
             plan["approved_plan_hash"] = actual_hash
             plan["approval"] = {
@@ -393,6 +489,11 @@ class PlanTool(Tool, ContextAware):
             }
             plan["updated_at"] = _iso_now()
             self._save(session, path, plan)
+            emit_trace_event("mybot.plan.confirmed", {
+                "task_id": normalized_task_id,
+                "plan_hash": actual_hash,
+                "activation_mode": "explicit",
+            })
             return self._result(path, plan, next_action="Begin execution and keep step status current.")
 
         if plan.get("status") != "active":

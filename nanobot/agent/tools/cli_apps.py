@@ -17,6 +17,7 @@ from nanobot.agent.tools.schema import (
 )
 from nanobot.apps.cli import CliAppError, CliAppManager, CliAppsRuntimeConfig
 from nanobot.config.schema import Base
+from nanobot.security.sandbox import SandboxMode
 from nanobot.security.workspace_access import current_tool_workspace
 
 
@@ -134,6 +135,11 @@ class CliAppsTool(Tool):
                 working_dir=working_dir,
                 timeout=timeout,
                 restrict_to_workspace=access.restrict_to_workspace,
+                sandbox_mode=(
+                    SandboxMode.WORKSPACE_WRITE
+                    if access.restrict_to_workspace
+                    else SandboxMode.DANGER_FULL_ACCESS
+                ),
             )
         except CliAppError as exc:
             return f"Error: {exc.message}"

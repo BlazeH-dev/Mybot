@@ -14,6 +14,25 @@ if typing.TYPE_CHECKING:
 
 _ToolT = TypeVar("_ToolT", bound="Tool")
 
+
+class ToolSuspensionResult(str):
+    """String-compatible tool result that asks Runner to enter an awaiting state."""
+
+    stop_reason: str
+    payload: dict[str, Any]
+
+    def __new__(
+        cls,
+        content: str,
+        *,
+        stop_reason: str,
+        payload: dict[str, Any],
+    ) -> "ToolSuspensionResult":
+        value = str.__new__(cls, content)
+        value.stop_reason = stop_reason
+        value.payload = dict(payload)
+        return value
+
 # Matches :meth:`Tool._cast_value` / :meth:`Schema.validate_json_schema_value` behavior
 _JSON_TYPE_MAP: dict[str, type | tuple[type, ...]] = {
     "string": str,
@@ -171,6 +190,9 @@ class Tool(ABC):
     config_key: str = ""
     _plugin_discoverable: bool = True
     _scopes: set[str] = {"core"}
+    capability: str = ""
+    risk_level: str = ""
+    requires_approval: bool = False
 
     @classmethod
     def config_cls(cls) -> type[BaseModel] | None:

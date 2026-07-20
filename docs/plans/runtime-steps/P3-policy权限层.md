@@ -1,6 +1,6 @@
 # P3 OS Sandbox、Policy、三档 HITL 与最小文件 OCC
 
-> 状态：待执行。文件租约不属于本阶段必做。
+> 状态：已完成（2026-07-18）。文件租约不属于本阶段必做。
 > 出口：Default Permission 下 Agent 触发命令受 OS sandbox 强制且不静默降级；工具执行前统一 allow/ask/deny；等待可持久化恢复；危险审批超时不放行；已有文件冲突拦截率 100%。
 
 ## 0. 现有能力与复用边界
@@ -57,7 +57,7 @@ manager.py     provider 探测、mode 解析、capability/status、fail-closed
 launcher.py    Agent 触发子进程的统一启动入口
 seatbelt.py    macOS Seatbelt profile 生成与执行
 bwrap.py       Linux / WSL2 Bubblewrap profile 生成与执行
-network.py     默认断网、域名绑定代理和目标审计
+network.py     默认断网、严格 fetch argv、域名/端口/DNS IP 绑定和目标审计
 ```
 
 - `SandboxManager` 只接收已解析的 `WorkspaceScope`，不得重新解释 WebUI 路径。
@@ -90,7 +90,7 @@ network.py     默认断网、域名绑定代理和目标审计
 
 - `read_only|workspace_write` 内命令默认无网络；不能只依赖 `curl/wget` 正则。
 - 需要网络的命令先从规范化参数/实际请求提取目标，经过 SSRF 与 policy；approval 绑定 `tool_call_id + command_hash + domains + ports + expires_at`。
-- approved network 通过受控本地代理/转发层只开放批准域名；DNS rebinding、redirect、私网、loopback、link-local 和 metadata 地址继续 hard deny。
+- approved network 首版只允许直接 `curl` argv：禁止 shell 组合、redirect、proxy/resolve/config/interface 等目标改写，按 command hash + domain + port + 审批时公网 DNS 地址绑定，并以 `--resolve` 固定目标；DNS rebinding、私网、loopback、link-local 和 metadata 地址继续 hard deny。通用代理为后续扩展，不进入 Core。
 - 代理不得把 Provider/API key 原样注入命令环境；命令只拿必要的最小凭据或无凭据网络。
 - OfficeCLI 固定资产准备是可信 provider bootstrap：只访问 contract 指定 release URL、校验 SHA-256 后缓存，再让 OfficeCLI 在 sandbox 内离线执行；不为 Agent 开放上游 latest/install/update。
 - Full Access 可以访问公网，但仍经过现有 SSRF/敏感目标 hard deny；消息、邮件、远程写等外部副作用继续由工具级 policy ask。
@@ -264,7 +264,7 @@ OfficeCLI 基线：只读 help/view/get/query/validate 通常 allow；任务目�
 ### S3：命令网络隔离
 
 - restricted sandbox 默认断网。
-- 增加域名/端口规范化、受控代理、redirect/DNS rebinding 校验和一次性网络 capability。
+- 增加域名/端口规范化、严格 curl argv、DNS/IP 固定、redirect/DNS rebinding 校验和一次性网络 capability。
 - OfficeCLI bootstrap 走固定 contract 的独立可信下载路径，不借用 Agent 网络权限。
 
 ### S4：Policy、Approval 与 HITL 接线

@@ -59,6 +59,7 @@ function fakeClient() {
         return () => set!.delete(h);
       },
       sendMessage: vi.fn(),
+      respondInteraction: vi.fn(),
       newChat: vi.fn(),
       forkChat: vi.fn(),
       attach: vi.fn(),
@@ -1806,6 +1807,91 @@ describe("useNanobotStream", () => {
       });
     });
     expect(result.current.goalState).toEqual({ active: false });
+  });
+
+  it("tracks pending interactions and sends revision-bound responses", () => {
+    const fake = fakeClient();
+    const { result } = renderHook(
+      () => useNanobotStream("chat-a", EMPTY_MESSAGES),
+      { wrapper: wrap(fake.client) },
+    );
+    act(() => {
+      fake.emit("chat-a", {
+        event: "interaction_request",
+        chat_id: "chat-a",
+        interaction: {
+          request_id: "ir_1",
+          revision: 3,
+          kind: "approval",
+          strategy: "expire_and_deny",
+          status: "pending",
+          created_at: "2026-07-18T00:00:00+00:00",
+        },
+      });
+    });
+    expect(result.current.interactions).toHaveLength(1);
+    act(() => {
+      result.current.respondInteraction("ir_1", 3, { approved: true });
+    });
+    expect(fake.client.respondInteraction).toHaveBeenCalledWith(
+      "chat-a",
+      "ir_1",
+      3,
+      { approved: true },
+    );
+    act(() => {
+      fake.emit("chat-a", {
+        event: "interaction_updated",
+        chat_id: "chat-a",
+        interaction: {
+          request_id: "ir_1",
+          revision: 4,
+          kind: "approval",
+          strategy: "expire_and_deny",
+          status: "approved",
+          created_at: "2026-07-18T00:00:00+00:00",
+        },
+      });
+    });
+    expect(result.current.interactions).toHaveLength(0);
+  });
+
+  it("confirms the matching pending plan interaction from the plan shortcut", () => {
+    const fake = fakeClient();
+    const { result } = renderHook(
+      () => useNanobotStream("chat-a", EMPTY_MESSAGES),
+      { wrapper: wrap(fake.client) },
+    );
+    act(() => {
+      fake.emit("chat-a", {
+        event: "interaction_request",
+        chat_id: "chat-a",
+        interaction: {
+          request_id: "ir_plan",
+          revision: 2,
+          kind: "plan_confirmation",
+          strategy: "required",
+          status: "pending",
+          task_id: "task-ui",
+          plan_hash: "hash-ui",
+          created_at: "2026-07-18T00:00:00+00:00",
+        },
+      });
+    });
+
+    let matched = false;
+    act(() => {
+      matched = result.current.confirmPlanInteraction("task-ui", "hash-ui");
+    });
+
+    expect(matched).toBe(true);
+    expect(fake.client.respondInteraction).toHaveBeenCalledWith(
+      "chat-a",
+      "ir_plan",
+      2,
+      { approved: true },
+    );
+    expect(result.current.confirmPlanInteraction("task-ui", "other-hash")).toBe(false);
   });
 
 });

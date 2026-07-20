@@ -129,6 +129,11 @@ def test_schema_classes_equivalent_to_sample_tool_parameters() -> None:
     assert built == SampleTool().parameters
 
 
+def test_object_schema_rejects_description_field_constructor_collision() -> None:
+    with pytest.raises(TypeError, match="properties"):
+        ObjectSchema(description=StringSchema("Choice tradeoff."))
+
+
 def test_tool_parameters_returns_fresh_copy_per_access() -> None:
     tool = DecoratedSampleTool()
 

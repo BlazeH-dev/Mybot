@@ -1,6 +1,6 @@
 # P4 Input Snapshot、Artifact Lineage 与 Durable Checkpoint
 
-> 状态：待执行。白盒记忆、artifact delta/staging 为选做。
+> 状态：已完成（2026-07-18）。白盒记忆、artifact delta/staging 为选做。
 > 出口：输入和产物可追踪；已激活且 hash 绑定的计划可安全 kill→resume；uncertain 副作用不自动重试。
 
 ## 1. 不可变输入

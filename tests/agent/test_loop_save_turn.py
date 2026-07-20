@@ -360,7 +360,8 @@ def test_restore_runtime_checkpoint_rehydrates_completed_and_pending_tools() -> 
     assert session.messages[0]["role"] == "assistant"
     assert session.messages[1]["tool_call_id"] == "call_done"
     assert session.messages[2]["tool_call_id"] == "call_pending"
-    assert "interrupted before this tool finished" in session.messages[2]["content"].lower()
+    assert "pending_recovery" in session.messages[2]["content"]
+    assert "safe_to_retry" in session.messages[2]["content"]
 
 
 def test_restore_runtime_checkpoint_dedupes_overlapping_tail() -> None:
@@ -1040,7 +1041,10 @@ async def test_stop_preserves_runtime_checkpoint_for_next_turn(tmp_path: Path) -
             "role": "tool",
             "tool_call_id": "call_pending",
             "name": "exec",
-            "content": "Error: Task interrupted before this tool finished.",
+                "content": (
+                    '{"status": "pending_recovery", "safe_to_retry": true, '
+                    '"reason": "tool had not completed before interruption"}'
+                ),
         },
         {"role": "user", "content": "continue here"},
         {"role": "assistant", "content": "next answer"},

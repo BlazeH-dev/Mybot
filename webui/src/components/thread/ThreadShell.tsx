@@ -3,6 +3,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 
 import { FilePreviewPanel } from "@/components/FilePreviewPanel";
+import { InteractionRequests } from "@/components/thread/InteractionRequests";
 import { PromptNavigator } from "@/components/thread/PromptNavigator";
 import { SessionInfoPopover } from "@/components/thread/SessionInfoPopover";
 import { ThreadComposer } from "@/components/thread/ThreadComposer";
@@ -308,6 +309,9 @@ export function ThreadShell({
     isStreaming,
     runStartedAt,
     goalState,
+    interactions,
+    respondInteraction,
+    confirmPlanInteraction,
     send,
     transcribeAudio,
     stop,
@@ -539,13 +543,14 @@ export function ThreadShell({
     (taskId: string, planHash: string) => {
       if (!taskId || !planHash) return;
       setScrollToBottomSignal((value) => value + 1);
+      if (confirmPlanInteraction(taskId, planHash)) return;
       send(
         t("message.plan.confirmPrompt", { taskId, planHash }),
         undefined,
         withWorkspaceScope({ executionMode: "default" }),
       );
     },
-    [send, t, withWorkspaceScope],
+    [confirmPlanInteraction, send, t, withWorkspaceScope],
   );
 
   const handleModelPresetSelect = useCallback(
@@ -671,6 +676,7 @@ export function ThreadShell({
           onDismiss={dismissStreamError}
         />
       ) : null}
+      <InteractionRequests interactions={interactions} onRespond={respondInteraction} />
       {session ? (
         <ThreadComposer
           onSend={handleThreadSend}

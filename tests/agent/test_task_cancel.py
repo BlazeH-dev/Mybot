@@ -483,10 +483,11 @@ class TestSubagentAnnounceSessionKey:
         assert msg.chat_id == "discord:333"
 
     @pytest.mark.asyncio
-    async def test_session_key_flows_through_run_subagent(self):
+    async def test_session_key_flows_through_run_subagent(self, monkeypatch, tmp_path):
         """Verify session_key in origin propagates from _run_subagent to _announce_result."""
         from nanobot.agent.subagent import SubagentStatus
 
+        monkeypatch.chdir(tmp_path)
         mgr, bus = self._make_mgr()
 
         async def fake_run(spec):
@@ -511,3 +512,4 @@ class TestSubagentAnnounceSessionKey:
 
         msg = await bus.consume_inbound()
         assert msg.session_key_override == "unified:default"
+        assert list(tmp_path.iterdir()) == []

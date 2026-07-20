@@ -1,0 +1,8 @@
+{
+  "case_id": "file_conflict",
+  "metrics": ["file_conflict_safety"],
+  "evidence": {
+    "conflict_blocked": true,
+    "zero_partial_write": true
+  }
+}

@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Any
 
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.context import ContextAware, RequestContext
-from nanobot.agent.tools.schema import NumberSchema, StringSchema, tool_parameters_schema
+from nanobot.agent.tools.schema import (
+    NumberSchema,
+    StringSchema,
+    tool_parameters_schema,
+)
 from nanobot.security.workspace_access import current_workspace_scope
 
 if TYPE_CHECKING:
@@ -42,6 +46,22 @@ class SpawnTool(Tool, ContextAware):
             "spawn_origin_message_id",
             default=None,
         )
+        self._parent_task_id: ContextVar[str | None] = ContextVar(
+            "spawn_parent_task_id",
+            default=None,
+        )
+        self._parent_plan_hash: ContextVar[str | None] = ContextVar(
+            "spawn_parent_plan_hash",
+            default=None,
+        )
+        self._parent_plan_status: ContextVar[str | None] = ContextVar(
+            "spawn_parent_plan_status",
+            default=None,
+        )
+        self._approved_plan_hash: ContextVar[str | None] = ContextVar(
+            "spawn_approved_plan_hash",
+            default=None,
+        )
 
     @classmethod
     def create(cls, ctx: Any) -> Tool:
@@ -53,6 +73,22 @@ class SpawnTool(Tool, ContextAware):
         self._origin_chat_id.set(ctx.chat_id)
         self._session_key.set(ctx.session_key or f"{ctx.channel}:{ctx.chat_id}")
         self._origin_message_id.set(ctx.message_id)
+        raw_task_id = ctx.metadata.get("_runtime_task_id") if isinstance(ctx.metadata, dict) else None
+        self._parent_task_id.set(str(raw_task_id) if raw_task_id else None)
+        raw_plan_hash = (
+            ctx.metadata.get("_runtime_plan_hash") if isinstance(ctx.metadata, dict) else None
+        )
+        raw_plan_status = (
+            ctx.metadata.get("_runtime_plan_status") if isinstance(ctx.metadata, dict) else None
+        )
+        raw_approved_hash = (
+            ctx.metadata.get("_runtime_approved_plan_hash")
+            if isinstance(ctx.metadata, dict)
+            else None
+        )
+        self._parent_plan_hash.set(str(raw_plan_hash) if raw_plan_hash else None)
+        self._parent_plan_status.set(str(raw_plan_status) if raw_plan_status else None)
+        self._approved_plan_hash.set(str(raw_approved_hash) if raw_approved_hash else None)
 
     @property
     def name(self) -> str:
@@ -76,6 +112,18 @@ class SpawnTool(Tool, ContextAware):
         **kwargs: Any,
     ) -> str:
         """Spawn a subagent to execute the given task."""
+        parent_task_id = self._parent_task_id.get()
+        plan_hash = self._parent_plan_hash.get()
+        if (
+            not parent_task_id
+            or self._parent_plan_status.get() != "active"
+            or not plan_hash
+            or self._approved_plan_hash.get() != plan_hash
+        ):
+            return (
+                "Error: policy_denied: spawn requires an active parent plan whose "
+                "approved_plan_hash matches the current plan_hash."
+            )
         running = self._manager.get_running_count()
         limit = self._manager.max_concurrent_subagents
         if running >= limit:
@@ -93,4 +141,6 @@ class SpawnTool(Tool, ContextAware):
             origin_message_id=self._origin_message_id.get(),
             temperature=temperature,
             workspace_scope=current_workspace_scope(),
+            parent_task_id=parent_task_id,
+            parent_plan_hash=plan_hash,
         )

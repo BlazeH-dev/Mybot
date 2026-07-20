@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 from contextlib import suppress
 from copy import deepcopy
@@ -14,6 +15,7 @@ from typing import Any, Callable
 from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
+from nanobot.agent.tools.base import ToolSuspensionResult
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.utils.file_edit_events import (
@@ -109,6 +111,12 @@ class AgentRunSpec:
     llm_timeout_s: float | None = None
     goal_active_predicate: Callable[[], bool] | None = None
     goal_continue_message: str | None = None
+    policy_gate: Any | None = None
+    actor: str = "main"
+    task_id: str | None = None
+    plan_hash: str | None = None
+    total_token_budget: int | None = None
+    max_tool_calls: int | None = None
 
 
 @dataclass(slots=True)
@@ -123,6 +131,15 @@ class AgentRunResult:
     error: str | None = None
     tool_events: list[dict[str, str]] = field(default_factory=list)
     had_injections: bool = False
+
+
+class ToolSuspensionError(RuntimeError):
+    """Typed stop signal for a durable human-interaction wait."""
+
+    def __init__(self, stop_reason: str, payload: dict[str, Any]) -> None:
+        super().__init__(payload.get("reason") or stop_reason)
+        self.stop_reason = stop_reason
+        self.payload = payload
 
 
 class AgentRunner:
@@ -337,6 +354,7 @@ class AgentRunner:
         length_recovery_count = 0
         had_injections = False
         injection_cycles = 0
+        tool_call_count = 0
 
         for iteration in range(spec.max_iterations):
             try:
@@ -382,12 +400,45 @@ class AgentRunner:
             raw_usage = self._usage_or_estimate(spec, messages_for_model, response)
             context.usage = dict(raw_usage)
             self._accumulate_usage(usage, raw_usage)
+            if (
+                spec.total_token_budget is not None
+                and self._usage_total(usage) > spec.total_token_budget
+            ):
+                final_content = (
+                    "Error: budget_exceeded: subagent token budget exceeded "
+                    f"({self._usage_total(usage)}/{spec.total_token_budget})."
+                )
+                stop_reason = "budget_exceeded"
+                error = final_content
+                self._append_final_message(messages, final_content)
+                context.final_content = final_content
+                context.error = error
+                context.stop_reason = stop_reason
+                await hook.after_iteration(context)
+                break
             if reasoning_text and not context.streamed_reasoning:
                 await hook.emit_reasoning(reasoning_text)
                 await hook.emit_reasoning_end()
                 context.streamed_reasoning = True
 
             if response.should_execute_tools:
+                if (
+                    spec.max_tool_calls is not None
+                    and tool_call_count + len(response.tool_calls) > spec.max_tool_calls
+                ):
+                    final_content = (
+                        "Error: budget_exceeded: subagent tool-call budget exceeded "
+                        f"({tool_call_count + len(response.tool_calls)}/{spec.max_tool_calls})."
+                    )
+                    stop_reason = "budget_exceeded"
+                    error = final_content
+                    self._append_final_message(messages, final_content)
+                    context.final_content = final_content
+                    context.error = error
+                    context.stop_reason = stop_reason
+                    await hook.after_iteration(context)
+                    break
+                tool_call_count += len(response.tool_calls)
                 context.tool_calls = list(response.tool_calls)
                 if hook.wants_streaming():
                     await hook.on_stream_end(context, resuming=True)
@@ -442,6 +493,30 @@ class AgentRunner:
                     }
                     messages.append(tool_message)
                     completed_tool_results.append(tool_message)
+                if isinstance(fatal_error, ToolSuspensionError):
+                    stop_reason = fatal_error.stop_reason
+                    error = None
+                    final_content = None
+                    context.final_content = None
+                    context.error = None
+                    context.stop_reason = stop_reason
+                    await self._emit_checkpoint(
+                        spec,
+                        {
+                            "phase": stop_reason,
+                            "iteration": iteration,
+                            "model": spec.model,
+                            "assistant_message": assistant_message,
+                            "completed_tool_results": completed_tool_results,
+                            "pending_tool_calls": [
+                                tc.to_openai_tool_call()
+                                for tc in response.tool_calls[len(results):]
+                            ],
+                            "interaction": fatal_error.payload.get("interaction"),
+                        },
+                    )
+                    await hook.after_iteration(context)
+                    break
                 if fatal_error is not None:
                     error = f"Error: {type(fatal_error).__name__}: {fatal_error}"
                     final_content = error
@@ -923,8 +998,9 @@ class AgentRunner:
     ) -> tuple[list[Any], list[dict[str, str]], BaseException | None]:
         batches = self._partition_tool_batches(spec, tool_calls)
         tool_results: list[tuple[Any, dict[str, str], BaseException | None]] = []
+        suspended = False
         for batch in batches:
-            if spec.concurrent_tools and len(batch) > 1:
+            if spec.concurrent_tools and spec.policy_gate is None and len(batch) > 1:
                 batch_results = await asyncio.gather(*(
                     self._run_tool(
                         spec, tool_call, external_lookup_counts, workspace_violation_counts,
@@ -932,6 +1008,10 @@ class AgentRunner:
                     for tool_call in batch
                 ))
                 tool_results.extend(batch_results)
+                suspended = any(
+                    isinstance(result[2], ToolSuspensionError)
+                    for result in batch_results
+                )
             else:
                 batch_results = []
                 for tool_call in batch:
@@ -940,6 +1020,11 @@ class AgentRunner:
                     )
                     tool_results.append(result)
                     batch_results.append(result)
+                    if isinstance(result[2], ToolSuspensionError):
+                        suspended = True
+                        break
+            if suspended:
+                break
 
         results: list[Any] = []
         events: list[dict[str, str]] = []
@@ -998,6 +1083,54 @@ class AgentRunner:
             return prep_error + hint, event, (
                 RuntimeError(prep_error) if spec.fail_on_tool_error else None
             )
+        execution_context: dict[str, Any] = {}
+        if spec.policy_gate is not None and tool is not None:
+            try:
+                outcome = await spec.policy_gate(
+                    tool_call=tool_call,
+                    tool=tool,
+                    params=params,
+                    spec=spec,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                payload = f"Error: policy_gate_failed: {type(exc).__name__}: {exc}"
+                event = {
+                    "name": tool_call.name,
+                    "status": "error",
+                    "detail": "policy gate failed closed",
+                }
+                return payload, event, RuntimeError(payload) if spec.fail_on_tool_error else None
+            decision = getattr(outcome, "decision", outcome)
+            execution_context = dict(getattr(outcome, "execution_context", None) or {})
+            action = getattr(decision, "action", None)
+            reason = str(getattr(decision, "reason", "runtime policy rejected the call"))
+            if action == "deny":
+                payload = f"Error: policy_denied: {reason}"
+                event = {
+                    "name": tool_call.name,
+                    "status": "error",
+                    "detail": payload[:120],
+                }
+                return payload + hint, event, (
+                    RuntimeError(payload) if spec.fail_on_tool_error else None
+                )
+            if action == "ask":
+                interaction = getattr(outcome, "interaction", None) or {}
+                stop_reason = f"awaiting_{interaction.get('kind', 'approval')}"
+                payload = {
+                    "status": stop_reason,
+                    "reason": reason,
+                    "interaction": interaction,
+                }
+                text = json.dumps(payload, ensure_ascii=False)
+                event = {
+                    "name": tool_call.name,
+                    "status": "awaiting",
+                    "detail": reason[:120],
+                }
+                return text, event, ToolSuspensionError(stop_reason, payload)
         emit_file_edit_events = (
             spec.progress_callback is not None
             and on_progress_accepts_file_edit_events(spec.progress_callback)
@@ -1023,10 +1156,42 @@ class AgentRunner:
                 ) for file_edit_tracker in file_edit_trackers],
             )
         try:
-            if tool is not None:
-                result = await tool.execute(**params)
-            else:
-                result = await spec.tools.execute(tool_call.name, params)
+            network_token = None
+            raw_grant = execution_context.get("network_grant")
+            if isinstance(raw_grant, dict):
+                from nanobot.security.sandbox.network import NetworkGrant, bind_network_grant
+
+                network_token = bind_network_grant(NetworkGrant(
+                    domains=tuple(str(item) for item in raw_grant.get("domains", [])),
+                    ports=tuple(int(item) for item in raw_grant.get("ports", [])),
+                    command_hash=str(raw_grant.get("command_hash") or ""),
+                    expires_at=str(raw_grant.get("expires_at") or ""),
+                    addresses=tuple(str(item) for item in raw_grant.get("addresses", [])),
+                ))
+            try:
+                if tool is not None:
+                    result = await tool.execute(**params)
+                else:
+                    result = await spec.tools.execute(tool_call.name, params)
+            finally:
+                if network_token is not None:
+                    from nanobot.security.sandbox.network import reset_network_grant
+
+                    reset_network_grant(network_token)
+            if isinstance(result, ToolSuspensionResult):
+                event = {
+                    "name": tool_call.name,
+                    # The tool itself completed successfully (for example a plan was
+                    # persisted); only the surrounding turn is suspended.  Preserve
+                    # the result in the progress stream so UI consumers can render it.
+                    "status": "ok",
+                    "detail": str(result.payload.get("reason") or result.stop_reason)[:120],
+                }
+                return (
+                    str(result),
+                    event,
+                    ToolSuspensionError(result.stop_reason, result.payload),
+                )
         except asyncio.CancelledError:
             raise
         except BaseException as exc:

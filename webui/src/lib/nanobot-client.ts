@@ -413,6 +413,23 @@ export class NanobotClient {
     this.queueSend(frame);
   }
 
+  respondInteraction(
+    chatId: string,
+    requestId: string,
+    expectedRevision: number,
+    response: Record<string, unknown>,
+  ): void {
+    this.knownChats.add(chatId);
+    this.queueSend({
+      type: "interaction_response",
+      chat_id: chatId,
+      request_id: requestId,
+      expected_revision: expectedRevision,
+      idempotency_key: crypto.randomUUID(),
+      response,
+    });
+  }
+
   setWorkspaceScope(chatId: string, workspaceScope: WorkspaceScopePayload): void {
     this.knownChats.add(chatId);
     this.queueSend({

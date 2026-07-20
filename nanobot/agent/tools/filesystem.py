@@ -31,6 +31,7 @@ class _FsTool(Tool):
         file_states: FileStates | None = None,
         restrict_to_workspace: bool | None = None,
         sandbox_restricts_workspace: bool = False,
+        enforce_occ: bool = False,
     ):
         self._workspace = workspace
         self._allowed_dir = allowed_dir
@@ -41,6 +42,7 @@ class _FsTool(Tool):
             else allowed_dir is not None
         )
         self._sandbox_restricts_workspace = sandbox_restricts_workspace
+        self._enforce_occ = enforce_occ
         # Explicit state is used by isolated runners like Dream/subagents.
         # Main AgentLoop tools leave this unset and resolve state from the
         # current async task, which keeps shared tool instances session-safe.
@@ -65,6 +67,7 @@ class _FsTool(Tool):
             file_states=ctx.file_state_store,
             restrict_to_workspace=ctx.config.restrict_to_workspace,
             sandbox_restricts_workspace=sandbox_restricts,
+            enforce_occ=True,
         )
 
     @property
@@ -217,11 +220,17 @@ class ReadFileTool(_FsTool):
 
             # PDF support
             if fp.suffix.lower() == ".pdf":
-                return self._read_pdf(fp, pages)
+                result = self._read_pdf(fp, pages)
+                if not result.startswith("Error"):
+                    self._file_states.record_read(fp, offset=offset, limit=limit)
+                return result
 
             # Office document support
             if fp.suffix.lower() in {".docx", ".xlsx", ".pptx"}:
-                return self._read_office_doc(fp)
+                result = self._read_office_doc(fp)
+                if not result.startswith("Error"):
+                    self._file_states.record_read(fp, offset=offset, limit=limit)
+                return result
 
             raw = fp.read_bytes()
             if not raw:
@@ -229,6 +238,7 @@ class ReadFileTool(_FsTool):
 
             mime = detect_image_mime(raw) or mimetypes.guess_type(path)[0]
             if mime and mime.startswith("image/"):
+                self._file_states.record_read(fp, offset=offset, limit=limit)
                 return build_image_content_blocks(raw, mime, str(fp), f"(Image file: {path})")
 
             # Read dedup: same path + offset + limit + unchanged mtime → stub
@@ -420,6 +430,10 @@ class WriteFileTool(_FsTool):
             if content is None:
                 raise ValueError("Unknown content")
             fp = self._resolve(path)
+            if fp.exists() and self._enforce_occ:
+                conflict = self._file_states.check_fresh(fp) if self._enforce_occ else None
+                if conflict:
+                    return f"Error: {conflict}: {fp}"
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
             self._file_states.record_write(fp)
@@ -790,6 +804,9 @@ class EditFileTool(_FsTool):
 
             # Create-file: old_text='' but file exists and not empty → reject
             if old_text == "":
+                conflict = self._file_states.check_fresh(fp) if self._enforce_occ else None
+                if conflict:
+                    return f"Error: {conflict}: {fp}"
                 raw = fp.read_bytes()
                 content = raw.decode("utf-8")
                 if content.strip():
@@ -798,8 +815,10 @@ class EditFileTool(_FsTool):
                 self._file_states.record_write(fp)
                 return f"Successfully edited {fp}"
 
-            # Read-before-edit check
-            warning = self._file_states.check_read(fp)
+            warning = self._file_states.check_read(fp) if not self._enforce_occ else None
+            conflict = self._file_states.check_fresh(fp) if self._enforce_occ else None
+            if conflict:
+                return f"Error: {conflict}: {fp}"
 
             raw = fp.read_bytes()
             uses_crlf = b"\r\n" in raw
@@ -882,10 +901,8 @@ class EditFileTool(_FsTool):
 
             fp.write_bytes(new_content.encode("utf-8"))
             self._file_states.record_write(fp)
-            msg = f"Successfully edited {fp}"
-            if warning:
-                msg = f"{warning}\n{msg}"
-            return msg
+            suffix = f"\n{warning}" if warning else ""
+            return f"Successfully edited {fp}{suffix}"
         except PermissionError as e:
             return f"Error: {e}"
         except Exception as e:
