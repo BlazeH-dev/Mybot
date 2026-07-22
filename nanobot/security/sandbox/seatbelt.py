@@ -7,6 +7,24 @@ from pathlib import Path
 
 from nanobot.security.sandbox.types import SandboxMode, SandboxUnavailableError
 
+_SYSTEM_RUNTIME_ROOTS = (
+    Path("/usr"),
+    Path("/bin"),
+    Path("/sbin"),
+    Path("/System"),
+    Path("/Library"),
+    Path("/etc"),
+    Path("/opt/homebrew"),
+    Path("/usr/local"),
+)
+
+
+def runtime_readable_roots() -> tuple[Path, ...]:
+    """Roots needed to execute platform tools without exposing user home data."""
+    return tuple(
+        dict.fromkeys(root.resolve(strict=False) for root in _SYSTEM_RUNTIME_ROOTS if root.exists())
+    )
+
 
 def _quote(value: str | Path) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"')
@@ -22,7 +40,7 @@ def profile_text(
 ) -> str:
     """Build a deny-by-default Seatbelt profile for one task launch."""
     ws = workspace.expanduser().resolve(strict=False)
-    reads = tuple(dict.fromkeys((ws, *readable_roots)))
+    reads = tuple(dict.fromkeys((*runtime_readable_roots(), ws, *readable_roots)))
     writes = () if mode == SandboxMode.READ_ONLY else tuple(dict.fromkeys((ws, *writable_roots)))
 
     lines = [
@@ -49,6 +67,9 @@ def profile_text(
         ws / ".nanobot-runtime" / "trace",
     )
     for root in protected:
+        lines.append(f'(deny file-read* (literal "{_quote(root)}"))')
+        lines.append(f'(deny file-read* (subpath "{_quote(root)}"))')
+        lines.append(f'(deny file-write* (literal "{_quote(root)}"))')
         lines.append(f'(deny file-write* (subpath "{_quote(root)}"))')
     return "\n".join(lines) + "\n"
 

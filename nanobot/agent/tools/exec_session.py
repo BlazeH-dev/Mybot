@@ -17,6 +17,7 @@ from nanobot.agent.tools.schema import (
     StringSchema,
     tool_parameters_schema,
 )
+from nanobot.security.sandbox import LaunchSpec, SandboxMode, SandboxUnavailableError
 
 DEFAULT_YIELD_MS = 1000
 MAX_YIELD_MS = 30_000
@@ -185,12 +186,9 @@ class ExecSessionManager:
     async def start(
         self,
         *,
+        launch: LaunchSpec,
         command: str,
-        cwd: str,
-        env: dict[str, str],
         timeout: int | None,
-        shell_program: str | None,
-        login: bool,
         yield_time_ms: int,
         max_output_chars: int,
         owner_session_key: str | None = None,
@@ -199,13 +197,20 @@ class ExecSessionManager:
             await self._cleanup_locked()
             if len(self._sessions) >= self.max_sessions:
                 raise RuntimeError(f"maximum exec sessions reached ({self.max_sessions})")
-            process = await self._spawn(command, cwd, env, shell_program, login)
+            try:
+                process = await self._spawn(launch)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if launch.mode != SandboxMode.DANGER_FULL_ACCESS:
+                    raise SandboxUnavailableError("sandbox_start_failed", str(exc)) from exc
+                raise
             session_id = uuid.uuid4().hex[:12]
             session = _ExecSession(
                 session_id=session_id,
                 process=process,
                 command=command,
-                cwd=cwd,
+                cwd=launch.cwd,
                 timeout=timeout,
                 owner_session_key=owner_session_key,
             )
@@ -297,16 +302,12 @@ class ExecSessionManager:
 
     async def _spawn(
         self,
-        command: str,
-        cwd: str,
-        env: dict[str, str],
-        shell_program: str | None,
-        login: bool,
+        launch: LaunchSpec,
     ) -> asyncio.subprocess.Process:
         from nanobot.agent.tools.shell import ExecTool
 
         return await ExecTool._spawn(
-            command, cwd, env, shell_program, login,
+            launch,
             stdin=asyncio.subprocess.PIPE,
         )
 

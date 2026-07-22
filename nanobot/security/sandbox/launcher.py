@@ -8,6 +8,7 @@ from pathlib import Path
 from nanobot.security.sandbox import bwrap, seatbelt
 from nanobot.security.sandbox.manager import SandboxManager
 from nanobot.security.sandbox.network import (
+    NetworkGrant,
     command_hash,
     current_network_grant,
     network_grant_active,
@@ -29,19 +30,28 @@ class SandboxLauncher:
         env: dict[str, str],
         mode: SandboxMode,
         shell: str = "/bin/sh",
+        login: bool = False,
         readable_roots: tuple[str | Path, ...] = (),
         writable_roots: tuple[str | Path, ...] = (),
+        allow_network_grant: bool = True,
     ) -> LaunchSpec:
-        network_grant = current_network_grant()
+        network_grant = (
+            current_network_grant()
+            if allow_network_grant and mode != SandboxMode.DANGER_FULL_ACCESS
+            else None
+        )
         if (
-            mode != SandboxMode.DANGER_FULL_ACCESS
-            and network_grant is not None
+            network_grant is not None
             and network_grant.command_hash == command_hash(command)
             and network_grant_active(network_grant)
         ):
             argv = pinned_curl_argv(command, network_grant)
         else:
-            argv = (shell, "-c", command)
+            shell_argv = [shell]
+            if login and Path(shell).name.lower() in {"bash", "bash.exe", "zsh", "zsh.exe"}:
+                shell_argv.append("-l")
+            shell_argv.extend(("-c", command))
+            argv = tuple(shell_argv)
         return self.prepare_argv(
             argv=argv,
             command_text=command,
@@ -51,6 +61,7 @@ class SandboxLauncher:
             mode=mode,
             readable_roots=readable_roots,
             writable_roots=writable_roots,
+            network_grant=network_grant,
         )
 
     def prepare_argv(
@@ -64,11 +75,16 @@ class SandboxLauncher:
         mode: SandboxMode,
         readable_roots: tuple[str | Path, ...] = (),
         writable_roots: tuple[str | Path, ...] = (),
+        network_grant: NetworkGrant | None = None,
     ) -> LaunchSpec:
         ws = Path(workspace).expanduser().resolve(strict=False)
         launch_cwd = Path(cwd).expanduser().resolve(strict=False)
         reads = tuple(Path(p).expanduser().resolve(strict=False) for p in readable_roots)
         writes = tuple(Path(p).expanduser().resolve(strict=False) for p in writable_roots)
+        if self.manager.provider == "seatbelt":
+            reads = tuple(dict.fromkeys((*seatbelt.runtime_readable_roots(), *reads)))
+        elif self.manager.provider == "bwrap":
+            reads = tuple(dict.fromkeys((*bwrap.runtime_readable_roots(), *reads)))
         status = self.manager.status(
             mode=mode,
             workspace=ws,
@@ -77,7 +93,6 @@ class SandboxLauncher:
         )
         text = command_text if command_text is not None else shlex.join(argv)
         digest = command_hash(text)
-        network_grant = current_network_grant()
         allow_network = bool(
             network_grant is not None and network_grant.command_hash == digest
             and network_grant_active(network_grant)

@@ -1,6 +1,7 @@
 # P1 双 Office Skill 垂直切片
 
-> 状态：已完成。目标是用两个独立 Office Skill 验证共享事实层、独立工作流和静态计划契约。
+> 状态：P1 Core 已完成；P1.1 `OfficePython` 通用化与改名待实施。
+> 目标：用两个独立 Office Skill 验证共享事实层、独立工作流和静态计划契约，并为后续公开 benchmark 建立公平的 Python 基线。
 
 ## 已落地边界
 
@@ -68,3 +69,29 @@ OfficeCLI Skill：必要时的 schema/facts、命令或 batch、Office 成品、
 - [x] Python deterministic chain 与 plan tool 不回归。
 - [x] WebUI 支持仅规划、自动 plan-and-execute 与结构化步骤卡片。
 - [x] 固定 OfficeCLI 集成环境可验证 sidecar、preview 和成品。
+
+## P1.1 OfficePython 通用化（待实施）
+
+当前代码中的 `office-automation` 是面向 Excel facts -> 周报/PPT 的窄工作流。后续将其改名为展示名 `OfficePython`、Skill id `office-python`，扩展成不依赖 OfficeCLI 的通用 Python Office 基线；在代码迁移完成前，现有目录、manifest 和配置仍以 `office-automation` 为准，不得提前宣称已改名。
+
+### 能力与接口
+
+- DOCX 使用 `python-docx + lxml`，XLSX 使用 `openpyxl`，PPTX 使用 `python-pptx`；LibreOffice headless 只负责打开、重算、转换和渲染验证。
+- 提供统一的 `inspect/query/create/apply/validate/render` JSON CLI，覆盖文本、段落、样式、列表、表格、图片、页眉页脚、工作表、单元格、公式、图表、幻灯片和基础布局。
+- 原 report/slide DSL 与周报链移入 `recipes/weekly-report/`，作为可选 recipe，不再代表整个 Skill。
+- tracked changes、复杂母版/动画、SmartArt 和库本身无法可靠保真的 OOXML 特性必须显式返回 `unsupported`，不能静默降级或伪造成功。
+- `office-automation -> office-python` 提供配置、`disabledSkills`、显式 `@skill` 和历史会话兼容迁移；迁移稳定后再删除旧 id。
+
+### 公平比较
+
+- `office-python` 与 `officecli` 使用相同输入快照、`gpt-5-6-luna`、Runtime policy、任务约束和 evaluator；一次 run 只启用一个被测 Skill。
+- 两者可共享 facts、OpenXML/渲染验证器和 benchmark adapter，但 `office-python` 不调用 OfficeCLI 或其 compiler/backend。
+- 分开报告 capability coverage 与共同支持任务的质量、token、LLM/工具耗时、工具成功率和 Agent 循环步数；`unsupported` 不冒充执行错误。
+- 不在 prompt、case 路由或评分中人为偏袒 OfficeCLI；其统一跨格式接口、DOM/query/batch/view/validate/raw 等优势必须由真实结果证明。
+
+### P1.1 出口
+
+- [ ] `office-python` 可独立完成 DOCX/XLSX/PPTX 的读取、创建、常用编辑、验证和渲染。
+- [ ] 旧 `office-automation` 配置和显式路由可无损迁移。
+- [ ] 周报 recipe 回归结果不低于当前确定性基线。
+- [ ] 两个 Skill 在固定 smoke 上生成 capability coverage 与共同任务比较报告。

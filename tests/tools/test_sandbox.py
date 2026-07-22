@@ -1,6 +1,7 @@
 """Tests for nanobot.agent.tools.sandbox."""
 
 import shlex
+from unittest.mock import patch
 
 import pytest
 
@@ -13,6 +14,17 @@ def _parse(cmd: str) -> list[str]:
 
 
 class TestBwrapBackend:
+    @pytest.fixture(autouse=True)
+    def _available_bwrap(self):
+        with (
+            patch(
+                "nanobot.security.sandbox.manager.SandboxManager.provider_available",
+                return_value=(True, None),
+            ),
+            patch("nanobot.security.sandbox.bwrap.shutil.which", return_value="bwrap"),
+        ):
+            yield
+
     def test_basic_structure(self, tmp_path):
         ws = str(tmp_path / "project")
         result = wrap_command("bwrap", "echo hi", ws, ws)
@@ -27,7 +39,7 @@ class TestBwrapBackend:
         assert "--tmpfs" in tokens
 
         sep = tokens.index("--")
-        assert tokens[sep + 1:] == ["sh", "-c", "echo hi"]
+        assert tokens[sep + 1:] == ["/bin/sh", "-c", "echo hi"]
 
     def test_workspace_bind_mounted_rw(self, tmp_path):
         ws = str(tmp_path / "project")
@@ -37,14 +49,13 @@ class TestBwrapBackend:
         bind_idx = [i for i, t in enumerate(tokens) if t == "--bind"]
         assert any(tokens[i + 1] == ws and tokens[i + 2] == ws for i in bind_idx)
 
-    def test_parent_dir_masked_with_tmpfs(self, tmp_path):
+    def test_host_root_is_not_exposed_read_only(self, tmp_path):
         ws = tmp_path / "project"
         result = wrap_command("bwrap", "ls", str(ws), str(ws))
         tokens = _parse(result)
 
-        tmpfs_indices = [i for i, t in enumerate(tokens) if t == "--tmpfs"]
-        tmpfs_targets = {tokens[i + 1] for i in tmpfs_indices}
-        assert str(ws.parent) in tmpfs_targets
+        triples = tuple(zip(tokens, tokens[1:], tokens[2:]))
+        assert ("--ro-bind", "/", "/") not in triples
 
     def test_cwd_inside_workspace(self, tmp_path):
         ws = tmp_path / "project"
@@ -71,9 +82,9 @@ class TestBwrapBackend:
         tokens = _parse(result)
 
         sep = tokens.index("--")
-        assert tokens[sep + 1:] == ["sh", "-c", cmd]
+        assert tokens[sep + 1:] == ["/bin/sh", "-c", cmd]
 
-    def test_system_dirs_ro_bound(self, tmp_path):
+    def test_system_roots_are_ro_bound(self, tmp_path):
         ws = str(tmp_path / "project")
         result = wrap_command("bwrap", "ls", ws, ws)
         tokens = _parse(result)
@@ -82,15 +93,19 @@ class TestBwrapBackend:
         ro_targets = {tokens[i + 1] for i in ro_bind_indices}
         assert "/usr" in ro_targets
 
-    def test_optional_dirs_use_ro_bind_try(self, tmp_path):
+    def test_readable_roots_use_ro_bind_try(self, tmp_path, monkeypatch):
+        fake_media = tmp_path / "readable-media"
+        monkeypatch.setattr(
+            "nanobot.agent.tools.sandbox.get_media_dir",
+            lambda: fake_media,
+        )
         ws = str(tmp_path / "project")
         result = wrap_command("bwrap", "ls", ws, ws)
         tokens = _parse(result)
 
         try_indices = [i for i, t in enumerate(tokens) if t == "--ro-bind-try"]
         try_targets = {tokens[i + 1] for i in try_indices}
-        assert "/bin" in try_targets
-        assert "/etc/ssl/certs" in try_targets
+        assert str(fake_media.resolve()) in try_targets
 
     def test_media_dir_ro_bind(self, tmp_path, monkeypatch):
         """Media directory should be read-only mounted inside the sandbox."""

@@ -1,17 +1,17 @@
 # P3 OS Sandbox、Policy、三档 HITL 与最小文件 OCC
 
-> 状态：已完成（2026-07-18）。文件租约不属于本阶段必做。
-> 出口：Default Permission 下 Agent 触发命令受 OS sandbox 强制且不静默降级；工具执行前统一 allow/ask/deny；等待可持久化恢复；危险审批超时不放行；已有文件冲突拦截率 100%。
+> 状态：已完成（2026-07-22）。Exec one-shot/session、CLI Apps 与兼容入口已统一到 `SandboxLauncher`/`LaunchSpec`，受批直接 curl 已完成 Runner → Exec → pinned argv 闭环。文件租约和 Git worktree 不属于本阶段安全出口。
+> 出口：Default Permission 下 Agent 触发的子进程由 Seatbelt/Bubblewrap 强制；restricted 默认断网、受批直接 curl 最小放宽、持久 session 永久断网、Policy/HITL/OCC 与 fail-closed 均有自动化证据。
 
 ## 0. 现有能力与复用边界
 
-P3 不重建 workspace 路径解析，但需要把现有“可选、仅 Exec、默认关闭”的 sandbox
-补齐为 Runtime 硬边界。当前 WebUI 已将每个会话的项目目录和
-`restricted|full` access mode 持久化为 `WorkspaceScope`；文件、Shell、网络校验和
-workspace application guard 已消费该 scope 或现有 `nanobot/security/` hard boundary。
+P3 不重建 workspace 路径解析。当前 WebUI 已将每个会话的项目目录和
+`restricted|full` access mode 持久化为 `WorkspaceScope`；Policy、InteractionRequest、Approval、
+Seatbelt/Bubblewrap provider、统一 launcher 与 OCC 已落地。实现没有重写 AgentLoop/Runner，
+也没有把 Worktree 或 Git 操作塞入 sandbox 安全核心。
 
-- 必须复用 `WorkspaceScope`、`current_tool_workspace`、`workspace_policy`、现有 SSRF/command guard、`agent/tools/sandbox.py` 与 `agent/tools/file_state.py`；不得在 `runtime/` 重复解析路径或判断 workspace 边界。
-- `agent/tools/sandbox.py` 当前只有 Linux `bwrap` 命令包装器，默认 `tools.exec.sandbox=""`；没有 macOS provider、网络隔离、统一 capability preflight，也没有覆盖 CLI Apps/MCP。Windows 配置 sandbox 时还存在警告后无沙箱执行的 fail-open。P3 必须先收口这些边界，才能把它称为沙箱能力。
+- 必须复用 `WorkspaceScope`、`current_tool_workspace`、`workspace_policy`、现有 SSRF/command guard、`agent/tools/file_state.py` 和 `nanobot/security/sandbox/`；不得在 `runtime/` 重复解析路径或判断 workspace 边界。
+- `agent/tools/sandbox.py` 只保留向后兼容；Exec 不再将 `auto` 先改写为平台 backend 后绕过 `SandboxLauncher`。one-shot 和持久 session 必须消费同一个不可变 `LaunchSpec.argv/cwd/env`。
 - P3 policy 接收已解析的 scope 和规范化参数，负责风险分类、`allow / ask / deny`、审计、InteractionRequest 和恢复；hard boundary 仍由原有安全模块最终执行。
 - 当前 WebUI 的 Default Permission / Full Access 是会话级 access profile，不是参数绑定的一次性 approval；P3 不新增平行的 access-mode 配置或第二个权限菜单。
 
@@ -80,7 +80,7 @@ network.py     默认断网、严格 fetch argv、域名/端口/DNS IP 绑定和
 - builtin Skill、上传媒体和必要系统二进制/动态库只读。
 - `~/.nanobot/config.json`、provider key、SSH/云凭据、浏览器数据和其他 home 内容不可读。
 - `.nanobot-runtime/interactions|checkpoints|trace` 由 Runtime 自身写，Agent 命令只读或不可见。
-- `.git` 默认只读；`git commit/checkout/rebase` 等需要写 Git 元数据的操作走参数绑定 escalation，不因 workspace 可写自动放行。
+- `.git` 和 linked-worktree `.git` 文件默认只读/不可见；P3 不为普通 Shell 实现 Git common dir 写权 escalation。Git worktree 生命周期归 P3.1 宿主控制面，Agent 侧结构化 Git 写操作不进入当前实施范围。
 - symlink、hardlink、`..`、alternate cwd、shell substitution 和 child process 均不得逃逸最终 resolved boundary。
 - session temp 目录可写且每 task/session 隔离；不得复用宿主全局 `/tmp` 作为隐式共享写区。
 
@@ -91,6 +91,7 @@ network.py     默认断网、严格 fetch argv、域名/端口/DNS IP 绑定和
 - `read_only|workspace_write` 内命令默认无网络；不能只依赖 `curl/wget` 正则。
 - 需要网络的命令先从规范化参数/实际请求提取目标，经过 SSRF 与 policy；approval 绑定 `tool_call_id + command_hash + domains + ports + expires_at`。
 - approved network 首版只允许直接 `curl` argv：禁止 shell 组合、redirect、proxy/resolve/config/interface 等目标改写，按 command hash + domain + port + 审批时公网 DNS 地址绑定，并以 `--resolve` 固定目标；DNS rebinding、私网、loopback、link-local 和 metadata 地址继续 hard deny。通用代理为后续扩展，不进入 Core。
+- 一次性 network grant 只生成新的 one-shot `LaunchSpec`；不得修改、重启为联网模式或复用现有持久 exec session。session 从创建到关闭始终使用默认断网 profile，获批直接 curl 必须脱离 session 单独执行。
 - 代理不得把 Provider/API key 原样注入命令环境；命令只拿必要的最小凭据或无凭据网络。
 - OfficeCLI 固定资产准备是可信 provider bootstrap：只访问 contract 指定 release URL、校验 SHA-256 后缓存，再让 OfficeCLI 在 sandbox 内离线执行；不为 Agent 开放上游 latest/install/update。
 - Full Access 可以访问公网，但仍经过现有 SSRF/敏感目标 hard deny；消息、邮件、远程写等外部副作用继续由工具级 policy ask。
@@ -133,7 +134,7 @@ PermissionDecision(
 
 | 操作 | Default Permission（`restricted`） | Full Access（`full`） |
 | --- | --- | --- |
-| 项目外本地文件与 Shell 工作目录 | sandbox deny；可创建最小参数绑定 approval | allow |
+| 项目外本地文件与 Shell 工作目录 | hard deny；必须切换 workspace 或由用户显式选择 Full Access | allow |
 | 修改已有本地文件 | ask + OCC | allow + OCC |
 | 高风险本地 Shell | ask | allow，仍受 command deny pattern / hard deny 约束 |
 | sandbox 命令联网 | 默认 deny；按 domain/command ask | 本地命令可联网，仍受 SSRF/hard deny |
@@ -207,7 +208,7 @@ writable_roots / network_domains / ports
 
 - approval 固定 `expire_and_deny`，只能消费一次。
 - 工具名、plan hash、参数 hash 任一改变，或请求过期/已消费，都必须重新审批。
-- sandbox escalation 只对当前 tool call 生效，授予最小 writable root/domain/port；不得把单次 approval 持久化成 Full Access。
+- network escalation 只对当前 tool call 生效，授予最小 domain/port/DNS IP capability；workspace 外路径不进入 approval，不得把单次 approval 持久化成 Full Access。
 - plan 的自动激活状态不能替代工具 approval；自动 plan-and-execute 仍逐次经过 policy gate。
 - WebSocket 不是状态真相源。
 
@@ -270,7 +271,7 @@ OfficeCLI 基线：只读 help/view/get/query/validate 通常 allow；任务目�
 ### S4：Policy、Approval 与 HITL 接线
 
 - 在 ToolRegistry 参数校验后、SandboxLauncher 前运行 policy gate。
-- sandbox violation 转参数绑定 approval；approve 后以最小 capability 重试原 tool call，deny/expire 不执行。
+- ask-class policy decision 和允许放宽的 network escalation 转参数绑定 approval；hard deny 与 restricted workspace 外路径不创建 approval。approve 后以最小 capability 重试原 tool call，deny/expire 不执行。
 - 完成三档 InteractionRequest、durable suspension 和一次性恢复。
 
 ### S5：OCC、WebUI、trace 与回归
@@ -280,10 +281,25 @@ OfficeCLI 基线：只读 help/view/get/query/validate 通常 allow；任务目�
 - audit 记录 sandbox decision、policy decision、reviewer、approval 和实际 launch spec 摘要。
 - 扩大 CI/平台 smoke；没有对应 provider 的 runner 必须显式 skip 并保留至少一个真实 provider 集成门。
 
+### S6：Sandbox closure（已完成）
+
+- 将 Exec `_PreparedCommand` 从二次 shell 包装收敛为 `LaunchSpec`；Exec one-shot 与 `ExecSessionManager.start()` 都使用精确 argv，不再通过平台兼容 backend 重新解析命令。
+- Runner 绑定 `NetworkGrant` 后，Exec 必须进入 `SandboxLauncher.prepare_shell()`，使用 `pinned_curl_argv()` 生成独立 one-shot 直接 argv；command hash 或 expiry 不匹配时继续断网。持久 session 不消费 network grant，也不能切换为联网 profile。
+- CLI Apps/OfficeCLI helper 保持 `prepare_argv()` 路径，并与当前 `WorkspaceScope.project_path` 对齐；Subagent 通过同类工具自动继承该边界。
+- settings/status/trace 展示真实 provider、enforced、network mode 和 uncovered processes，不再把 application guard 与 OS sandbox 混为同一状态。
+- 增加真实读隔离验证：`~/.nanobot/config.json`、`.ssh`、linked-worktree Git metadata 不可读/写；补充 wrapper 启动失败、后台子进程和 session 路径的 fail-closed 回归。
+
+2026-07-22 完成证据：Exec/session 直接执行不可变 `LaunchSpec.argv/cwd/env`；旧
+`agent/tools/sandbox.py` 仅作为委托统一 launcher 的字符串兼容适配器；restricted Shell 固定
+non-login 和 workspace-local `HOME`；Runner 的一次性 `NetworkGrant` 只由 one-shot Exec 消费，
+CLI Apps 与持久 session 不继承；restricted provider 启动期故障统一返回 `sandbox_start_failed`。扩大回归为
+`255 passed, 1 skipped`，skip 是 macOS 主机无法运行
+Linux Bubblewrap real smoke；Linux CI 安装 Bubblewrap 并保留该真实 provider 门。
+
 ## 测试与出口
 
 - Default Permission 的真实子进程不能写 workspace 外、home、config、Git 元数据和 Runtime 控制文件；child/background process、symlink 和 cwd trick 同样失败。
-- restricted sandbox 默认不能联网；批准域名以外、redirect 到私网、DNS rebinding、loopback/metadata 全部失败。
+- restricted sandbox 默认不能联网；批准后 Exec one-shot 的真实 LaunchSpec 必须包含匹配的 pinned curl argv，批准域名以外、redirect 到私网、DNS rebinding、loopback/metadata 全部失败。持久 session 在审批前后都不能联网。
 - macOS Seatbelt 与 Linux/WSL2 Bubblewrap 至少各有 profile 单测；可用平台有真实 smoke。原生 Windows 不得静默 fallback。
 - provider 缺失/启动失败返回 `sandbox_unavailable|sandbox_start_failed`，工具未执行；只有用户显式 Full Access 才允许无 OS wrapper。
 - Exec one-shot/session、CLI Apps、OfficeCLI/Skill helper 和 Subagent 继承路径覆盖；MCP/channel/gateway 的未覆盖边界在 status/文档中可见。
@@ -293,7 +309,7 @@ OfficeCLI 基线：只读 help/view/get/query/validate 通常 allow；任务目�
 - required 不回答不继续；auto_resolve 到期恢复；expire_and_deny 到期不执行。
 - 等待期间 provider 不被调用；回答/deadline 只恢复一次，重复、迟到和错误 revision 被拒。
 - approval 的 approve/deny/expire、参数/计划 hash mismatch 和一次性消费通过。
-- 单次 sandbox approval 不会变成 session Full Access；command/root/domain 任一变化必须重新审批。
+- 单次 network approval 不会变成 session Full Access；command/domain/port/IP 任一变化必须重新审批。restricted workspace 外路径始终 hard deny。
 - `approvals_reviewer=user` 路径完成即可通过 P3；不得用尚未实现的 auto-review 替代人工 approval 验收。
 - 刷新、断线、重启后卡片和 continuation 可恢复。
 - OfficeCLI allow/ask/deny 分级通过。

@@ -12,6 +12,7 @@ Mybot 在 nanobot v0.2.1 的 Agent 循环上，补出了一套“可以安全执
   -> Office 业务闭环
   -> Skill 声明与可用性
   -> Sandbox / Policy / 人工确认 / 文件冲突保护
+  -> [可选增强] 聊天级 Git Worktree 隔离
   -> Artifact 血缘与 Checkpoint 恢复
   -> Trace / Eval / 红队
   -> 用第二类 Skill 验证通用性
@@ -19,16 +20,17 @@ Mybot 在 nanobot v0.2.1 的 Agent 循环上，补出了一套“可以安全执
   -> 受控 Subagent 并行
 ```
 
-这九个阶段不是九个互不相关的功能，而是逐层回答九个工程问题：
+P0-P8 九个主阶段不是互不相关的功能，而是逐层回答九个工程问题；P3.1 是插在 P3 之后的独立工作区增强，不改变主阶段编号和冻结依赖：
 
 | 阶段 | 它回答的问题 | 核心关键词 |
 | --- | --- | --- |
 | P0 | 怎么证明以后没有把系统改坏？ | fixture、golden truth、CI |
-| P1 | Agent 怎样完成一个真实 Office 任务？ | verified facts、双 Skill、plan |
+| P1 | Agent 怎样完成一个真实 Office 任务，并公平比较两种 Office 实现？ | verified facts、双 Skill、OfficePython、plan |
 | P2 | Skill 怎样被机器发现、校验、禁用和诊断？ | manifest、availability、fail closed |
 | P3 | Agent 能做什么、何时要问人、怎样防越权和覆盖？ | sandbox、policy、HITL、OCC |
+| P3.1 | Git 项目聊天怎样隔离工作树，又不丢 dirty 状态？ | explicit worktree、binding、safe cleanup |
 | P4 | 输入和产物怎样追踪，进程被杀后怎样恢复？ | snapshot、artifact、lineage、checkpoint |
-| P5 | 含 LLM 的系统怎样做可重复测试和量化验收？ | cassette、trace、eval、red team |
+| P5 | 含 LLM 的系统怎样做可重复测试、三层评估和可选观测？ | cassette、trace、hard/Judge/audit、Langfuse |
 | P6 | 这套 Runtime 是否真的不只服务 Office？ | Research Skill、引用、untrusted content |
 | P7 | 怎样把工程能力变成可复现的项目和面试证据？ | benchmark、demo、README、答辩 |
 | P8 | 怎样让多个 Agent 并行，又不扩大风险？ | active-plan gate、child isolation、parent-child trace |
@@ -41,9 +43,10 @@ Mybot 在 nanobot v0.2.1 的 Agent 循环上，补出了一套“可以安全执
 2. 再读 P1，跑通一次从 Excel 到 facts、DOCX、PPTX、plan 的完整链路。
 3. 读 P2，理解 Skill 指令、机器声明、运行依赖和权限为什么必须分层。
 4. 重点读 P3 和 P4。这两篇是 Runtime 的核心，也是面试最容易追问的部分。
-5. 读 P5，学会回答“LLM 输出不稳定，测试有什么意义”。
-6. 读 P8，理解多 Agent 不是多开几个模型，而是新的并发和治理问题。
-7. 最后读 P6、P7。P6 当前仍是待执行通用性验证，P7 是持续维护的交付阶段。
+5. 按需读 P3.1，理解这项未排期的选做设计为什么不是 sandbox 或主线冻结前置。
+6. 读 P5，学会回答“LLM 输出不稳定，测试有什么意义”。
+7. 读 P8，理解多 Agent 不是多开几个模型，而是新的并发和治理问题。
+8. 最后读 P6、P7。P6 当前仍是待执行通用性验证，P7 是持续维护的交付阶段。
 
 每篇都按相近结构组织：
 
@@ -58,13 +61,14 @@ Mybot 在 nanobot v0.2.1 的 Agent 循环上，补出了一套“可以安全执
 | 阶段 | 状态 | 当前真实边界 |
 | --- | --- | --- |
 | [P0 准备](./P0-准备阶段代码变更说明.md) | 已完成 | 固定 Office fixture 与 CI 确定性回归门已落地。 |
-| [P1 Office 垂直切片](./P1-office垂直切片代码变更说明.md) | 已完成 | 双 Office Skill、共享 facts、静态 plan、OfficeCLI 固定契约与前端产物/计划展示已落地。 |
+| [P1 Office 垂直切片](./P1-office垂直切片代码变更说明.md) | Core 已完成 / P1.1 待实施 | 双 Skill Core 已落地；`office-automation` 通用化并迁移为 `OfficePython` 尚未实现。 |
 | [P2 Skill Pack Manifest](./P2-skillpack-manifest代码变更说明.md) | 已完成 | typed manifest、局部 fail closed、结构化 availability、统一开关与显式单轮路由已落地。 |
-| [P3 Sandbox / Policy](./P3-policy权限层代码变更说明.md) | 已完成 Core | Seatbelt/Bubblewrap、allow/ask/deny、三档 InteractionRequest、一次性 approval、网络绑定与文件 OCC 已落地；auto-review 和通用网络代理未实现。 |
+| [P3 Sandbox / Policy](./P3-policy权限层代码变更说明.md) | 已完成 | Exec/session/CLI Apps 统一 `LaunchSpec`，Seatbelt/Bubblewrap、受批直接 curl、Policy/HITL/OCC 与 fail-closed 已落地。 |
+| [P3.1 Workspace / Worktree](./P3.1-worktree隔离代码变更说明.md) | 选做（未实现） | 已完成 WebUI per-chat worktree、HEAD 基线、持久绑定、fork 和保守清理的契约设计；未排期，不计入 Runtime Core 验收。 |
 | [P4 Artifact / Checkpoint](./P4-artifact-checkpoint代码变更说明.md) | 已完成 Core | 输入快照、artifact/lineage、hash-bound checkpoint、pending/uncertain 恢复已落地；不承诺通用 exactly-once。 |
-| [P5 Trace / Eval](./P5-trace-eval代码变更说明.md) | 已完成 Core | cassette、脱敏 trace、12 个确定性 metric、红队和 committed benchmark 已落地；LLM Judge、多模型矩阵未实现。 |
+| [P5 Trace / Eval](./P5-trace-eval代码变更说明.md) | Core 已完成 / P5.1 待实施 | cassette、脱敏 trace、12 个确定性 metric 和红队已落地；已选日本区 Langfuse Cloud，Python sink、Sol Judge、人工审计及三套公开 benchmark adapter 未实现。 |
 | [P6 通用性扩展](./P6-通用性扩展代码变更说明.md) | 待执行 | 仅完成 Research 最小闭环设计，Research Skill 尚未落地。 |
-| [P7 面试交付物](./P7-面试交付物代码变更说明.md) | 持续维护 | 已有部分 benchmark 资产，但“一键入口、完整 demo、三档讲法和证据索引”尚未全部完成。 |
+| [P7 面试交付物](./P7-面试交付物代码变更说明.md) | 持续维护 | 已有确定性 benchmark；OfficePython、OCB/OfficeBench/PresentBench、日本区 Langfuse Cloud 接线、一键入口和完整 demo 尚未完成。 |
 | [P8 多 Agent 编排](./P8-多agent编排代码变更说明.md) | 已完成 Core | active-plan gate、最多 5 个 direct child、禁止嵌套、隔离 artifact/HITL/trace 已落地；共享文件租约未实现。 |
 
 ## 一条任务在系统里的总调用链
@@ -82,7 +86,9 @@ WebUI WebSocket 消息
        ├── deny：直接拒绝
        ├── ask：创建持久化 InteractionRequest，停止当前执行链
        └── allow：继续
-  -> Shell/CLI 再经过 SandboxLauncher 形成 OS 级边界
+  -> Shell/CLI 由 SandboxLauncher 生成并执行不可变 LaunchSpec
+       ├── restricted one-shot 默认断网；受批直接 curl 使用 pinned argv
+       └── 持久 exec session 始终断网，不继承一次性 grant
   -> 文件写入前经过 actor-local SHA-256 OCC
   -> 产物登记到 ArtifactStore，执行中状态写 CheckpointStore
   -> TraceHook 记录脱敏事件

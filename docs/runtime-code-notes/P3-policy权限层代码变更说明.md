@@ -1,7 +1,7 @@
 # P3 Sandbox、Policy、HITL 与文件 OCC 代码说明
 
 > 对应计划：`docs/plans/runtime-steps/P3-policy权限层.md`
-> 当前状态：Core 已完成（2026-07-18）。`auto_review`、通用网络代理和跨进程文件租约未实现。
+> 当前状态：已完成（2026-07-22）。Policy/HITL/Approval/OCC、Seatbelt/Bubblewrap、Exec one-shot/session 与 CLI Apps 的统一 `LaunchSpec`、受批直接 curl 闭环均已落地。`auto_review`、通用网络代理和跨进程文件租约仍未实现。
 
 ## 这一阶段解决什么问题
 
@@ -152,7 +152,7 @@ hard deny 不能通过 approval 放宽。特别要以实际代码为准：当前
 
 ### 统一启动入口
 
-`SandboxLauncher.prepare_shell/prepare_argv()` 负责：
+`SandboxLauncher.prepare_shell/prepare_argv()` 已经实现，负责：
 
 1. 规范化 workspace、cwd、readable roots、writable roots。
 2. 获取 SandboxStatus。
@@ -161,7 +161,13 @@ hard deny 不能通过 approval 放宽。特别要以实际代码为准：当前
 5. macOS 生成 Seatbelt profile，Linux 生成 Bubblewrap argv。
 6. 返回不可变 `LaunchSpec` 给 Exec/CLI Apps 等调用方执行。
 
-这样 OfficeCLI、普通 Shell、Skill helper 和 Subagent 命令复用同一个边界，而不是每个工具各写一套 sandbox。
+当前调用关系已经收敛：
+
+- CLI Apps 直接使用 `SandboxLauncher.prepare_argv()`。
+- Exec one-shot 使用 `prepare_shell()` 返回的 `LaunchSpec`，`_spawn()` 只执行精确 `argv/cwd/env`，不再解析沙箱字符串。
+- `ExecSessionManager.start()` 接收同一个 `LaunchSpec`；持久 session 不会重建 shell 或改变网络 profile。
+- `agent/tools/sandbox.py::wrap_command()` 只保留历史 API，内部也委托统一 launcher，不再维护第二套 provider profile。
+- restricted shell 强制 non-login，`HOME` 指向 workspace，`PATH` 作为清洗后的环境值显式传入，避免宿主 profile 成为环境内的隐式可执行配置。
 
 ### 实际覆盖范围
 
@@ -180,11 +186,13 @@ hard deny 不能通过 approval 放宽。特别要以实际代码为准：当前
 
 MCP tool call 仍有调用级 Policy/approval，HTTP 目标仍有 SSRF，但不能宣称整个 MCP 进程已被 P3 sandbox 包住。
 
-## 4. Restricted 网络为什么只支持直接 curl
+## 4. Restricted 网络闭环
 
 文件：`nanobot/security/sandbox/network.py`
 
-网络是最容易出现“审批目标和实际目标不一致”的地方。P3 Core 没有做一个通用代理，而是只开放很窄的 capability：经过批准的单条直接 `curl`。
+网络是最容易出现“审批目标和实际目标不一致”的地方。P3 没有做通用代理，而是将 capability 收窄为经过批准的单条直接 `curl`。命令解析、SSRF/DNS 绑定、ApprovalBinding、Runner `NetworkGrant`、Exec 与 `pinned_curl_argv()` 已形成端到端闭环。
+
+grant 只能用于新建的 one-shot curl 进程，不能把现有持久 exec session 切换成联网模式。只要调用携带 `yield_time_ms`，Exec 就不会消费 grant；CLI Apps 的 `prepare_argv()` 也不隐式读取 Exec 的 ContextVar。这样一次审批不会在 session 或相邻子进程中变成可复用网络能力。
 
 ### 审批前提取
 
@@ -215,7 +223,7 @@ expires_at
 审批时解析到的公网 IP
 ```
 
-执行前 `pinned_curl_argv()` 重新解析原命令形状，并由 Runtime 添加 `--resolve domain:port:approved_ip`，同时禁用 redirect。这防止审批后 DNS rebinding 或模型改用另一个目标。
+执行前由 `pinned_curl_argv()` 重新解析原命令形状，添加 `--resolve domain:port:approved_ip` 并禁用 redirect。集成测试已覆盖 `Runner execution_context.network_grant → Exec one-shot → SandboxLauncher → pinned LaunchSpec`；command hash、domain、port、IP 或 expiry 不匹配时不能获得网络放宽。
 
 ### 为什么不做通用代理
 
@@ -338,7 +346,9 @@ LLM 返回 tool call
   -> 用户 typed response
   -> revision/idempotency 校验并持久化
   -> AgentLoop 恢复原 tool_call_id
-  -> 若是 Shell/CLI，SandboxLauncher 生成 OS 强制 LaunchSpec
+  -> CLI App/Exec 由 SandboxLauncher 生成 OS 强制 LaunchSpec
+       ├── one-shot approved curl：精确 pinned argv + 一次性网络 profile
+       └── exec session：始终使用默认断网 profile
   -> 若写已有文件，OCC 检查 SHA-256
   -> 执行并记录 audit/trace
 ```
@@ -364,8 +374,12 @@ Full Access 只取消本地进程的 workspace OS wrapper。它不应自动批�
 - `tests/runtime/test_sandbox_policy_occ.py`
   - Seatbelt/Bubblewrap profile 与真实 smoke。
   - restricted provider 缺失 fail closed。
-  - 默认断网、直接 curl、DNS/IP 绑定和 Windows unsupported。
-  - protected path、workspace escape、Policy 和 OCC。
+  - 默认断网、Runner → Exec 直接 curl、DNS/IP 绑定、session 不继承 grant 和 Windows unsupported。
+  - protected metadata masking、后台子进程、workspace escape、Policy 和 OCC。
+- `tests/tools/test_exec_platform.py`、`test_exec_session_tools.py` 与 `test_sandbox.py`
+  - one-shot/session 精确执行 `LaunchSpec`，Windows 显式 argv，restricted non-login/workspace `HOME`。
+  - provider 在探测后启动失败时，one-shot/session 都返回结构化 `sandbox_start_failed`。
+  - 旧字符串 adapter 也只能委托统一 launcher，不能维护独立 profile。
 - `tests/runtime/test_interactions_approvals.py`
   - 三档 strategy、revision、idempotency、迟到响应和一次性 binding。
 - `tests/runtime/test_plan_interaction.py`
@@ -377,13 +391,14 @@ Full Access 只取消本地进程的 workspace OS wrapper。它不应自动批�
 
 2026-07-20 还修复过工具 schema 序列化问题和 plan confirmation UI 桥接问题，说明这套协议不仅测试安全规则，也测试“工具定义能否发给模型”“挂起成功结果能否被前端正确恢复”。
 
-历史本地 Runtime 快照为 `56 passed, 1 skipped`；跳过项是 macOS 主机不能运行 Linux Bubblewrap real smoke。当前结果以实际重跑为准。
+2026-07-22 扩大回归为 `255 passed, 1 skipped`；跳过项是 macOS 主机不能运行 Linux Bubblewrap real smoke。macOS Seatbelt 真机 smoke 已验证 workspace 内写入、后台子进程越界写失败和 `.git/config` 不可读；Bubblewrap profile 还验证 read-only workspace 挂载、首次启动即建立并遮蔽 Runtime control mount point，以及 protected symlink fail closed。Linux CI 安装 Bubblewrap 并保留对应真实 provider 门。
 
 ## 未实现和不能夸大的部分
 
 - `ApprovalsReviewer.AUTO_REVIEW` 未实现。
 - restricted 网络不支持任意 wget、浏览器、CLI 或通用代理。
 - gateway/channel/预配置 stdio MCP 进程未纳入 OS sandbox。
+- 未提供容器或 microVM 镜像、依赖锁定和环境快照，因此 P3 是安全执行边界，不是 SWE-bench/OSWorld 所需的完整可重建 benchmark 环境。
 - 没有跨进程文件锁或共享 workspace FileLeaseRegistry。
 - 新文件创建竞态不能靠当前 OCC 完全消除。
 - 原生 Windows restricted sandbox 未实现，当前是 fail closed。
@@ -392,7 +407,7 @@ Full Access 只取消本地进程的 workspace OS wrapper。它不应自动批�
 
 ### 30 秒回答
 
-> P3 我把权限拆成 WorkspaceScope、确定性 Policy、持久化 InteractionRequest、参数绑定一次性 Approval、OS Sandbox 和文件 OCC。Policy 决定 allow/ask/deny，Seatbelt/Bubblewrap 真正限制 Agent 进程；高风险操作会挂起并保存原 tool_call_id，刷新或重启后仍可恢复；审批绑定参数、plan hash、child 和网络 DNS/IP，已有文件写入前比较当前 actor 读取时的 SHA-256，避免覆盖用户或其他 Agent 的新修改。
+> P3 把权限拆成 WorkspaceScope、确定性 Policy、持久化 InteractionRequest、参数绑定 Approval、OS Sandbox 和文件 OCC。Exec one-shot/session 与 CLI Apps 统一执行不可变 LaunchSpec；Default 下 Seatbelt/Bubblewrap 强制 workspace 边界并默认断网，受批直接 curl 只获得绑定 command/domain/port/DNS IP/expiry 的一次性能力，持久 session 不能继承；高风险等待可恢复，已有文件写入前用 actor-local SHA-256 OCC 防覆盖。
 
 ### 高频追问
 
@@ -427,3 +442,4 @@ Policy 是“应该不应该做”的应用决策；Sandbox 是“即使代码�
 - P4 直接复用 InteractionRequest、plan hash、OCC 和 policy 状态做恢复。
 - P5 从 audit、interaction 和 sandbox 事件建立 trace/eval 硬门。
 - P8 child 复用同一个 PolicyEngine、ApprovalManager 和 InteractionManager，且 approval 额外绑定 child id。
+- 选做 P3.1 将 worktree 作为 WebUI workspace 生命周期增强；它未排期、未实现，不改变 P3 sandbox/policy 语义，也不给普通 Agent Shell 新增 Git common dir 写权。

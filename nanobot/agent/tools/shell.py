@@ -26,7 +26,6 @@ from nanobot.agent.tools.exec_session import (
     clamp_session_int,
     format_session_poll,
 )
-from nanobot.agent.tools.sandbox import wrap_command
 from nanobot.agent.tools.schema import (
     BooleanSchema,
     IntegerSchema,
@@ -35,6 +34,14 @@ from nanobot.agent.tools.schema import (
 )
 from nanobot.config.paths import get_media_dir
 from nanobot.config.schema import Base
+from nanobot.security.sandbox import (
+    LaunchSpec,
+    SandboxLauncher,
+    SandboxManager,
+    SandboxMode,
+    SandboxUnavailableError,
+)
+from nanobot.security.sandbox.network import command_hash
 from nanobot.security.workspace_access import current_scope_allows_loopback, current_tool_workspace
 from nanobot.security.workspace_policy import is_path_within
 
@@ -65,11 +72,8 @@ class ExecToolConfig(Base):
 @dataclass(slots=True)
 class _PreparedCommand:
     command: str
-    cwd: str
-    env: dict[str, str]
+    launch: LaunchSpec
     timeout: int | None
-    shell_program: str | None
-    login: bool
 
 
 @tool_parameters(
@@ -233,7 +237,8 @@ class ExecTool(Tool):
             "For long-running or interactive commands, pass yield_time_ms; "
             "if the command keeps running, exec returns a session_id that can "
             "be polled or written to with write_stdin. Output is truncated at "
-            "10 000 chars; timeout defaults to 60s."
+            "10 000 chars; timeout defaults to 60s. In Default Permission, "
+            "commands use a non-login shell inside the OS sandbox."
         )
 
     @property
@@ -256,7 +261,14 @@ class ExecTool(Tool):
         if max_output_chars is None:
             max_output_chars = max_output_tokens
 
-        prepared = self._prepare_command(command, working_dir, timeout, shell, login)
+        prepared = self._prepare_command(
+            command,
+            working_dir,
+            timeout,
+            shell,
+            login,
+            allow_network_grant=yield_time_ms is None,
+        )
         if isinstance(prepared, str):
             return prepared
 
@@ -264,13 +276,14 @@ class ExecTool(Tool):
             return await self._execute_session(prepared, yield_time_ms, max_output_chars)
 
         try:
-            process = await self._spawn(
-                prepared.command,
-                prepared.cwd,
-                prepared.env,
-                prepared.shell_program,
-                prepared.login,
-            )
+            try:
+                process = await self._spawn(prepared.launch)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if prepared.launch.mode != SandboxMode.DANGER_FULL_ACCESS:
+                    raise SandboxUnavailableError("sandbox_start_failed", str(exc)) from exc
+                raise
 
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -309,8 +322,8 @@ class ExecTool(Tool):
 
             return result
 
-        except Exception as e:
-            return f"Error executing command: {str(e)}"
+        except Exception as exc:
+            return self._format_execution_error(exc)
 
     async def _execute_session(
         self,
@@ -320,12 +333,9 @@ class ExecTool(Tool):
     ) -> str:
         try:
             session_id, poll = await self._session_manager.start(
+                launch=prepared.launch,
                 command=prepared.command,
-                cwd=prepared.cwd,
-                env=prepared.env,
                 timeout=prepared.timeout,
-                shell_program=prepared.shell_program,
-                login=prepared.login,
                 yield_time_ms=clamp_session_int(yield_time_ms, DEFAULT_YIELD_MS, 0, MAX_YIELD_MS),
                 owner_session_key=current_request_session_key(),
                 max_output_chars=clamp_session_int(
@@ -337,7 +347,15 @@ class ExecTool(Tool):
             )
             return format_session_poll(session_id, poll)
         except Exception as exc:
-            return f"Error executing command: {exc}"
+            return self._format_execution_error(exc)
+
+    @staticmethod
+    def _format_execution_error(exc: Exception) -> str:
+        code = getattr(exc, "code", None)
+        if code:
+            message = getattr(exc, "message", str(exc))
+            return f"Error: {code}: {message}"
+        return f"Error executing command: {exc}"
 
     def _resolve_timeout(self, timeout: int | None) -> int | None:
         """Resolve the effective hard timeout in seconds (None = no limit).
@@ -360,6 +378,8 @@ class ExecTool(Tool):
         timeout: int | None = None,
         shell: str | None = None,
         login: bool | None = None,
+        *,
+        allow_network_grant: bool = True,
     ) -> _PreparedCommand | str:
         access = current_tool_workspace(
             self.working_dir,
@@ -397,84 +417,109 @@ class ExecTool(Tool):
         if guard_error:
             return guard_error
 
-        sandbox = self.sandbox or ("auto" if access.restrict_to_workspace else "")
-        if sandbox:
-            if _IS_WINDOWS:
-                return (
-                    "Error: sandbox_unavailable: native Windows sandboxing is unsupported; "
-                    "use WSL2 or explicitly select Full Access."
-                )
-            workspace = workspace_root or cwd
-            try:
-                command = wrap_command(sandbox, command, workspace, cwd)
-            except Exception as exc:
-                code = getattr(exc, "code", "sandbox_unavailable")
-                return f"Error: {code}: {exc}"
-            cwd = str(Path(workspace).resolve())
-
         effective_timeout = self._resolve_timeout(timeout)
         env = self._build_env()
 
         if self.path_append:
-            if _IS_WINDOWS:
-                env["PATH"] = env.get("PATH", "") + os.pathsep + self.path_append
-            else:
-                env["NANOBOT_PATH_APPEND"] = self.path_append
-                command = f'export PATH="$PATH{os.pathsep}$NANOBOT_PATH_APPEND"; {command}'
+            env["PATH"] = env.get("PATH", "") + os.pathsep + self.path_append
 
         shell_program, shell_error = self._resolve_shell(shell)
         if shell_error:
             return shell_error
 
+        sandbox = self.sandbox or ("auto" if access.restrict_to_workspace else "")
+        mode = SandboxMode.WORKSPACE_WRITE if sandbox else SandboxMode.DANGER_FULL_ACCESS
+        workspace = str(Path(workspace_root or cwd).expanduser().resolve(strict=False))
+        launch_cwd = str(Path(cwd).expanduser().resolve(strict=False))
+        effective_login = (True if login is None else login) and not sandbox
+        if sandbox:
+            # Host login profiles are ambient executable configuration and may
+            # contain credentials. Restricted commands get a workspace-local
+            # HOME and a deterministic non-login shell instead.
+            env["HOME"] = workspace
+
+        try:
+            if _IS_WINDOWS:
+                if sandbox:
+                    return (
+                        "Error: sandbox_unavailable: native Windows sandboxing is unsupported; "
+                        "use WSL2 or explicitly select Full Access."
+                    )
+                launch = self._windows_launch_spec(
+                    command=command,
+                    cwd=launch_cwd,
+                    env=env,
+                )
+            else:
+                shell_program = shell_program or shutil.which("bash") or "/bin/bash"
+                manager = self._sandbox_manager(sandbox)
+                launch = SandboxLauncher(manager).prepare_shell(
+                    command=command,
+                    workspace=workspace,
+                    cwd=launch_cwd,
+                    env=env,
+                    mode=mode,
+                    shell=shell_program,
+                    login=effective_login,
+                    readable_roots=(get_media_dir().resolve(),),
+                    allow_network_grant=allow_network_grant,
+                )
+        except Exception as exc:
+            code = getattr(exc, "code", "sandbox_unavailable")
+            return f"Error: {code}: {exc}"
+
         return _PreparedCommand(
             command=command,
-            cwd=cwd,
-            env=env,
+            launch=launch,
             timeout=effective_timeout,
-            shell_program=shell_program,
-            login=True if login is None else login,
         )
 
     @staticmethod
     async def _spawn(
-        command: str, cwd: str, env: dict[str, str],
-        shell_program: str | None = None,
-        login: bool = True,
+        launch: LaunchSpec,
         *,
         stdin: int = asyncio.subprocess.DEVNULL,
     ) -> asyncio.subprocess.Process:
-        """Launch *command* in a platform-appropriate shell."""
-        if _IS_WINDOWS:
-            if "\n" in command:
-                return await asyncio.create_subprocess_exec(
-                    "powershell", "-NoProfile", "-Command", command,
-                    stdin=stdin,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=cwd,
-                    env=env,
-                )
-            return await asyncio.create_subprocess_shell(
-                command,
-                stdin=stdin,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=env,
-            )
-        shell_program = shell_program or shutil.which("bash") or "/bin/bash"
-        args = [shell_program]
-        shell_name = Path(shell_program).name.lower()
-        if login and shell_name in {"bash", "bash.exe", "zsh", "zsh.exe"}:
-            args.append("-l")
-        args.extend(["-c", command])
+        """Execute an immutable launch specification without re-parsing it."""
         return await asyncio.create_subprocess_exec(
-            *args,
+            *launch.argv,
             stdin=stdin,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=launch.cwd,
+            env=launch.env,
+        )
+
+    @staticmethod
+    def _sandbox_manager(sandbox: str) -> SandboxManager:
+        if sandbox in {"", "auto"}:
+            return SandboxManager()
+        systems = {"seatbelt": "darwin", "bwrap": "linux"}
+        system = systems.get(sandbox)
+        if system is None:
+            raise ValueError(
+                f"Unknown sandbox backend {sandbox!r}. Available: ['auto', 'bwrap', 'seatbelt']"
+            )
+        return SandboxManager(system=system)
+
+    @staticmethod
+    def _windows_launch_spec(*, command: str, cwd: str, env: dict[str, str]) -> LaunchSpec:
+        if "\n" in command:
+            argv = ("powershell", "-NoProfile", "-Command", command)
+        else:
+            comspec = env.get("COMSPEC") or os.environ.get("COMSPEC", "cmd.exe")
+            argv = (comspec, "/d", "/s", "/c", command)
+        return LaunchSpec(
+            argv=argv,
             cwd=cwd,
             env=env,
+            mode=SandboxMode.DANGER_FULL_ACCESS,
+            provider="none",
+            enforced=False,
+            command_hash=command_hash(command),
+            writable_roots=(cwd,),
+            readable_roots=(cwd,),
+            metadata={"network": "unrestricted"},
         )
 
     @staticmethod
@@ -519,8 +564,9 @@ class ExecTool(Tool):
     def _build_env(self) -> dict[str, str]:
         """Build a minimal environment for subprocess execution.
 
-        On Unix, only HOME/LANG/TERM are passed; ``bash -l`` sources the
-        user's profile which sets PATH and other essentials.
+        On Unix, HOME/LANG/TERM/PATH are passed explicitly. Restricted launches
+        replace HOME with the workspace and use a non-login shell, so host
+        profile files are not ambient executable configuration.
 
         On Windows, ``cmd.exe`` has no login-profile mechanism, so a curated
         set of system variables (including PATH) is forwarded.  API keys and
@@ -556,6 +602,7 @@ class ExecTool(Tool):
             "HOME": home,
             "LANG": os.environ.get("LANG", "C.UTF-8"),
             "TERM": os.environ.get("TERM", "dumb"),
+            "PATH": os.environ.get("PATH", os.defpath),
             "PYTHONUNBUFFERED": "1",
         }
         for key in self.allowed_env_keys:

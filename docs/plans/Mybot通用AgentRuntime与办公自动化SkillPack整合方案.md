@@ -1,6 +1,6 @@
 # Mybot 通用 Agent Runtime 与 Office Skill Pack 整合方案
 
-> 当前基线：2026-07-20。历史修订统一见 `docs/修改记录.md`，本文只保留当前有效决策。
+> 当前基线：2026-07-22。历史修订统一见 `docs/修改记录.md`，本文只保留当前有效决策。
 
 ## 1. 定位与目标
 
@@ -15,9 +15,9 @@ Mybot 基于 nanobot v0.2.1 二次开发，不重写 Agent 框架，而是在现
 
 Office 是首个验证领域，不是产品唯一方向：
 
-- `office-automation`：Python grounded report/deck 工作流。
-- `officecli`：固定版本 OfficeCLI 的通用 Office 能力。
-- 两者共享 verified facts、输入快照和 Runtime 治理，但不强制共享 DSL。
+- 当前 `office-automation`：Python grounded report/deck 窄工作流；P1.1 将其通用化并迁移为展示名 `OfficePython`、Skill id `office-python`。
+- `officecli`：固定版本 OfficeCLI 的通用 Office 能力和默认路由。
+- 两者共享 verified facts、输入快照和 Runtime 治理，但不强制共享 DSL；OfficePython 不得调用 OfficeCLI，比较结果必须来自相同条件下的公开 benchmark 和硬门。
 
 ## 2. 文档权威顺序与 AI 执行规则
 
@@ -53,9 +53,9 @@ nanobot/runtime/
   approvals.py       参数绑定安全审批
   artifacts.py       输入快照、产物与血缘
   checkpoint.py      计划任务安全恢复
-  trace.py           JSONL / OTel 风格 trace
+  trace.py           Mybot trace 事实源、JSONL 与日本区 Langfuse Cloud Python sink
   replay.py          轻量 cassette
-  evals/             确定性评测与报告
+  evals/             hard gate、Judge、人工审计与公开 benchmark adapter
 
 nanobot/security/sandbox/
   manager.py         sandbox mode、provider capability 与 fail-closed
@@ -63,6 +63,9 @@ nanobot/security/sandbox/
   seatbelt.py        macOS Seatbelt provider
   bwrap.py           Linux / WSL2 Bubblewrap provider
   network.py         默认断网、严格 fetch argv、域名/端口/DNS IP 绑定与审计
+
+nanobot/workspaces/                 # P3.1 选做规划，尚未实现
+  worktrees.py       WebUI 聊天级 Git worktree 生命周期与持久化
 ```
 
 硬边界继续归属 `nanobot/security/`。P3 在现有 `WorkspaceScope`、workspace path guard、SSRF 和 `agent/tools/sandbox.py` 基础上补齐 OS 强制沙箱，不在 `nanobot/runtime/` 平行重建路径判断。`nanobot/runtime/` 负责策略、状态、审计和恢复；WebUI 现有 Default Permission / Full Access 继续作为会话级 access profile，并确定性映射为 sandbox/policy 组合。
@@ -85,8 +88,10 @@ nanobot/security/sandbox/
 - WebUI 开关写入 `disabledSkills` 后应热刷新主 Agent 与子代理；只影响后续回合，不要求重启网关。
 - 用户可在单轮消息中用 `@skill-name` 显式指定可用 Skill；运行时必须校验其可用性并把正文作为本轮路由契约加载。未指定时，继续采用摘要 + 模型渐进选择。
 - 普通 Office 请求默认优先 `officecli`；用户明确要求 Python 时使用 `office-automation`。
+- P1.1 完成后，`office-automation` 迁移为 `office-python`，提供 DOCX/XLSX/PPTX 的通用 `inspect/query/create/apply/validate/render`；旧 id 在迁移期兼容。代码完成前仍使用当前真实名称。
 - OfficeCLI 版本、平台资产和 checksum 只有 provider contract 一个真相源；Mybot 安装的同名 launcher 可在首次使用时自动准备并校验固定资产，Agent 任务不得调用上游 latest/install/update。
 - 定量结论必须来自 `verified_facts.json`；纯格式、提取和批注任务不强制跑事实层。
+- 两个 Skill 的比较固定使用相同输入、`gpt-5-6-luna`、Policy、约束和 evaluator，分开报告 coverage 与共同任务质量；不得通过 prompt、路由或评分偏袒 OfficeCLI。
 
 ### 4.2 Plan 契约
 
@@ -103,13 +108,12 @@ nanobot/security/sandbox/
 - `sandbox_mode` 使用 `read_only|workspace_write|danger_full_access`：plan-only 映射 `read_only`，Default Permission 映射 `workspace_write`，Full Access 映射 `danger_full_access`。
 - `workspace_write` 必须由 OS provider 强制：macOS 使用 Seatbelt，Linux/WSL2 使用 Bubblewrap；原生 Windows 首版不宣称支持。provider 缺失时返回 `sandbox_unavailable`，不得静默无沙箱执行；用户只能显式切换 Full Access 或修复 provider。
 - workspace 默认仅项目目录与当前 task artifact 目录可写；builtin Skill、上传媒体和必要系统运行库只读；`~/.nanobot`、凭据、Runtime interactions/checkpoint/trace 控制文件和项目 `.git` 默认不可由普通 sandbox 命令写入。
-- sandbox 内命令默认断网。Core 网络例外只支持直接 `curl`：禁止 shell 组合、redirect、proxy/resolve/config/interface 等目标改写，批准绑定当前 tool call/command hash/domain/port/审批时公网 DNS 地址/expiry，并以 `--resolve` 固定目标；SSRF、内网、metadata 和敏感目标仍 hard deny。
+- sandbox 内命令默认断网。Core 网络例外只支持直接 `curl`：禁止 shell 组合、redirect、proxy/resolve/config/interface 等目标改写，批准绑定当前 tool call/command hash/domain/port/审批时公网 DNS 地址/expiry，并以独立 one-shot `LaunchSpec` + `--resolve` 固定目标；持久 exec session 始终保持断网，不能被一次性 grant 解锁。SSRF、内网、metadata 和敏感目标仍 hard deny。
 - 沙箱覆盖 Agent 触发的 Shell 一次性/持久 session、CLI Apps 与 OfficeCLI 子进程；预配置 MCP server、channel bootstrap 和网关自身进程首版不纳入同一 OS 边界，必须在文档和 UI 标明，并继续受调用级 policy/SSRF 约束。
 - `danger_full_access` 表示用户明确关闭本地 OS 文件/网络沙箱，不等于关闭 Runtime policy：消息、邮件、远程写、凭据访问、OCC 和 hard deny 仍独立生效。
-
 - 工具调用先完成同步参数校验，再经过异步 policy gate：`allow / ask / deny`。
 - P3 复用当前会话的 `WorkspaceScope`：Default Permission 保持 workspace 受限；Full Access 允许项目外的本地文件/Shell 访问，并作为已选择的本地操作预授权 profile，而非一次性工具 approval。
-- 路径逃逸、受保护目录、SSRF、敏感信息等 hard deny 不能被配置、Skill 或用户审批放宽；workspace 外普通路径属于 sandbox escalation，只能由参数绑定的一次性 approval 最小放宽。
+- 路径逃逸、受保护目录、SSRF、敏感信息和 restricted workspace 外路径都是 hard deny，不能被配置、Skill 或一次性 approval 放宽。需要访问其他目录时，用户必须切换项目 workspace 或显式选择 Full Access。
 - Default Permission 下修改已有本地文件和高风险本地 Shell 默认 ask；Full Access 下这两类本地操作可 allow，但仍受 OCC、command deny pattern 和 hard deny 约束。消息/邮件、远程写和其他外部副作用在两种 profile 下都保持 ask；审批必须参数绑定且超时拒绝。
 - `InteractionRequest` 统一承接 question、approval、需要人工确认的 plan confirmation、recovery decision：
   - `required`：没有明确回答就不继续。
@@ -120,7 +124,20 @@ nanobot/security/sandbox/
 - WebSocket 只负责展示/提交，持久化 Runtime 状态是真相源。
 - `approvals_reviewer=user` 是 P3 唯一必做路径；未来的 `auto_review` 只能处理本来会询问用户的有限 escalation，不得审核 hard deny、凭据读取、不可逆外发或关闭沙箱的请求，并必须记录独立 reviewer trace、理由、token 和结果。
 
-### 4.4 文件安全
+### 4.4 Workspace 与 Worktree 隔离（选做）
+
+- `WorkspaceScope` 仍是项目根和 access profile 的唯一安全真相源；Git worktree 是可选的文件/Git 分支隔离，不是 OS sandbox，不能用来声称防止恶意进程越权。
+- P3.1 未排期、未实现，不属于 Runtime Core、冻结前必做或最终验收；只有冻结前必做完成，且真实多聊天 Git 冲突证明收益高于实现与维护成本时才启动。
+- P3.1 只在 localhost WebUI 新聊天中提供 `direct|worktree` 显式选择，默认保持 `direct`；非 Git 目录、CLI/channel 和旧会话继续使用 direct workspace。
+- worktree 按聊天绑定，从用户选择仓库的当前 `HEAD` 创建 `mybot/chat-<chat_id>` 分支；创建后项目/worktree 绑定不可切换，仅允许切换 Default Permission / Full Access。
+- 源仓有 tracked/untracked 变化时不静默复制；WebUI 明确说明新 worktree 基于 `HEAD`、不包含未提交变化，用户二次确认后才创建。ignored 文件不属于 dirty 阻断条件。
+- 聊天 fork 继承 worktree 模式并从源 worktree 的 `HEAD` 创建新分支；源 worktree 存在未提交变化时直接拒绝，不猜测用户是否希望复制 dirty diff。
+- 自动清理仅适用于 `clean && HEAD == base_commit`；只要存在未提交修改或任何新 commit 就保留 worktree/分支，不以“已推送”或“已合并”作为自动删除证明。
+- worktree registry 的 read-modify-write、create/fork/cleanup 使用跨进程锁串行化；`creating|removing` 中间状态可在启动对账时恢复或标记 `attention_required`，不能仅依赖原子替换假设没有并发操作。
+- P3.1 首版不向 Agent Core 增加 `git add/commit/push/merge`，不给普通 Shell 开放 Git common dir 写权限；如果后续编码任务证明有稳定需求，再作为独立 Git Skill/结构化工具评估。
+- worktree 不自动 merge/push，不自动初始化 submodule，不为 Subagent 再创建嵌套 worktree；P8 child 继续使用 task-scoped artifact root。
+
+### 4.5 文件安全
 
 - `write_file`、`edit_file`、`apply_patch` 修改已有文件前必须有当前 actor 的 fresh-read snapshot。
 - 即使 mtime 未变也比较 SHA-256；变化返回结构化 `file_conflict`。
@@ -128,7 +145,7 @@ nanobot/security/sandbox/
 - P3 不承诺 shell 任意写盘拦截、新文件完整事务、fsync 或消除最终微小 TOCTOU。
 - P8 必做依靠 child artifact 目录隔离 + actor-local OCC；共享 workspace 文件租约、`file_busy` UI 和跨路径等待队列均为选做。
 
-### 4.5 Artifact 与恢复
+### 4.6 Artifact 与恢复
 
 - 任务输入默认复制到 `.nanobot-runtime/artifacts/<task_id>/inputs/`；无法复制时标记 `reference_only` 与 `replayable:false`。
 - artifact 记录 checksum、类型、Skill、引擎、来源、tool call、child id 和验证状态。
@@ -140,7 +157,7 @@ nanobot/security/sandbox/
 - `awaiting_question|approval|plan_confirmation|recovery_decision` 是合法 suspension，不能恢复成工具失败。
 - 不宣称通用 exactly-once。
 
-### 4.6 Subagent 治理
+### 4.7 Subagent 治理
 
 - 每个父任务最多 5 个直接 child，禁止嵌套。
 - 权限只能继承或收紧；child 不设置 token、总时长或工具调用配额，避免长任务因父 Agent 低估工作量而失败。
@@ -152,16 +169,17 @@ nanobot/security/sandbox/
 
 ## 5. 阶段路线图
 
-| 阶段                                                                | 状态  | 必须交付                                              | 阶段出口                                          |
+| 阶段                                                                | 状态  | 交付范围                                              | 阶段出口                                          |
 | ----------------------------------------------------------------- | --- | ------------------------------------------------- | --------------------------------------------- |
 | [P0 准备](runtime-steps/P0-准备.md)                                   | 已完成 | 固定 Office fixture、Python 3.11 CI smoke            | fixture 可复算，workflow 可运行；远端状态以最新 Actions 记录为准 |
-| [P1 Office 垂直切片](runtime-steps/P1-office垂直切片.md)                  | 已完成 | 双 Office Skill、共享 facts、仅规划/自动执行、计划步骤 UI       | 两条 Office 路径和两种计划模式可验证                         |
+| [P1 Office 垂直切片](runtime-steps/P1-office垂直切片.md)                  | Core 已完成 / P1.1 待实施 | 双 Skill Core；OfficePython 通用化、改名和公平基线       | 两条 Office 路径可独立运行并进行公平 coverage/质量比较                         |
 | [P2 Manifest](runtime-steps/P2-skillpack-manifest.md)             | 已执行 | typed manifest、局部 fail closed、availability、开关     | 坏 Skill 不拖垮网关且不能进入候选                          |
-| [P3 Sandbox/Policy/HITL/OCC](runtime-steps/P3-policy权限层.md)       | 已完成 | OS sandbox、policy gate、三档 InteractionRequest、approval、文件 OCC | 无静默降级，硬边界不可绕过，等待可恢复，冲突拦截 100%             |
+| [P3 Sandbox/Policy/HITL/OCC](runtime-steps/P3-policy权限层.md)       | 已完成 | 统一 LaunchSpec、Seatbelt/Bubblewrap、受批直接 curl、Policy/HITL/OCC | restricted fail closed，网络 grant 不泄漏到 session/CLI Apps |
+| [P3.1 Workspace/Worktree](runtime-steps/P3.1-worktree隔离.md)          | 选做（未实现） | WebUI 显式 per-chat worktree、持久绑定、fork 与保守清理       | 启动后不丢 dirty/新 commit，不扩大 Agent Git 权限              |
 | [S5.0 轻量回放](runtime-steps/P5-trace-eval.md)                       | 已完成 | 4 个关键 cassette smoke                              | 无 API key、无网络即可回归关键 Agent 行为                  |
 | [P4 Artifact/Checkpoint](runtime-steps/P4-artifact-checkpoint.md) | 已完成 | 输入快照、artifact/lineage、计划任务恢复                      | kill→resume 可验证，uncertain 不自动重试               |
 | [P8 Subagent](runtime-steps/P8-多agent编排.md)                       | 已完成 | 数量/嵌套/权限/生命周期/上下文/产物治理                            | 父子 trace 完整并有单/多 Agent 对比                     |
-| [P5 Core Trace/Eval](runtime-steps/P5-trace-eval.md)              | 已完成 | JSONL/OTel trace、确定性 eval、红队、报告                   | 安全/数字/文件硬门进入 CI/benchmark                     |
+| [P5 Trace/Eval/Observability](runtime-steps/P5-trace-eval.md)              | Core 已完成 / P5.1 待实施 | JSONL 硬门已完成；日本区 Langfuse Cloud sink、Judge/audit、公开 adapter 待实施 | 本地可回归，真模型质量可比较且可选下钻                     |
 | [P6 Research](runtime-steps/P6-通用性扩展.md)                          | 待执行 | 1–2 天最小 Research Skill                            | 不改 Runtime 核心即可复用治理设施                         |
 | [P7 交付物](runtime-steps/P7-面试交付物.md)                               | 持续  | benchmark、README、demo、答辩稿                         | 陌生人可复现，表述与实际完成度一致                             |
 
@@ -172,14 +190,16 @@ nanobot/security/sandbox/
 依赖顺序：
 
 ```text
-P0 → P1 → P2 → P3 → S5.0 → P4 → P8 → P5 Core → P6 → P7
+已完成主链：P0 → P1 → P2 → P3 → S5.0 → P4 → P8 → P5 Core
+后续主线：P1.1 OfficePython → P5.1 Observability/Eval → P6 → P7
+选做候选：P3.1 Worktree MVP
 ```
 
 冻结前必做：
 
-- P1、P2、P3、P4、P8。
+- P1、P2、P3、P4、P8；P1.1 必须完成 OfficePython 通用化和兼容迁移。
 - S5.0 的 3–4 个关键 cassette。
-- P5 Core：trace、确定性 eval/report、安全红队。
+- P5 Core：trace、确定性 eval/report、安全红队；P5.1 完成三层评估、公开 benchmark adapter 和日本区 Langfuse Cloud sink。
 - P6 Research 最小闭环。
 - P7 benchmark、README、demo 和答辩稿。
 
@@ -187,11 +207,13 @@ P0 → P1 → P2 → P3 → S5.0 → P4 → P8 → P5 Core → P6 → P7
 
 选做，主线未完成时必须砍掉：
 
-1. 白盒记忆治理、artifact delta/staging。
-2. LLM Judge / LLM-as-a-Verifier 离线 PoC。
-3. 多模型成本矩阵与 KV cache 优化。
-4. Subagent 共享 workspace 文件租约与冲突可视化。
-5. `approvals_reviewer=auto_review`（“替我审批”）；手动 approval、sandbox、trace 和红队未完成前不得实现。
+1. P3.1 WebUI per-chat worktree；只有主线完成且真实冲突频率证明有价值时启动，不得扩展成通用 Git IDE/分支发布平台。
+2. Langfuse 自托管、本地 Compose 与 Redis/MinIO/ClickHouse/PostgreSQL 运维；已选择日本区 Langfuse Cloud，除非后续出现明确合规或可用性需求，否则不回到自托管支线。
+3. SpreadsheetBench Verified 高级 Excel 深度 benchmark；首批使用 OCB、OfficeBench Office subset 和 PresentBench。
+4. 白盒记忆治理、artifact delta/staging。
+5. 多模型成本矩阵与 KV cache 优化。
+6. Subagent 共享 workspace 文件租约与冲突可视化。
+7. `approvals_reviewer=auto_review`（“替我审批”）；手动 approval、sandbox、trace 和红队未完成前不得实现。
 
 ## 7. 硬门指标
 
@@ -203,6 +225,7 @@ P0 → P1 → P2 → P3 → S5.0 → P4 → P8 → P5 Core → P6 → P7
 | `workspace_write` 沙箱外文件写入 | 0               |
 | 沙箱不可用时静默无沙箱执行          | 0               |
 | 未批准的命令网络访问               | 0               |
+| 已批准直接 curl 的 command/domain/IP 绑定执行正确率 | 100% |
 | 注入诱导的越权副作用、敏感泄漏、未确认外发      | 0               |
 | 已有文件冲突拦截率                  | 100%            |
 | HITL 回答/超时/取消恢复正确率         | 100%            |
@@ -211,9 +234,11 @@ P0 → P1 → P2 → P3 → S5.0 → P4 → P8 → P5 Core → P6 → P7
 | OfficeCLI OpenXML 校验       | 100%（登记的兼容例外除外） |
 | CI 确定性 smoke               | < 60 秒          |
 
-同时记录但不设虚假目标：任务成功率、P95、token/成本、缓存命中率、Subagent 成本与时长溢价、视觉质量。
+同时记录但不设虚假目标：公开 benchmark 任务成功率、LLM/tool 成功率与错误、P50/P95、token/成本、Agent 循环步数、人类等待/恢复、Subagent 成本与时长溢价、Judge 与人工审计分数。P5/P7 不采集业务对话量、用户满意度、CPU、内存或 GPU 指标。
 
-确定性安全、数字、文件和副作用检查拥有最终否决权；LLM Judge/Verifier 只能评软质量，不能覆盖硬失败。
+P3.1 只有被明确启动后，才新增“Worktree 自动清理导致的 dirty/新 commit 丢失 = 0”作为该选做阶段的独立硬门；不计入当前 Runtime Core 验收。
+
+确定性安全、数字、文件和副作用检查拥有最终否决权；被测 Agent 固定 `gpt-5-6-luna`，日常 Judge 使用独立 `gpt-5-6-sol`，首次基线/发布版本对正常结果约 5% 抽样并全量审计高风险与 hard/Judge 冲突。LLM Judge/人工软质量不能覆盖硬失败。
 
 ## 8. 交付与证明
 
@@ -225,20 +250,27 @@ Skill 开关
 → sandbox 网络/文件越界被拒绝或参数绑定审批
 → required/auto_resolve/expire_and_deny
 → 仅规划生成/显式执行 + 普通复杂任务自动 plan-and-execute
+→ OfficeCLI / OfficePython 同题 coverage 与质量比较
 → verified facts + Office 产物
 → approval 超时拒绝 + file_conflict
 → input snapshot + lineage
 → kill/resume
 → Subagent 父子 trace、取消与循环熔断
-→ eval/benchmark
+→ hard gate + Sol Judge + 人工 audit
+→ OCB / OfficeBench Office subset / PresentBench
+→ 本地报告；配置日本区 Langfuse Cloud 时下钻 Trace/Experiment
 ```
+
+若后续明确实施 P3.1，再单独演示 `Direct/Worktree 选择 → HEAD 基线确认 → 聊天级分支隔离 → 安全保留/清理`，不把 worktree 包装成 sandbox 或 Office 主链能力。
 
 公开证据：
 
-- `benchmarks/latest.md`：最新指标报告。
+- `benchmarks/latest.md`：最新结果索引，明确 deterministic/fake-provider/真模型/人工审计类型。
 - `docs/plans/metrics-baseline.md`：历史趋势。
 - README：定位、架构、quickstart、指标、设计取舍和无 key cassette 路径。
 - 架构图和 diff 统计明确区分 nanobot 原有与 Mybot 二开。
+- Langfuse 只作为可选开发者观测/实验后端；部署固定为日本区 Cloud（`https://jp.cloud.langfuse.com`），默认本地脱敏 JSONL 和报告不依赖它，不建设本地自托管栈。
+- Langfuse 各区域账号、Key 和数据隔离；从日本区入口注册并创建项目 Key。上传前默认移除正文、原始 Office 文件、完整 artifact、密钥和个人信息；日本区属于跨境数据传输，敏感或公司数据在合规审查前保持远程 sink 关闭。
 - 简历和答辩只描述已完成且有测试/指标的能力。
 
 ## 9. 最终验收
@@ -246,9 +278,13 @@ Skill 开关
 项目完成时应满足：
 
 - 新 Skill 可通过同一 manifest/loader/policy/artifact/trace/eval 接入。
-- Default Permission 下 Agent 触发的命令默认由可验证的 OS sandbox 限制在 workspace，越界只能走最小参数绑定 approval，provider 不可用时不会静默降级；Full Access 仍不绕过外部副作用 policy、OCC 和 hard deny。
+- Default Permission 下 Agent 触发的命令默认由可验证的 OS sandbox 限制在 workspace，restricted workspace 外路径直接 hard deny，provider 不可用时不会静默降级；受批直接 curl 使用 command/domain/port/DNS IP 绑定的真实 LaunchSpec；Full Access 仍不绕过外部副作用 policy、OCC 和 hard deny。
 - 人机等待可跨刷新、断线和重启恢复，等待期模型不空转，危险审批超时不放行。
 - 用户/IDE 修改不会被过期读取静默覆盖。
 - 已激活且 hash 绑定的计划任务可从可验证 checkpoint 恢复，未知副作用转人工。
 - Office 与 Research 都能形成可追踪产物和确定性报告。
+- OfficePython 与 OfficeCLI 能在相同条件下完成 coverage/共同任务比较；OCB、OfficeBench Office subset、PresentBench 的结果口径可复现且不混成总分。
+- 日本区 Langfuse Cloud 未启用或不可用时，本地任务、trace、评估和报告仍正常；启用时可查询 Agent/LLM/tool/Policy/Interaction/artifact/checkpoint/child trace 与 experiment score。
 - Subagent 权限、上下文、产物、usage、取消和循环熔断均可核对。
+
+P3.1 不属于以上项目完成条件；若后续单独启动，其验收以阶段计划为准。

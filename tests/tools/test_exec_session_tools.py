@@ -5,6 +5,7 @@ import re
 import shlex
 import subprocess
 import sys
+from unittest.mock import patch
 
 from nanobot.agent.tools.exec_session import (
     ExecSessionManager,
@@ -12,6 +13,7 @@ from nanobot.agent.tools.exec_session import (
     WriteStdinTool,
 )
 from nanobot.agent.tools.shell import ExecTool
+from nanobot.security.sandbox import LaunchSpec, SandboxMode
 
 
 def _python_command(code: str) -> str:
@@ -24,6 +26,36 @@ def _session_id(output: str) -> str:
     match = re.search(r"session_id:\s*([0-9a-f]+)", output)
     assert match, output
     return match.group(1)
+
+
+def test_restricted_session_start_failure_is_structured(tmp_path):
+    launch = LaunchSpec(
+        argv=("bwrap", "--", "/bin/sh", "-c", "true"),
+        cwd=str(tmp_path),
+        env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+        mode=SandboxMode.WORKSPACE_WRITE,
+        provider="bwrap",
+        enforced=True,
+        command_hash="hash",
+    )
+
+    async def run() -> str:
+        manager = ExecSessionManager()
+        tool = ExecTool(
+            working_dir=str(tmp_path),
+            restrict_to_workspace=True,
+            session_manager=manager,
+        )
+        with (
+            patch(
+                "nanobot.agent.tools.shell.SandboxLauncher.prepare_shell",
+                return_value=launch,
+            ),
+            patch.object(manager, "_spawn", side_effect=FileNotFoundError("bwrap")),
+        ):
+            return await tool.execute(command="true", yield_time_ms=0)
+
+    assert asyncio.run(run()) == "Error: sandbox_start_failed: bwrap"
 
 
 def test_exec_keeps_one_shot_behavior_without_yield_time_ms(tmp_path):

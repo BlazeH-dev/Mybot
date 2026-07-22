@@ -7,16 +7,40 @@ platform-specific binaries (all subprocess calls are mocked).
 
 import asyncio
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from nanobot.agent.tools.shell import ExecTool
+from nanobot.security.sandbox import LaunchSpec, SandboxMode
 
 _WINDOWS_ENV_KEYS = {
     "APPDATA", "LOCALAPPDATA", "ProgramData",
     "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
 }
+
+
+def _launch(
+    argv: tuple[str, ...],
+    *,
+    cwd: str = "/tmp",
+    env: dict[str, str] | None = None,
+    provider: str = "none",
+) -> LaunchSpec:
+    return LaunchSpec(
+        argv=argv,
+        cwd=cwd,
+        env=env or {"HOME": "/tmp", "PATH": "/usr/bin:/bin"},
+        mode=(
+            SandboxMode.DANGER_FULL_ACCESS
+            if provider == "none"
+            else SandboxMode.WORKSPACE_WRITE
+        ),
+        provider=provider,
+        enforced=provider != "none",
+        command_hash="hash",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +52,7 @@ class TestBuildEnvUnix:
     def test_expected_keys(self):
         with patch("nanobot.agent.tools.shell._IS_WINDOWS", False):
             env = ExecTool()._build_env()
-        expected = {"HOME", "LANG", "TERM", "PYTHONUNBUFFERED"}
+        expected = {"HOME", "LANG", "TERM", "PATH", "PYTHONUNBUFFERED"}
         assert expected <= set(env)
         if sys.platform != "win32":
             assert set(env) == expected
@@ -95,76 +119,48 @@ class TestBuildEnvWindows:
 class TestSpawnUnix:
 
     @pytest.mark.asyncio
-    async def test_uses_bash(self):
+    async def test_executes_launch_spec_without_reparsing(self):
+        launch = _launch(("/bin/bash", "-l", "-c", "echo hi"))
         with (
-            patch("nanobot.agent.tools.shell._IS_WINDOWS", False),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_exec.return_value = AsyncMock()
-            await ExecTool._spawn("echo hi", "/tmp", {"HOME": "/tmp"})
+            await ExecTool._spawn(launch)
 
         args = mock_exec.call_args[0]
-        assert "bash" in args[0]
-        assert "-l" in args
-        assert "-c" in args
-        assert "echo hi" in args
+        assert args == launch.argv
 
         kwargs = mock_exec.call_args[1]
         assert kwargs["stdin"] == asyncio.subprocess.DEVNULL
+        assert kwargs["cwd"] == launch.cwd
+        assert kwargs["env"] == launch.env
 
 
 class TestSpawnWindows:
 
     @pytest.mark.asyncio
-    async def test_single_line_uses_shell(self):
+    async def test_single_line_uses_explicit_cmd_argv(self):
         env = {"COMSPEC": r"C:\Windows\system32\cmd.exe", "PATH": ""}
-        with (
-            patch("nanobot.agent.tools.shell._IS_WINDOWS", True),
-            patch("asyncio.create_subprocess_shell", new_callable=AsyncMock) as mock_shell,
-        ):
-            mock_shell.return_value = AsyncMock()
-            await ExecTool._spawn("dir", r"C:\work", env)
-
-        args = mock_shell.call_args[0]
-        assert "dir" in args
-
-        kwargs = mock_shell.call_args[1]
-        assert kwargs["stdin"] == asyncio.subprocess.DEVNULL
+        launch = ExecTool._windows_launch_spec(command="dir", cwd=r"C:\work", env=env)
+        assert launch.argv == (r"C:\Windows\system32\cmd.exe", "/d", "/s", "/c", "dir")
 
     @pytest.mark.asyncio
     async def test_single_line_passes_cwd_and_env(self):
-        env = {"PATH": "/usr/bin"}
-        with (
-            patch("nanobot.agent.tools.shell._IS_WINDOWS", True),
-            patch("asyncio.create_subprocess_shell", new_callable=AsyncMock) as mock_shell,
-        ):
-            mock_shell.return_value = AsyncMock()
-            await ExecTool._spawn("echo hi", r"C:\work", env)
+        env = {"COMSPEC": "cmd.exe", "PATH": ""}
+        launch = ExecTool._windows_launch_spec(command="echo hi", cwd=r"C:\work", env=env)
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = AsyncMock()
+            await ExecTool._spawn(launch)
 
-        kwargs = mock_shell.call_args[1]
-        assert kwargs["cwd"] == r"C:\work"
-        assert kwargs["env"] == env
+        assert mock_exec.call_args.kwargs["cwd"] == r"C:\work"
+        assert mock_exec.call_args.kwargs["env"] == env
 
     @pytest.mark.asyncio
     async def test_multiline_uses_powershell(self):
         env = {"PATH": ""}
-        with (
-            patch("nanobot.agent.tools.shell._IS_WINDOWS", True),
-            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-        ):
-            mock_exec.return_value = AsyncMock()
-            await ExecTool._spawn('python -c "print(1)\nprint(2)"', r"C:\work", env)
-
-        args = mock_exec.call_args[0]
-        assert args[0] == "powershell"
-        assert "-NoProfile" in args
-        assert "-Command" in args
-        assert "print(1)" in args[-1]
-        assert "print(2)" in args[-1]
-
-        kwargs = mock_exec.call_args[1]
-        assert kwargs["cwd"] == r"C:\work"
-        assert kwargs["env"] == env
+        command = 'python -c "print(1)\nprint(2)"'
+        launch = ExecTool._windows_launch_spec(command=command, cwd=r"C:\work", env=env)
+        assert launch.argv == ("powershell", "-NoProfile", "-Command", command)
 
 
 # ---------------------------------------------------------------------------
@@ -180,13 +176,13 @@ class TestPathAppendPlatform:
         mock_proc.communicate.return_value = (b"ok", b"")
         mock_proc.returncode = 0
 
-        captured_cmd = None
+        captured_launch = None
         captured_env = {}
 
-        async def capture_spawn(cmd, cwd, env, shell_program=None, login=True):
-            nonlocal captured_cmd
-            captured_cmd = cmd
-            captured_env.update(env)
+        async def capture_spawn(launch):
+            nonlocal captured_launch
+            captured_launch = launch
+            captured_env.update(launch.env)
             return mock_proc
 
         with (
@@ -198,9 +194,10 @@ class TestPathAppendPlatform:
             tool = ExecTool(path_append="/opt/bin; echo INJECTED")
             await tool.execute(command="ls")
 
-        assert captured_cmd == 'export PATH="$PATH:$NANOBOT_PATH_APPEND"; ls'
-        assert captured_env["NANOBOT_PATH_APPEND"] == "/opt/bin; echo INJECTED"
-        assert "INJECTED" not in captured_cmd
+        assert captured_launch is not None
+        assert captured_launch.argv[-1] == "ls"
+        assert captured_env["PATH"].endswith(":/opt/bin; echo INJECTED")
+        assert "INJECTED" not in captured_launch.argv[-1]
 
     @pytest.mark.asyncio
     async def test_windows_modifies_env(self):
@@ -211,8 +208,8 @@ class TestPathAppendPlatform:
 
         captured_env = {}
 
-        async def capture_spawn(cmd, cwd, env, shell_program=None, login=True):
-            captured_env.update(env)
+        async def capture_spawn(launch):
+            captured_env.update(launch.env)
             return mock_proc
 
         with (
@@ -258,18 +255,70 @@ class TestSandboxPlatform:
         mock_proc.communicate.return_value = (b"sandboxed", b"")
         mock_proc.returncode = 0
 
+        launch = _launch(("bwrap", "--", "sh", "-c", "ls"), cwd="/workspace", provider="bwrap")
         with (
             patch("nanobot.agent.tools.shell._IS_WINDOWS", False),
-            patch("nanobot.agent.tools.shell.wrap_command", return_value="bwrap -- sh -c ls") as mock_wrap,
+            patch(
+                "nanobot.agent.tools.shell.SandboxLauncher.prepare_shell",
+                return_value=launch,
+            ) as mock_prepare,
             patch.object(ExecTool, "_spawn", return_value=mock_proc) as mock_spawn,
             patch.object(ExecTool, "_guard_command", return_value=None),
         ):
             tool = ExecTool(sandbox="bwrap", working_dir="/workspace")
             await tool.execute(command="ls")
 
-        mock_wrap.assert_called_once()
-        spawned_cmd = mock_spawn.call_args[0][0]
-        assert "bwrap" in spawned_cmd
+        mock_prepare.assert_called_once()
+        spawned_launch = mock_spawn.call_args.args[0]
+        assert spawned_launch.argv[0] == "bwrap"
+
+    def test_restricted_launch_ignores_login_and_uses_workspace_home(self, tmp_path):
+        launch = _launch(
+            ("sandbox-exec", "-p", "profile", "/bin/bash", "-c", "pwd"),
+            cwd=str(tmp_path),
+            env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            provider="seatbelt",
+        )
+        with (
+            patch("nanobot.agent.tools.shell._IS_WINDOWS", False),
+            patch(
+                "nanobot.agent.tools.shell.SandboxLauncher.prepare_shell",
+                return_value=launch,
+            ) as mock_prepare,
+        ):
+            prepared = ExecTool(
+                working_dir=str(tmp_path),
+                restrict_to_workspace=True,
+            )._prepare_command("pwd", login=True)
+
+        assert not isinstance(prepared, str)
+        kwargs = mock_prepare.call_args.kwargs
+        assert kwargs["login"] is False
+        assert kwargs["env"]["HOME"] == str(tmp_path.resolve())
+        assert kwargs["env"]["PATH"]
+        assert Path(kwargs["workspace"]) == tmp_path.resolve()
+
+    @pytest.mark.asyncio
+    async def test_restricted_one_shot_start_failure_is_structured(self, tmp_path):
+        launch = _launch(
+            ("sandbox-exec", "-p", "profile", "/bin/sh", "-c", "true"),
+            cwd=str(tmp_path),
+            provider="seatbelt",
+        )
+        with (
+            patch("nanobot.agent.tools.shell._IS_WINDOWS", False),
+            patch(
+                "nanobot.agent.tools.shell.SandboxLauncher.prepare_shell",
+                return_value=launch,
+            ),
+            patch.object(ExecTool, "_spawn", side_effect=FileNotFoundError("sandbox-exec")),
+        ):
+            result = await ExecTool(
+                working_dir=str(tmp_path),
+                restrict_to_workspace=True,
+            ).execute(command="true")
+
+        assert result == "Error: sandbox_start_failed: sandbox-exec"
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@
 > 2026-07-18：plan-only 确认已接入持久化 `InteractionRequest`，以 `awaiting_plan_confirmation` 挂起并在 typed WebSocket/WebUI 回复后恢复原 tool call。
 > 2026-07-20：修复 plan-only 完成后计划卡片右下角“执行计划”缺失；挂起工具保留已成功的 plan result 事件，按钮直接响应 hash-bound `plan_confirmation`。
 > 2026-07-20：计划确认不再额外展示通用 InteractionRequest 卡片；页面只保留计划卡片右下角“执行计划”入口。
+> 2026-07-22 规划：后续将 `office-automation` 改名并扩展为通用 `OfficePython`（Skill id `office-python`）；当前代码、manifest、测试和配置尚未迁移，本说明仍以真实 id `office-automation` 描述现状。
 
 ## 阶段目标
 
@@ -149,7 +150,7 @@ nanobot/skills/officecli/
 - raw、raw-set、add-part。
 - plugins、MCP、watch、install、config、update。
 
-这些能力不会在 Skill 层被删除。P3 Runtime Policy 将按操作、参数、目标路径和网络边界分类为 allow / ask / deny。manifest 或 Skill 只能声明需求，不能自行授予权限；workspace 外普通路径和公网域名只能由参数绑定 approval 最小放宽，路径逃逸、受保护目录、SSRF/私网和敏感信息硬边界不可被审批放宽。
+这些能力不会在 Skill 层被删除。P3 Runtime Policy 将按操作、参数、目标路径和网络边界分类为 allow / ask / deny。manifest 或 Skill 只能声明需求，不能自行授予权限；restricted workspace 外路径直接 hard deny，用户必须切换 workspace 或显式选择 Full Access。公网域名只能由参数绑定 approval 最小放宽，路径逃逸、受保护目录、SSRF/私网和敏感信息硬边界不可被审批放宽。
 
 `compile_officecli.py`、`render_docx.py`、`render_pptx.py` 是现有 grounded report/deck 的兼容 helper：
 
@@ -435,10 +436,23 @@ bun run build
 后续阶段接续：
 
 - P2（已完成）：两个 Skill 已增加正式 manifest，并由 `SkillsLoader` 提供 Registry、局部 fail closed、结构化 availability 与统一 disabled 语义；缺失 manifest 继续兼容。
-- P3（已完成）：已实现参数级 allow/ask/deny、三档持久化 `InteractionRequest`、参数绑定 `expire_and_deny` approval、文件 fresh-read hash 和不可放宽的 workspace/network/sensitive 边界。
+- P3（已完成）：参数级 allow/ask/deny、三档持久化 `InteractionRequest`、参数绑定 `expire_and_deny` approval、文件 fresh-read hash、统一 `LaunchSpec` 和不可放宽的 workspace/network/sensitive 边界已实现；受批直接 curl 只生成一次性 pinned one-shot，持久 session 保持断网。
 - P4（已完成）：已实现不可变输入快照、artifact/lineage 和已激活、hash 绑定计划任务的 checkpoint/resume；恢复状态使用 completed/pending/uncertain。
 - P5 Core（已完成）：已记录 Skill、引擎、facts、policy、artifact 和成本时长 trace，并以确定性 eval/红队验证“不可信内容无法诱导未授权副作用或泄漏”。
 - P8（已完成）：已支持最多 5 个直接子 Agent、禁止嵌套、权限只收紧、隔离上下文/产物、父 Agent 汇总事实与结果以及单/多 Agent 对比；共享 workspace 文件租约仅作选做增强。
+
+## P1.1 OfficePython 规划边界（尚未实现）
+
+用户已决定把现有 Python Skill 从单一周报/PPT 链扩展为通用 Office baseline，并将展示名改为 `OfficePython`、Skill id 改为 `office-python`。计划中的真实边界是：
+
+- 使用 `python-docx + lxml`、`openpyxl`、`python-pptx` 实现 DOCX/XLSX/PPTX 的 `inspect/query/create/apply/validate/render` 结构化 CLI。
+- LibreOffice headless 只承担打开、重算、转换和渲染验证，不作为 Agent 的 GUI action space。
+- 当前 report/slide DSL 移到 `recipes/weekly-report/`，保留为兼容 recipe；它不再定义整个 Skill 的能力上限。
+- tracked changes、复杂母版/动画、SmartArt 和 Python 库不能可靠保真的 OOXML 特性返回结构化 `unsupported`，不能以“命令成功”掩盖能力缺口。
+- 迁移期兼容旧 `office-automation` 的 `disabledSkills`、`@skill`、manifest 和历史会话；只有代码与测试完成后，README/benchmark 才将其称为 `OfficePython`。
+- 公平比较时两个 Skill 使用相同输入、Luna、Policy、约束和 evaluator；分别报告 coverage 与共同任务质量，不允许 OfficePython 调用 OfficeCLI，也不通过 prompt 人为偏袒 OfficeCLI。
+
+这段是后续实施说明，不是当前代码能力。当前 `office-automation` 仍是窄而确定的 grounded report/deck 工作流。
 
 ## 维护约定
 
