@@ -1,7 +1,29 @@
 # P5 Cassette、Trace、Eval 与安全红队代码说明
 
 > 对应计划：`docs/plans/runtime-steps/P5-trace-eval.md`
-> 当前状态：S5.0 与 Core 已完成（2026-07-18）。P5.1 已确定采用日本区 Langfuse Cloud 和 Langfuse Python SDK 主导观测/评估，但 SDK 接入、Dataset/Experiment、SDK evaluator、Terra LLM-as-a-Judge、Annotation Queue 和公开 Office benchmark 尚未实现。
+> 当前状态：S5.0 与 Core 已完成（2026-07-18）。P5.1 Langfuse 接入方案已评审并更新实施步骤（2026-07-23），待实施。
+
+## P5.1 核心改动（相比原方案）
+
+### 关键决策变更
+
+1. **JSONL TraceHook 保留策略**：`observability.langfuse.enabled=false`（默认）时保留现有 JSONL TraceHook 作为本地调试路径，启用 Langfuse 后停写 JSONL，二者互斥。避免默认配置下完全无持久观测。
+
+2. **Provider observation 创建边界**：必须在 `runner._request_model()` 内逐调用创建 generation observation，记录 start_time/TTFT/latency/usage，而非在 `after_iteration` 聚合。优先使用 `langfuse.openai` drop-in（从 config 设置环境变量后导入），让所有 OpenAI-compatible provider（OpenAI/DeepSeek/GPT-5.6）自动追踪。
+
+3. **Tool observation 创建边界**：必须在 `runner._run_tool()` 内逐调用创建 tool observation，记录 tool_call_id/arguments 摘要/latency/result 摘要/error。
+
+4. **Config schema 增强**：新增 `config.observability.langfuse.*` 字段（enabled/baseUrl/publicKey/secretKey/captureContent），provider 根据 config 条件设置环境变量并导入 `langfuse.openai.AsyncOpenAI`。
+
+5. **Benchmark CLI 新建**：`nanobot/cli/benchmark.py` 实现 `prepare/estimate/run/export`，封装 `langfuse.run_experiment()`。
+
+### 实施步骤概览
+
+P5.1a（Observability）：S0 准备 → S1 Provider drop-in → S2 TraceHook 双模式 → S3 Tool observation → S4 Generation（非 drop-in） → S5 Subagent context → S6 Masking → S7 测试迁移
+
+P5.1b（Evaluation）：S8 Benchmark CLI → S9 Experiment Runner → S10 LLM-as-a-Judge → S11 SDK Evaluator → S12 Annotation Queue
+
+详见 `docs/plans/runtime-steps/P5-trace-eval.md` 第 9 节。
 
 ## 这一阶段解决什么问题
 

@@ -170,11 +170,13 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 ### 4.8 Trace、Eval 与 Langfuse 边界
 
 - Mybot 拥有埋点位置、`mybot.*` 语义、字段 allowlist、Runtime 状态和必须访问本地文件/进程的 task/evaluator；Langfuse SDK 负责 observation 生命周期、OTel 上下文、masking、batch/retry/flush 和 Cloud 传输。
-- P5.1 不自建 `TraceEvent/TraceSink/CompositeTraceSink`、生产 JSONL exporter、HTTP 客户端、发送队列、Dataset/Experiment/Score/Annotation UI；测试只使用 OTel in-memory/临时 fixture。
+- `observability.langfuse.enabled=false`（默认）时保留现有 JSONL TraceHook 作为本地调试与离线证据路径；启用后切换到 Langfuse SDK，停写 JSONL，二者互斥。JSONL 代码删除推迟到 Langfuse 稳定后作为独立清理项。
+- Provider 观测必须在 `runner._request_model()` 内逐调用创建 generation observation（记录 start_time/TTFT/latency/usage）。优先使用 `langfuse.openai` drop-in（provider 从 config 设置环境变量后导入），自动追踪所有 OpenAI-compatible provider（OpenAI/DeepSeek/GPT-5.6）；检测到 drop-in 时 runner 不重复创建 generation。
+- Tool 观测必须在 `runner._run_tool()` 内逐调用创建 tool observation（记录 tool_call_id/arguments 摘要/latency/result 摘要/error）。
 - Langfuse 负责 Trace/Sessions、Datasets/Dataset Runs、Experiments、Scores、LLM-as-a-Judge、Code Evaluator、Annotation Queue、成本/延迟 Dashboard、趋势和 CI regression gate。
-- Langfuse Python SDK `run_experiment()` 在 Mybot 进程中调用 task callback；OfficeBench 官方 evaluator、OpenXML/渲染/文件检查可以作为 SDK evaluator function 返回 `Evaluation`，不需要 Mybot 的第二套 EvalResult 数据库。
-- Langfuse LLM Connection 承担 OCB/PresentBench 的 Terra Judge；只有平台无法消费 PresentBench 视觉媒体时，才允许一个本地 SDK evaluator fallback，结果仍只写 Langfuse Score。
-- Mybot 只保留 benchmark 资产/依赖/license 准备、成本确认和 `run_experiment`/`export` 薄封装。Langfuse Dataset Run、Score 和 Annotation 是评估真相源，Git/README 只是只读导出快照。
+- Langfuse Python SDK `run_experiment()` 在 Mybot 进程中调用 task callback；OfficeBench 官方 evaluator、OpenXML/渲染/文件检查作为 SDK evaluator function 返回 `Evaluation`，不需要 Mybot 的第二套 EvalResult 数据库。
+- Langfuse LLM Connection 承担 OCB/PresentBench 的 Terra Judge（通过 OpenAI-compatible 端点配置 `gpt-5-6-terra`）；只有平台无法消费 PresentBench 视觉媒体时，才允许该维度本地 SDK evaluator fallback，结果仍只写 Langfuse Score。
+- Mybot 新建 `nanobot/cli/benchmark.py`（prepare/estimate/run/export），封装 `langfuse.run_experiment()` 和 Langfuse API 查询。Langfuse Dataset Run、Score 和 Annotation 是评估真相源，Git/README 只是只读导出快照。
 
 ## 5. 阶段路线图
 

@@ -52,7 +52,7 @@ Cassette 只验证 AgentLoop、工具协议、Policy、交互和恢复回归，�
 
 现有 `TraceHook` 是当前 Mybot trace 语义入口，记录 task/actor、model/usage、plan/tool/policy、InteractionRequest、artifact/checkpoint、Subagent 父子关系和错误。当前 JSONL/OTLP-shaped 输出属于已完成 Core 的实现事实。
 
-P5.1 接入后，生产观测迁移到 Langfuse SDK；现有 JSONL 只保留给旧测试兼容并逐步替换为 OTel `InMemorySpanExporter` 或临时测试 fixture。它不再作为普通任务的持久观测副本，不新增 `LocalJsonlSpanExporter`、历史重放、查询或同步能力。
+P5.1 接入后，启用 Cloud 时生产观测迁移到 Langfuse SDK，测试逐步替换为 OTel `InMemorySpanExporter` 或临时测试 fixture。`observability.langfuse.enabled=false`（默认）时保留现有 JSONL TraceHook 原样运行，作为本地调试与离线证据路径——否则默认配置下将没有任何持久观测；启用 Langfuse 后停写 JSONL，二者互斥切换而非双写。不新增 `LocalJsonlSpanExporter`、历史重放、查询或同步能力；现有 JSONL 代码的删除推迟到 Langfuse 稳定运行后作为独立清理项。
 
 ## 4. P5.1a Langfuse 可观测接入
 
@@ -80,18 +80,24 @@ AgentLoop / AgentRunner / Provider / Tool / Runtime
 
 ### Observation 映射
 
-| Mybot 语义 | Langfuse 表达 | 必须记录 |
-| --- | --- | --- |
-| task / chat | root observation + session | task/session、model preset、Skill digest、release/version |
-| main/child Agent | agent observation | parent、stop reason、步骤、错误 |
-| LLM provider 调用 | generation | model、参数、TTFT/总延迟、usage/cache token、cost、error |
-| tool 调用 | tool observation | tool call id、参数摘要、延迟、重试、结果摘要、error |
-| Policy / approval | guardrail 或 event | decision、rule、risk、绑定摘要 |
-| InteractionRequest | span + event | strategy、状态、human wait |
-| artifact/checkpoint/recovery | event/span | id、hash、验证状态、恢复语义，不上传原文件 |
-| benchmark item | experiment trace | dataset item、Skill、fingerprint、artifact id/hash |
+| Mybot 语义 | Langfuse 表达 | 必须记录 | 创建位置 |
+| --- | --- | --- | --- |
+| task / chat | root observation + session | task/session、model preset、Skill digest、release/version | AgentLoop.handle() |
+| main/child Agent | agent observation | parent、stop reason、步骤、错误 | TraceHook.before_run/after_run |
+| LLM provider 调用 | generation | model、参数、TTFT/总延迟、usage/cache token、cost、error | **runner._request_model() 或 langfuse.openai drop-in** |
+| tool 调用 | tool observation | tool call id、参数摘要、延迟、重试、结果摘要、error | **runner._run_tool()** |
+| Policy / approval | guardrail 或 event | decision、rule、risk、绑定摘要 | emit_trace_event() 改为 Langfuse API |
+| InteractionRequest | span + event | strategy、状态、human wait | emit_trace_event() |
+| artifact/checkpoint/recovery | event/span | id、hash、验证状态、恢复语义，不上传原文件 | emit_trace_event() |
+| benchmark item | experiment trace | dataset item、Skill、fingerprint、artifact id/hash | run_experiment() 自动 |
 
-具体 observation 类型以锁定 SDK 为准；无原生类型时使用 span/event + `mybot.kind`，不自建类型系统。Provider 和 Runner 工具边界必须逐调用 start/end，不能从 `after_iteration` 聚合事件反推 generation/tool latency。使用 `propagate_attributes()` 将需要被 evaluator/filter 使用的 trace metadata 传播到 observation。
+具体 observation 类型以锁定 SDK 为准；无原生类型时使用 span/event + `mybot.kind`，不自建类型系统。
+
+**关键改动**：
+- Provider 调用在 `runner._request_model()` 内逐调用创建 generation observation，记录 start_time/TTFT/latency/usage。如果启用 `langfuse.openai` drop-in（从 `config.observability.langfuse` 设置环境变量后导入），则 generation 由 drop-in 自动创建，runner 不重复创建。
+- Tool 调用在 `runner._run_tool()` 内逐调用创建 tool observation，记录 tool_call_id/arguments 摘要/latency/result 摘要/error。
+- `after_iteration` 只做轻量汇总，不再作为 observation 创建点。
+- 使用 `propagate_attributes()` 将 task_id/session_id/plan_hash/sandbox_mode 等传播到所有子 observation。
 
 ### 配置、安全与故障语义
 
@@ -109,8 +115,9 @@ AgentLoop / AgentRunner / Provider / Tool / Runtime
 }
 ```
 
-- SDK 随 Mybot 默认安装并锁定版本；配置兼容 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`、`LANGFUSE_BASE_URL`，密钥不得进入仓库、WebUI、日志或 Trace。
-- 普通任务默认 `enabled:false`。启用后 Langfuse 是唯一持久观测后端；Cloud 不可用时 Runtime 继续执行，但允许遥测丢失，不承诺本地无损补传。
+- SDK 随 Mybot 默认安装并锁定版本（`langfuse>=4.14.0`）；配置兼容 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`、`LANGFUSE_BASE_URL`，密钥不得进入仓库、WebUI、日志或 Trace。
+- 普通任务默认 `enabled:false`，此时保留现有 JSONL TraceHook 作为本地调试与离线证据路径。启用后 Langfuse 是唯一持久观测后端，停写 JSONL；Cloud 不可用时 Runtime 继续执行，但允许遥测丢失，不承诺本地无损补传。
+- `openai_compat_provider._ensure_client()` 在启用 Langfuse 时，从 config 读取密钥并设置环境变量 `LANGFUSE_SECRET_KEY`/`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_BASE_URL`，然后导入 `from langfuse.openai import AsyncOpenAI`，让 drop-in 自动追踪所有 OpenAI-compatible provider（OpenAI/DeepSeek/GPT-5.6 中转）的 LLM 调用。检测到 drop-in 生效时，runner 不再手动创建 generation observation。
 - `office-smoke/release` 必须通过日本区写入、flush、API 回读和 deep link smoke；失败则 experiment profile 失败。
 - 普通任务默认只上传 metadata、hash、长度、状态和指标。公开 benchmark 内容仅在许可证允许时上传；公司、客户、个人或敏感数据在合规审查前保持关闭。
 - 日本区属于跨境数据传输；计划不声称满足中国数据出境要求。
@@ -200,22 +207,38 @@ OfficePython 是公平 Python baseline，不得通过 prompt、Dataset 或 evalu
 
 ## 9. 实施顺序与出口
 
-1. 锁定 Langfuse Python SDK；spike 验证 async/Subagent 传播、agent/generation/tool/guardrail、`propagate_attributes()`、`mask_otel_spans`、usage/cost、有限时间 flush 和日本区回读。
-2. 将 `TraceHook` 改为 SDK 语义埋点外观；用 OTel in-memory exporter 重写测试，停止普通任务持久 JSONL 双写。
-3. 补齐 Provider/Runner 逐调用 observation、Runtime 语义映射、错误闭合、session/release tags 和 WebUI deep link。
-4. 在 Langfuse 配置 Score Config、Custom Dashboard、Terra OpenAI-compatible LLM Connection 和 OCB/PresentBench Custom LLM-as-a-Judge；验证 structured output/tool calling。
-5. 实现 `prepare` 的不可变 Dataset/media 导入和 `run` 的 `run_experiment()` task callback；OfficeBench/本地文件检查只作为 SDK evaluator functions。
-6. 接入 Annotation Queue、官方 Experiment CI/CD Action 和 `export --dataset-run`；删除本地 status/resume/audit-sync/publish、趋势引擎和 benchmark WebUI 规划。
+### P5.1a 实施步骤（按风险与依赖排序）
 
-验证要求：
+| 阶段 | 步骤 | 产出 | 验证 |
+|------|------|------|------|
+| **S0 准备** | 1. Config schema 增加 `observability.langfuse.*` (enabled/baseUrl/publicKey/secretKey/captureContent)<br>2. `pyproject.toml` 添加 `langfuse>=4.14.0` 并锁定版本<br>3. 编写 spike：验证 async/context propagation、`propagate_attributes()`、`mask_otel_spans`、flush/shutdown | config/schema.py、pyproject.toml、spike 脚本 | spike 通过，日本区 Cloud 能写入/flush/回读/deep link |
+| **S1 Provider drop-in** | 4. `openai_compat_provider._ensure_client()` 增加 `_should_use_langfuse()` 判断<br>5. 启用时从 config 读取密钥设置环境变量，导入 `langfuse.openai.AsyncOpenAI`<br>6. 验证 drop-in 自动追踪 LLM 调用 | Provider 自动创建 generation observation | 本地测试：启用 Langfuse 后，Cloud 能看到 OpenAI/DeepSeek/GPT-5.6 的 generation span（含 model/usage/latency） |
+| **S2 TraceHook 双模式** | 7. 新建 `LangfuseTraceHook(AgentHook)`，实现 before_run（创建 agent observation + propagate_attributes）、after_iteration（轻量汇总）、after_run（更新 agent observation）<br>8. `AgentLoop.handle()` 根据 `config.observability.langfuse.enabled` 选择 `TraceHook`（JSONL）或 `LangfuseTraceHook`<br>9. `emit_trace_event()` 增加 Langfuse 分支：检测当前是否在 Langfuse observation 内，是则调用 SDK event API | runtime/langfuse_hook.py、双模式切换 | CI 仍用 JSONL（enabled=false），本地启用 Langfuse 看到 agent observation + task metadata 正确传播 |
+| **S3 Tool observation** | 10. `runner._run_tool()` 开头创建 `langfuse.start_as_current_observation(as_type="tool", name=tool_call.name, input=...)`<br>11. 执行完成后 `tool_obs.update(output=..., level="DEFAULT"/"ERROR")` | Tool 独立 span | Langfuse 能看到每个 tool call 的 latency/arguments 摘要/result 摘要/error |
+| **S4 Generation（非 drop-in 路径）** | 12. `runner._request_model()` 检测是否使用 `langfuse.openai` drop-in（检查 `isinstance(self.provider._client, langfuse.openai.AsyncOpenAI)`）<br>13. 未使用 drop-in 时，手动创建 `generation` observation，记录 start_time/response/usage/latency | 非 OpenAI-compatible provider 的 generation span | 测试 Bedrock/Anthropic provider：Langfuse 能看到 generation |
+| **S5 Subagent context** | 14. 验证 `subagent._run_subagent()` 中，`LangfuseTraceHook` 的 parent 参数能否传递 Langfuse context（依赖 OTel 自动传播）<br>15. 如需手动传递，调用 `langfuse.get_current_trace_id()` 并在 child 中恢复 | 父子 trace 正确嵌套 | Langfuse 能看到 main/child agent 层级，child 的 parent_span_id 正确 |
+| **S6 Masking** | 16. 实现 `mask_otel_spans(spans) -> MaskOtelSpansResult`，删除 `gen_ai.prompt`/`gen_ai.completion` 等敏感属性，保留 hash/length<br>17. 在 Langfuse client 初始化时传入 `mask_otel_spans=...` | 脱敏生效 | Cloud 无 messages 正文/artifact 原文/PII，只有 metadata/hash/length |
+| **S7 测试迁移** | 18. 现有使用 JSONL 的测试（test_replay_trace_eval.py 的 trace 部分）改用 OTel `InMemorySpanExporter` 或保持 enabled=false | 测试通过 | CI `pytest tests/runtime/` 绿色 |
 
-- mock SDK 验证每次 LLM/tool 恰好一条 observation，Agent/child 父子关系正确，error/cancel/timeout 全部闭合；
-- masking 在 SDK export 前生效，密钥、正文和原始 Office 文件不泄漏；无本地生产 JSONL 双写；
-- Cloud 关闭/断网不阻塞普通 Runtime，但不承诺遥测补传；smoke/release 的 Cloud preflight 必须失败；
-- `run_experiment()` 负责并发、error isolation、Dataset Run、item/run score；Mybot 没有平行的 experiment/status/score 数据模型；
-- OfficeBench 官方 evaluator 输出原样映射为 Score；OCB/PresentBench Terra LLM Connection、prompt/rubric 和非官方标签可追踪；
-- PresentBench 验证 media 到 Judge 的真实链路，不支持时只允许视觉 evaluator fallback；
-- Annotation Queue 的 Score/comment/reviewer 可直接供 export/CI 查询，不存在 `audit-sync`；
-- Langfuse Dashboard 能按 benchmark、Skill、model、release、score source 查看成功率、成本、P50/P95 和质量趋势；
-- 本地 pytest/cassette/Policy/OCC/HITL/OpenXML 硬门在 Langfuse 关闭时独立通过；
-- P5.1 完成后，README benchmark 区块只能由已审核 Langfuse Dataset Run 导出。
+### P5.1b 实施步骤（Evaluation 与 Benchmark）
+
+| 阶段 | 步骤 | 产出 | 验证 |
+|------|------|------|------|
+| **S8 Benchmark CLI** | 19. 新建 `nanobot/cli/benchmark.py`，实现 `prepare/estimate/run/export` 子命令<br>20. `prepare`：校验 OCB/OfficeBench/PresentBench 资产、revision/SHA/license，创建 Langfuse Dataset（如果 enabled）<br>21. `estimate`：计算 token/cost 预算，要求用户确认 | cli/benchmark.py | `nanobot benchmark prepare --profile ci` 成功，不依赖 Langfuse |
+| **S9 Experiment Runner** | 22. `run` 子命令封装 `langfuse.run_experiment(data=dataset, task=_mybot_task_callback, evaluators=...)`<br>23. `_mybot_task_callback(item)` 执行 Luna Agent + Skill，返回 artifact 路径/内容<br>24. OfficeBench 官方 evaluator 作为 SDK evaluator function，返回 `Evaluation(value=score, comment=...)` | Experiment Runner 可用 | `nanobot benchmark run --profile office-smoke` 创建 Dataset Run，Langfuse 有 12 traces |
+| **S10 LLM-as-a-Judge** | 25. 在 Langfuse UI 配置 Terra OpenAI-compatible LLM Connection（base_url/api_key/model=gpt-5-6-terra）<br>26. 配置 OCB/PresentBench Custom LLM-as-a-Judge（rubric/prompt template）<br>27. 设置 Dataset filter、scope、sampling | LLM Connection + Judge 配置 | Langfuse 对 Dataset Run 自动执行 Judge，生成 `mybot_score` + reasoning |
+| **S11 SDK Evaluator** | 28. OpenXML/渲染/文件检查作为本地 SDK evaluator function（同步函数，返回 `Evaluation`）<br>29. 注册到 `run_experiment(evaluators=[officebench_official, openxml_check, ...])` | 本地 evaluator 集成 | Dataset Run 有 `official_score` + `openxml_valid` Score |
+| **S12 Annotation Queue** | 30. `export` 子命令通过 Langfuse API 查询 Dataset Run 的 Scores、Annotation Queue 状态<br>31. 判断审核完整性（smoke 全部审核，release 抽样审核完成）<br>32. 生成去敏 JSON/Markdown 快照，更新 README 受控区块 | export 功能 | `nanobot benchmark export --dataset-run <id>` 生成 benchmarks/latest.md |
+
+### 验证要求（全阶段）
+
+- mock SDK 或真实 Cloud 验证每次 LLM/tool 恰好一条 observation，Agent/child 父子关系正确，error/cancel/timeout 全部闭合
+- masking 在 SDK export 前生效，密钥、正文和原始 Office 文件不泄漏；enabled=false 时保留 JSONL 作为本地调试路径，enabled=true 时停写 JSONL
+- Cloud 关闭/断网不阻塞普通 Runtime；smoke/release 的 Cloud preflight 必须失败
+- `run_experiment()` 负责并发、error isolation、Dataset Run、item/run score；Mybot 没有平行的 experiment/status/score 数据模型
+- OfficeBench 官方 evaluator 输出原样映射为 Score；OCB/PresentBench Terra LLM Connection、prompt/rubric 和非官方标签可追踪
+- PresentBench 验证 media 到 Judge 的真实链路（如 spike 发现不支持，只允许视觉维度 evaluator fallback）
+- Annotation Queue 的 Score/comment/reviewer 可直接供 export/CI 查询，不存在 `audit-sync`
+- Langfuse Dashboard 能按 benchmark、Skill、model、release、score source 查看成功率、成本、P50/P95 和质量趋势
+- 本地 pytest/cassette/Policy/OCC/HITL/OpenXML 硬门在 Langfuse 关闭时独立通过
+- P5.1 完成后，README benchmark 区块只能由已审核 Langfuse Dataset Run 导出
