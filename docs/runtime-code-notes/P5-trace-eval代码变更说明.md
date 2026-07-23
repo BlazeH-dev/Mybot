@@ -1,7 +1,7 @@
 # P5 Cassette、Trace、Eval 与安全红队代码说明
 
 > 对应计划：`docs/plans/runtime-steps/P5-trace-eval.md`
-> 当前状态：S5.0 与 Core 已完成（2026-07-18）。P5.1 已确定采用日本区 Langfuse Cloud，但 Python SDK sink、LLM Judge、人工审计和公开 Office benchmark adapter 尚未实现。
+> 当前状态：S5.0 与 Core 已完成（2026-07-18）。P5.1 已确定采用日本区 Langfuse Cloud 和 Langfuse Python SDK 主导观测/评估，但 SDK 接入、Dataset/Experiment、SDK evaluator、Terra LLM-as-a-Judge、Annotation Queue 和公开 Office benchmark 尚未实现。
 
 ## 这一阶段解决什么问题
 
@@ -331,7 +331,7 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 ## 未实现和不能夸大的部分
 
 - 没有 LLM Judge/Verifier 线上能力。
-- 没有 Langfuse SDK sink、dataset/experiment/score 同步或历史 trace sync；当前只有本地 JSONL 与最小 OTLP JSON 导出。
+- 没有 OTel-native Langfuse SDK 接入、本地 span exporter 或 dataset/experiment/score 关联；当前只有直接追加的本地 JSONL 与最小 OTLP JSON 导出。
 - 没有 OCB、OfficeBench Office subset 或 PresentBench adapter 与真模型基线。
 - 当前 `office-automation` 尚未改名、扩展为通用 `OfficePython`。
 - 没有真实 DeepSeek/GPT 多模型质量-价格矩阵。
@@ -342,40 +342,42 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 
 ## P5.1 后续实施边界（尚未实现）
 
-### Langfuse 只作为日本区 Cloud 上的可选观测与实验后端
+### P5.1a：Langfuse Python SDK 作为唯一观测后端
 
-- Mybot `TraceHook` 继续是事件事实源；P5.1 先将当前创建事件与 `_append()` 解耦为 `TraceEvent -> normalize/redact -> CompositeTraceSink -> JsonlTraceSink + LangfuseTraceSink`。JSONL 是本地事实与故障兜底，Langfuse sink 只是官方 Python SDK 薄适配器。
-- 不安装 Langfuse Skill，不让前端 JS/TS SDK发送主 Trace，也不把 secret key 暴露给浏览器。
-- 不自研 Langfuse HTTP、鉴权、批处理或通用重试；优先复用锁定 SDK 版本已有的 observation 生命周期、batch、flush 和传输能力，只保留有限超时 shutdown 与 fail-open 错误记录。
-- 当前 `after_iteration` 是聚合摘要，无法独立计算每次 LLM/tool 延迟。P5.1 需要在 Provider 和 Runner 工具执行边界增加 start/end 事件，将 task/session、Agent/child、generation、tool、Policy/approval、Interaction、artifact/checkpoint/recovery 和 evaluator 映射为 Langfuse 原生 observation；没有原生类型时使用 span/event + `mybot.kind`。
-- 确定性 metric、Judge 编排和人工审计仍在 Mybot 产生版本化结果，Langfuse 只镜像 dataset/run metadata 与 score，不能反向改变 hard gate。
-- 日常默认只写脱敏 JSONL；Langfuse 失败不能阻塞任务，并提供后续 `observability sync` 上传历史 run。
-- 部署固定为日本区 Langfuse Cloud，注册网址和 SDK endpoint 都是 `https://jp.cloud.langfuse.com`；账号、项目和 Key 在日本区单独创建，不使用默认欧盟入口。
-- Cloud 模式不提供 Compose，也不要求本机下载 Redis、MinIO、ClickHouse 或 PostgreSQL。生产遥测 endpoint 由后端固定配置，不能由模型、Skill 或用户消息动态改写。
-- 默认只上传脱敏 metadata；原始 Office 文件、正文、artifact、密钥和个人信息不进入 Cloud。日本区属于跨境数据传输，真实公司或敏感数据在合规审查前保持 sink 关闭。
-- Mybot WebUI负责运行状态和评估摘要；Langfuse UI只负责开发者 Trace、Dataset、Experiment、Score 和失败下钻。
+- `TraceHook` 保留为 AgentHook 上的语义入口，负责 `mybot.*`、Runtime 语义和字段 allowlist；Interaction/Checkpoint/ArtifactStore 仍是 Runtime 状态真相源。
+- 锁定 Langfuse Python SDK，直接使用 OTel 上下文、observation、`propagate_attributes()`、`mask_otel_spans`、batch/retry/flush 和 Cloud 传输。不实现 `TraceEvent -> CompositeTraceSink`、生产 JSONL exporter、HTTP 客户端或发送队列。
+- 实施前 spike 验证 async/Subagent 父子关系、agent/generation/tool/guardrail 映射、usage/cost、有限时间 shutdown 和日本区 API 回读。测试使用 OTel in-memory exporter；普通任务不持久双写 JSONL。
+- SDK 随 Mybot 默认安装并锁定版本，不安装 Langfuse Skill，不让前端 JS/TS SDK发送主 Trace，也不把 secret key 暴露给浏览器。
+- `after_iteration` 只保留摘要；Provider 和 Runner 工具边界必须逐调用创建 generation/tool observation。
+- Cloud 默认关闭时，普通 Runtime 和本地 CI 继续运行，但不承诺持久 Trace 或离线补传；smoke/release 必须通过日本区真实写入、flush、回读和 deep link。
+- 默认只上传脱敏 metadata、hash、长度、状态和指标；原始 Office 文件、正文、完整 artifact、密钥和个人信息不进入 Cloud。日本区属于跨境数据传输，敏感数据保持关闭。
+- Langfuse UI 负责 Trace/Sessions、Dataset/Experiment、Scores、成本/延迟 Dashboard、Monitors 和 Annotation Queue；Mybot WebUI 不复制这些能力。
 
-### 三层评估
+### P5.1b：Langfuse Evaluation 主流程
 
-1. 确定性 hard gate 继续拥有最终否决权。
-2. 被测 Agent 固定 `gpt-5-6-luna`，日常语义 Judge 使用独立 `gpt-5-6-sol`；非官方 Judge 的结果不能混入官方榜单。
-3. 人工审计覆盖所有高风险异常、hard/Judge 冲突，并在首次基线和发布时抽样约 5%。
+1. Dataset 使用公开 benchmark 的 input、expected output、rubric、revision 和获许可 media；不能上传的 Office 原文件留在外部缓存，item 保存 URI/id 和 checksum。
+2. `run_experiment()` 负责并发、自动 Trace、错误隔离、item/run evaluator、Dataset Run 和比较；Mybot task callback 只负责执行 Luna Agent、Skill 和本地文件操作。
+3. OfficeBench 官方 evaluator、OpenXML/渲染/文件检查作为本地 SDK evaluator function 返回 Langfuse `Evaluation`；不创建第二套 EvalResult/Score 数据库。
+4. OCB/PresentBench 使用 Langfuse Custom LLM-as-a-Judge，通过 OpenAI-compatible LLM Connection 调用 `gpt-5-6-terra`，记录 `mybot_score` 和 reasoning；PresentBench 视觉媒体不兼容时只允许该维度使用本地 SDK evaluator fallback，Score 仍写 Langfuse。
+5. JSON Schema、正则、长度等轻量线上检查使用 Langfuse Code Evaluator；Policy/OCC/HITL/恢复仍是本地 Runtime hard gate，不交给异步 evaluator 决策。
+6. 人工审计使用 Langfuse Annotation Queue；smoke 全 12 case，release 约 5% 分层抽样并额外审核高风险、Judge 异常和视觉 `unscored`。不存在 `audit-sync` 和本地 `human_audit` 真相源。
+7. `export --dataset-run` 读取 Langfuse 的完成状态、Scores 和 Annotation Queue，生成 README 快照；Dataset Run、Score、Annotation 是评估真相源。
 
-不把业务对话量、满意度、CPU、内存或 GPU 纳入 P5.1。只采集 LLM/tool 成功率和延迟、Token/成本、Agent steps、等待/恢复、artifact 验证与评估 score。
+### 结果口径、环境与恢复
 
-### 首批公开 benchmark
-
-- OCB：Office 原生文件理解。
-- OfficeBench Office subset：Word/Excel 单应用和 Word+Excel 创建、读取、编辑与跨文件任务；排除邮件、日历、OCR 和 Web，结果标记 `OfficeBench-Office/Mybot adapter`。
-- PresentBench：完整 PPT 创建、材料忠实度、内容完整性与视觉质量。
-
-`SpreadsheetBench Verified` 暂列高级 Excel 选做项。三套结果分别发布，不合成 Office 总分；第三方数据与 evaluator 固定 revision/SHA/license 并保存在外部缓存。
+- OfficeBench 使用 `evaluation_source=officebench_official` 和 `official_score`；OCB/PresentBench 使用 `evaluation_source=langfuse_terra`、`mybot_score` 和 `Mybot evaluation`，不得标记 `official-comparable`。
+- 不配置 Azure/Gemini/Anthropic Judge SDK；Terra 凭据、Base URL、model name 和 structured-output/tool-calling 配置放在 Langfuse Project LLM Connection。
+- 三套 adapter 共用独立 benchmark venv，只安装本地 task/evaluator 必需依赖；上游 revision 固定为 OCB `f5b560356c8c5fff78569307d655f76d9ea9f6f7`、OfficeBench `b978b808667c32b52ce19a67ce1def1de9ae02b7`、PresentBench `2f01aaf2957004f4f136796147e11f7e52d84684`。
+- 每个 revision 使用新的不可变 Dataset 名称或固定 version；Dataset metadata 记录 SHA/license、adapter/constraints、Python、LibreOffice、Skill、model 和 evaluator config。实验 fingerprint 写入 Langfuse metadata，不建本地 run 数据库。
+- release 固定 `prepare -> estimate -> run_experiment -> Annotation Queue -> export`；失败 item 首版使用带 `parent_run_id` 的 retry Dataset Run，不实现自定义 status/resume 状态机。
+- `ci` 完全离线；`office-smoke` 三套各 4 case；`office-release` OCB 全量、固定 OfficeBench subset 和 PresentBench full/50%/25% 独立 Dataset/series。三套结果不合成总分。
+- 成本估算和用户确认仍由 Mybot 在调用前完成；实际 token/cost、P50/P95、Score 趋势和 Dashboard 全由 Langfuse 产生。
 
 ## 面试怎么讲
 
 ### 30 秒回答
 
-> P5 我把 Agent 测试分成纯状态机、无 Key cassette smoke 和手动真模型 benchmark。Cassette 规范化 request 并固定模型响应，prompt 或工具协议变化会给可读 diff；TraceHook 复用现有 Hook 输出脱敏 OTel-shaped JSONL，并支持父子 span 和 OTLP 导出；Eval 注册 12 个 metric，对数字、文件、OpenXML、权限、OCC、HITL 和 Subagent 做硬门，红队看越权副作用是否为零，而不是只看模型有没有识别攻击。
+> P5 我把 Agent 测试分成纯状态机、无 Key cassette smoke 和 Langfuse Experiment。Cassette 规范化 request 并固定模型响应；TraceHook 在 Provider/Tool 边界创建 Langfuse OTel observation；Langfuse Dataset、Experiment、SDK evaluator、Terra LLM-as-a-Judge、Scores 和 Annotation Queue 负责真模型评估与人工审核，本地只保留文件/Runtime hard gate。
 
 ### 高频追问
 
@@ -404,11 +406,12 @@ fixture 和报告都去掉不稳定时间字段后，字节级比较能发现 me
 5. OpenXML 校验比“文件能打开”多检查了什么？
 6. 红队为什么评价攻击后果而不是模型识别率？
 7. 当前 Subagent comparison 能证明什么，不能证明什么？
-8. 为什么 Langfuse 不替代 Mybot TraceHook，也不作为 Runtime 状态源？
-9. hard gate、Sol Judge 和人工审计怎样分工？
+8. 为什么 Langfuse SDK 可以替代本地 Trace/Experiment/Score/Annotation 平台，而不能替代 Mybot 语义埋点和 Runtime 状态源？
+9. Experiment Runner、SDK evaluator、Langfuse LLM-as-a-Judge、Code Evaluator 和 Annotation Queue 怎样分工？
+10. 为什么本地 Office 文件 evaluator 仍可运行在 Experiment Runner 进程中，却不构成第二套评估平台？
 
 ## 对后续阶段的影响
 
-- P6 Research 应直接复用 trace/eval，不创建 Research 私有观测通道。
-- P7 benchmark、README 和 demo 的所有数字都应来自这里的可复现报告，并明确区分 deterministic、fake-provider、真模型 Judge 和人工审计。
+- 选做 P6 Research 若实施，应直接复用 trace/eval，不创建 Research 私有观测通道。
+- P7 benchmark 和 README 最终结果页的所有数字都应来自 Langfuse Dataset Run/Score/Annotation 导出，并明确区分 deterministic、fake-provider、官方 evaluator、Terra Judge 和人工审计。
 - P8 父子 trace、loop guard 和 single/multi 对比由 P5 统一记录和展示。

@@ -8,7 +8,7 @@
 > 2026-07-18：plan-only 确认已接入持久化 `InteractionRequest`，以 `awaiting_plan_confirmation` 挂起并在 typed WebSocket/WebUI 回复后恢复原 tool call。
 > 2026-07-20：修复 plan-only 完成后计划卡片右下角“执行计划”缺失；挂起工具保留已成功的 plan result 事件，按钮直接响应 hash-bound `plan_confirmation`。
 > 2026-07-20：计划确认不再额外展示通用 InteractionRequest 卡片；页面只保留计划卡片右下角“执行计划”入口。
-> 2026-07-22 规划：后续将 `office-automation` 改名并扩展为通用 `OfficePython`（Skill id `office-python`）；当前代码、manifest、测试和配置尚未迁移，本说明仍以真实 id `office-automation` 描述现状。
+> 2026-07-23 规划：P1.1 将 `office-automation` 直接改名并扩展为通用 `OfficePython`（Skill id `office-python`），不保留旧 id 兼容迁移；当前代码、manifest、测试和配置尚未实施，本说明仍以真实 id `office-automation` 描述现状。
 
 ## 阶段目标
 
@@ -445,11 +445,15 @@ bun run build
 
 用户已决定把现有 Python Skill 从单一周报/PPT 链扩展为通用 Office baseline，并将展示名改为 `OfficePython`、Skill id 改为 `office-python`。计划中的真实边界是：
 
-- 使用 `python-docx + lxml`、`openpyxl`、`python-pptx` 实现 DOCX/XLSX/PPTX 的 `inspect/query/create/apply/validate/render` 结构化 CLI。
-- LibreOffice headless 只承担打开、重算、转换和渲染验证，不作为 Agent 的 GUI action space。
-- 当前 report/slide DSL 移到 `recipes/weekly-report/`，保留为兼容 recipe；它不再定义整个 Skill 的能力上限。
+- 使用 `python-docx + lxml`、`openpyxl`、`python-pptx` 实现 DOCX/XLSX/PPTX 的 `inspect/query/create/apply/validate/render` 结构化 CLI；Skill 只调用单一 `scripts/office.py`，通过 request/result JSON 文件通信，不新增 Runtime typed tool。
+- selector 使用格式中立结构，不模仿 OfficeCLI DOM；输入文件始终只读，create/apply/render 只能写 task artifact，批量 apply 必须全有或全无。
+- LibreOffice headless 只承担打开、重算、转换和渲染验证，不作为 Agent 的 GUI action space，也不由项目下载。CI 不依赖它，smoke/release 缺失或版本漂移即失败。
+- 当前机器只发现 Codex runtime 内的 `LibreOfficeDev 26.8.0.0.alpha0`，没有可作为项目交付资产的系统 LibreOffice；正式 release 需要外部预装并锁定版本。
+- 删除当前 report/slide DSL、专用 renderer、周报 workflow 和 `tests/fixtures/office_weekly/`；不迁移旧周报数据、固定 DSL、expected metrics/constraints 或业务回归。保留 `_shared/office_core`、verified facts schema 和通用验证器，另建只覆盖新 JSON 接口与三种格式的最小中立 fixture；OfficeCLI 兼容 helper 不得进入公平比较路径。
+- 删除依赖旧 fixture/DSL 的周报专用测试；`test_office_weekly.py` 中仍有效的 OfficeCLI launcher/provider contract case 移入 `test_officecli_runtime.py`，OfficePython 另建中立接口测试。
 - tracked changes、复杂母版/动画、SmartArt 和 Python 库不能可靠保真的 OOXML 特性返回结构化 `unsupported`，不能以“命令成功”掩盖能力缺口。
-- 迁移期兼容旧 `office-automation` 的 `disabledSkills`、`@skill`、manifest 和历史会话；只有代码与测试完成后，README/benchmark 才将其称为 `OfficePython`。
+- 直接将目录、manifest 和 id 改为 `office-python`，删除旧 `office-automation` id、显式路由和历史兼容迁移；启动时只从 `disabledSkills` 删除旧 id，不迁移为新 id。
+- Python 依赖使用精确 pip constraints，不引入 uv/Poetry。
 - 公平比较时两个 Skill 使用相同输入、Luna、Policy、约束和 evaluator；分别报告 coverage 与共同任务质量，不允许 OfficePython 调用 OfficeCLI，也不通过 prompt 人为偏袒 OfficeCLI。
 
 这段是后续实施说明，不是当前代码能力。当前 `office-automation` 仍是窄而确定的 grounded report/deck 工作流。

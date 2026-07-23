@@ -349,4 +349,4 @@ Artifact 是任务数据和文件的事实记录；Checkpoint 是执行控制状
 
 - P5 的 replayability、artifact completion、OpenXML 和 trace 都以 P4 metadata 为证据。
 - P8 child 产物必须进入固定 child root，父 Agent 再汇总或发布正式 artifact。
-- P7 demo 可以真实演示输入快照、lineage、kill→resume 和 uncertain 决策。
+- P7 最终结果页可以用可复现报告展示输入快照、lineage、kill→resume 和 uncertain 决策。

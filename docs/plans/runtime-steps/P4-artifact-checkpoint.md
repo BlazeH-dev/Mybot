@@ -85,4 +85,4 @@ checkpoint 保存 task/plan/step、assistant tool call、completed/pending/uncer
 - completed 跳过、pending 安全恢复、uncertain 转 required。
 - 三档 InteractionRequest 跨刷新/重启恢复，回答/deadline 只消费一次，等待期不调用 provider。
 - checkpoint 损坏、plan hash 改变、input/artifact 缺失均拒绝恢复。
-- kill→resume demo 能恢复可验证 Office 任务，未知副作用不自动重试。
+- kill→resume 回归报告能验证 Office 任务恢复，未知副作用不自动重试。

@@ -14,10 +14,10 @@
 - 用户直接提供的数字可登记为 `source=user_provided`。
 - 两个 Skill 的关键数字都必须回溯到相同 fact id。
 
-### `office-automation`
+### 当前 `office-automation`
 
-- 独立 Python Skill，不依赖 OfficeCLI。
-- 保留 report/slide DSL、validator、`python-docx`、`python-pptx` 和 quality report。
+- 当前是独立 Python Skill，不依赖 OfficeCLI。
+- 当前仍保留 report/slide DSL、validator、`python-docx`、`python-pptx` 和 quality report；这些窄工作流只属于 P1 Core 的历史实现，不是 P1.1 的目标接口。
 - 不再包含 backend 切换、OfficeCLI 参数或 OfficeCLI 能力说明。
 
 ### `officecli`
@@ -31,7 +31,7 @@
 ### 路由与开关
 
 - 普通 Office 请求默认优先 `officecli`。
-- 用户明确要求 Python 时使用 `office-automation`。
+- 用户明确要求 Python 时当前使用 `office-automation`；P1.1 完成后只使用 `office-python`。
 - 比较任务可运行两个 Skill，共享输入和 facts。
 - `disabledSkills` 可分别禁用；OfficeCLI unavailable 只影响 `officecli`，回退时必须说明原因。
 - 路由写在 Skill description/manifest，不在 Runtime 写 Office 私有分支。
@@ -72,15 +72,25 @@ OfficeCLI Skill：必要时的 schema/facts、命令或 batch、Office 成品、
 
 ## P1.1 OfficePython 通用化（待实施）
 
-当前代码中的 `office-automation` 是面向 Excel facts -> 周报/PPT 的窄工作流。后续将其改名为展示名 `OfficePython`、Skill id `office-python`，扩展成不依赖 OfficeCLI 的通用 Python Office 基线；在代码迁移完成前，现有目录、manifest 和配置仍以 `office-automation` 为准，不得提前宣称已改名。
+当前代码中的 `office-automation` 是面向 Excel facts -> 周报/PPT 的窄工作流。P1.1 直接将其改名为展示名 `OfficePython`、Skill id `office-python`，删除旧 id 和旧窄工作流，扩展成不依赖 OfficeCLI 的通用 Python Office 基线；实施完成前，README、benchmark 和阶段出口不得宣称新能力已实现。
 
 ### 能力与接口
 
 - DOCX 使用 `python-docx + lxml`，XLSX 使用 `openpyxl`，PPTX 使用 `python-pptx`；LibreOffice headless 只负责打开、重算、转换和渲染验证。
-- 提供统一的 `inspect/query/create/apply/validate/render` JSON CLI，覆盖文本、段落、样式、列表、表格、图片、页眉页脚、工作表、单元格、公式、图表、幻灯片和基础布局。
-- 原 report/slide DSL 与周报链移入 `recipes/weekly-report/`，作为可选 recipe，不再代表整个 Skill。
+- Skill 只调用独立 Python 入口 `scripts/office.py`，通过 request/result JSON 文件通信；不新增 Runtime typed tool。
+- request 固定包含 `schema_version`、`operation`、`format`、输入/输出 artifact 引用、中立 `selector`、payload 和 options；result 固定包含 `status`、matches/changes、artifact、validation、rendered assets、warnings 和 error。
+- 提供统一的 `inspect/query/create/apply/validate/render` JSON CLI，覆盖 DOCX 文本/段落/样式/列表/表格/图片/页眉页脚、XLSX 工作表/单元格/公式/图表和 PPTX 幻灯片/基础布局。
+- selector 保持格式中立，不模仿 OfficeCLI DOM；输入文件始终只读，`create/apply/render` 只能写 task artifact。批量 apply 在临时目录中全量执行，全部成功后原子发布，失败不发布输出。
+- 删除 report/slide DSL、专用 renderer、周报 workflow 和原 `tests/fixtures/office_weekly/`；不迁移旧周报数据、固定 DSL、expected metrics/constraints 或业务回归。保留 `_shared/office_core`、verified facts schema、通用验证器和不进入公平比较路径的兼容 helper；P1.1 另建只覆盖新 JSON 接口与三种格式的最小中立 fixture。
+- 删除依赖旧 fixture/DSL 的周报专用测试；仍有效的 OfficeCLI launcher/provider contract case 移入现有 `test_officecli_runtime.py`，OfficePython 新接口使用独立中立测试，不继续沿用 `test_office_weekly.py` 的业务命名和断言。
 - tracked changes、复杂母版/动画、SmartArt 和库本身无法可靠保真的 OOXML 特性必须显式返回 `unsupported`，不能静默降级或伪造成功。
-- `office-automation -> office-python` 提供配置、`disabledSkills`、显式 `@skill` 和历史会话兼容迁移；迁移稳定后再删除旧 id。
+- 直接将目录、展示名和 Skill id 改为 `office-python`；旧 `office-automation` id、显式路由和历史兼容迁移代码删除。启动时仅从 `disabledSkills` 删除旧 id，不迁移成新 id，也不恢复旧会话路由。
+
+### 运行环境
+
+- Python 依赖使用独立、精确的 pip constraints；不引入 uv/Poetry，不把 OfficeBench 的完整旧依赖表安装进 Mybot 主环境。
+- LibreOffice 不由项目下载或打包。`prepare`/release 环境锁记录 `soffice` 的真实路径、版本和校验信息；smoke/release 缺失或版本漂移即失败，CI 不依赖 LibreOffice。
+- 当前机器可见的 `LibreOfficeDev 26.8.0.0.alpha0` 来自 Codex runtime，不能作为项目交付资产或跨机器基线；正式 release 必须使用外部预装且显式锁定的版本。
 
 ### 公平比较
 
@@ -92,6 +102,6 @@ OfficeCLI Skill：必要时的 schema/facts、命令或 batch、Office 成品、
 ### P1.1 出口
 
 - [ ] `office-python` 可独立完成 DOCX/XLSX/PPTX 的读取、创建、常用编辑、验证和渲染。
-- [ ] 旧 `office-automation` 配置和显式路由可无损迁移。
-- [ ] 周报 recipe 回归结果不低于当前确定性基线。
+- [ ] 旧 id、目录、显式路由和旧 DSL/周报链已删除；`disabledSkills` 清理行为有测试。
+- [ ] 原周报 fixture 和专用测试已删除；有效 OfficeCLI contract case 已归位，新建的最小中立 fixture、shared facts、OpenXML/渲染验证器回归通过。
 - [ ] 两个 Skill 在固定 smoke 上生成 capability coverage 与共同任务比较报告。
