@@ -66,9 +66,9 @@ P0-P8 阶段不是互不相关的功能，而是逐层回答工程问题；当�
 | [P3 Sandbox / Policy](./P3-policy权限层代码变更说明.md) | 已完成 | Exec/session/CLI Apps 统一 `LaunchSpec`，Seatbelt/Bubblewrap、受批直接 curl、Policy/HITL/OCC 与 fail-closed 已落地。 |
 | [P3.1 Workspace / Worktree](./P3.1-worktree隔离代码变更说明.md) | 选做（未实现） | 已完成 WebUI per-chat worktree、HEAD 基线、持久绑定、fork 和保守清理的契约设计；未排期，不计入 Runtime Core 验收。 |
 | [P4 Artifact / Checkpoint](./P4-artifact-checkpoint代码变更说明.md) | 已完成 Core | 输入快照、artifact/lineage、hash-bound checkpoint、pending/uncertain 恢复已落地；不承诺通用 exactly-once。 |
-| [P5 Trace / Eval](./P5-trace-eval代码变更说明.md) | Core 已完成 / P5.1 待实施 | cassette、脱敏 trace、12 个确定性 metric 和红队已落地；Langfuse SDK observation、Dataset/Experiment、SDK evaluator、Terra Judge、Cloud/Annotation Queue、独立 benchmark venv 和三套 adapter 未实现。 |
+| [P5 Trace / Eval](./P5-trace-eval代码变更说明.md) | P5.1 代码完成，外部 smoke 待配置 | cassette、脱敏 trace、Langfuse SDK observation、Dataset/Experiment、OfficeBench evaluator、三套 adapter、独立 benchmark venv、Annotation Queue/export contract 已落地；Terra Judge、Cloud真实回读、人工审核和发布分数待配置。 |
 | [P6 通用性扩展](./P6-通用性扩展代码变更说明.md) | 选做（未实现） | 仅完成 Research 最小闭环设计，未排期，不计入项目冻结和最终验收。 |
-| [P7 最终交付](./P7-面试交付物代码变更说明.md) | 持续维护 | 已有确定性 benchmark 与 OfficePython；三套公开 benchmark、Langfuse Experiment/Annotation Queue、smoke/release Cloud 硬门、export 快照和 README 最终结果页尚未完成。 |
+| [P7 最终交付](./P7-面试交付物代码变更说明.md) | 代码完成，外部证据待配置 | README 最终结果页、Mermaid 架构图、CI/benchmark 入口、三套 adapter、Langfuse Experiment/Annotation Queue/export contract 已落地；真实 Cloud/Terra/人工审核结果尚未发布。 |
 | [P8 多 Agent 编排](./P8-多agent编排代码变更说明.md) | 已完成 Core | active-plan gate、最多 5 个 direct child、禁止嵌套、隔离 artifact/HITL/trace 已落地；共享文件租约未实现。 |
 
 ## 一条任务在系统里的总调用链

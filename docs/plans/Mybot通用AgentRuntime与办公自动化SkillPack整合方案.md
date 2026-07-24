@@ -192,7 +192,7 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 | [P8 Subagent](runtime-steps/P8-多agent编排.md)                       | 已完成 | 数量/嵌套/权限/生命周期/上下文/产物治理                            | 父子 trace 完整并有单/多 Agent 对比                     |
 | [P5 Trace/Eval/Observability](runtime-steps/P5-trace-eval.md)              | P5.1 代码完成 / 外部 smoke 待配置 | Langfuse SDK observation、Dataset/Experiment、SDK evaluator、Terra Judge、Annotation Queue | 本地硬门可回归；完成日本区配置后才发布真模型质量 |
 | [P6 Research](runtime-steps/P6-通用性扩展.md)                          | 选做（未实现） | 1–2 天最小 Research Skill 通用性验证                  | 若启动，不改 Runtime 核心即可复用治理设施                   |
-| [P7 交付物](runtime-steps/P7-面试交付物.md)                               | 持续  | benchmark、README 最终结果页、架构/quickstart       | 陌生人可复现，表述与实际完成度一致                             |
+| [P7 交付物](runtime-steps/P7-面试交付物.md)                               | 代码完成 / 外部证据待配置  | benchmark、README 最终结果页、架构/quickstart       | 本地入口可复现；日本区 Cloud、Terra Judge、人工审核完成后才发布真实结果                             |
 
 详细实施只看对应 `docs/plans/runtime-steps/P*.md`。
 
