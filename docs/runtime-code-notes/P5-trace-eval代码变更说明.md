@@ -373,6 +373,22 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 
 ## P5.1 外部配置与发布前置
 
+### 用户必须提供或确认的配置
+
+| 配置项 | 精确位置/格式 | 代码怎样使用 | 验证硬门 |
+| --- | --- | --- | --- |
+| Luna API Key/Base URL | `~/.nanobot/config.json`：`providers.openai.apiKey/apiBase` | `gpt-5-6-luna` preset 解析为 model `gpt-5.6-luna`，执行 Agent task | 真模型调用成功；Key 不出现在 Trace/Git |
+| Langfuse Project Key | `observability.langfuse.publicKey/secretKey` 或对应 `LANGFUSE_*` | `LangfuseRuntime` 连接 `https://jp.cloud.langfuse.com` | `auth_check()`、write、flush、API readback、deep link 全通过 |
+| 内容开关 | `observability.langfuse.captureContent` | `false` 时 span masking 与 Dataset redaction；`true` 时允许已审公开内容进入 Run/Judge | 未审数据必须为 `false`；真模型 run 要求 `true` |
+| Terra Connection | Langfuse LLM Connection：OpenAI-compatible Base URL/Key，model `gpt-5.6-terra` | Cloud Judge 产生 OCB/PresentBench `mybot_score` | Connection test、filter、100% sampling、每 item Score/reasoning |
+| LibreOffice | `--soffice <绝对路径>` + `--soffice-version '<完整输出>'` | prepare fingerprint 与 Office evaluator/render 环境 | 稳定 release；路径存在且版本完全匹配 |
+| 模型价格 | `benchmarks/office/profiles.json` 四项美元/百万 token 非零值 | `estimate_payload()` 计算调用前预算 | `pricing_configured=true`，用户才可传 `--confirm-cost` |
+| 许可/跨境审查 | 固定 revision 的 OCB、OfficeBench、PresentBench 内容审查记录 | 决定是否允许 `--allow-licensed-content` | 未全部批准只生成 redacted Dataset，禁止真实 run |
+
+完整操作顺序维护在 `docs/plans/runtime-steps/P5-trace-eval.md` 的“P5.1 用户配置与真实运行步骤（必须按顺序）”：无 Key CI -> Luna Provider -> 日本区 Project -> 稳定 LibreOffice -> 价格 -> 许可 -> redacted Cloud preflight -> Terra Connection/Judge -> licensed prepare -> estimate -> 六个 smoke Run -> PresentBench media spike -> 六个 Queue 人审 -> 逐 Run export -> 恢复 `captureContent=false` -> release。
+
+实现层必须保留以下 fail-closed 语义：价格为零不能 run；未带许可确认不能 run；`captureContent=false` 不能 run licensed Dataset；缺 `mybot_score/official_score`、缺 `mybot-human-review`、Queue 未完成或 deep link 不可构造都不能 export。当前发现的 `LibreOfficeDev 26.8.0.0.alpha0` 不能作为 release 证据。
+
 ### P5.1a：Langfuse Python SDK 作为唯一观测后端
 
 - `TraceHook` 保留为 AgentHook 上的语义入口，负责 `mybot.*`、Runtime 语义和字段 allowlist；Interaction/Checkpoint/ArtifactStore 仍是 Runtime 状态真相源。

@@ -196,14 +196,16 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 
 详细实施只看对应 `docs/plans/runtime-steps/P*.md`。
 
+P5.1/P7 的用户外部配置、真实 smoke、人工审核与发布命令统一按 `runtime-steps/P5-trace-eval.md` 的“P5.1 用户配置与真实运行步骤（必须按顺序）”执行；任何 Key、许可、稳定 LibreOffice、价格、Judge、Score、Queue 或 deep link 硬门缺失时不得发布结果。
+
 ## 6. 顺序、cutline 与选做项
 
 依赖顺序：
 
 ```text
 已完成主链：P0 → P1 → P2 → P3 → S5.0 → P4 → P8 → P5 Core
-已完成追加阶段：P1.1 OfficePython
-后续主线：P5.1 Observability/Eval → P7
+已完成代码追加阶段：P1.1 OfficePython → P5.1 Observability/Eval → P7
+待外部交付闭环：日本区 Cloud smoke → Terra Judge/PresentBench media → Annotation Queue → Dataset Run export
 选做候选：P6 Research 最小闭环；P3.1 Worktree MVP
 ```
 
@@ -211,7 +213,7 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 
 - P1、P2、P3、P4、P8；P1.1 必须完成 OfficePython 通用化、直接改名、旧窄工作流/周报 fixture 删除和最小中立 fixture 回归。
 - S5.0 的 3–4 个关键 cassette。
-- P5 Core：trace、确定性 eval/report、安全红队；P5.1 完成 Langfuse SDK observation、Dataset/Experiment、SDK evaluator、Terra LLM-as-a-Judge、Annotation Queue 和 export。
+- P5 Core：trace、确定性 eval/report、安全红队；P5.1 的 Langfuse SDK observation、Dataset/Experiment、SDK evaluator、Terra Judge/Annotation Queue/export 代码与 contract 已完成，真实 Terra Connection、Cloud Score、人审和发布仍按外部 runbook 验收。
 - P7 benchmark、README 最终结果页、架构/quickstart 和最终结果证据。
 
 每周只接受“完成一个可验证闭环”而不是多项各做 60%；阶段结束必须更新测试、指标和证据位置。

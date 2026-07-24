@@ -226,7 +226,7 @@ OfficePython 是公平 Python baseline，不得通过 prompt、Dataset 或 evalu
 |------|------|------|------|
 | **S8 Benchmark CLI** | 19. 新建 `nanobot/cli/benchmark.py`，实现 `prepare/estimate/run/export` 子命令<br>20. `prepare`：校验 OCB/OfficeBench/PresentBench 资产、revision/SHA/license，创建 Langfuse Dataset（如果 enabled）<br>21. `estimate`：计算 token/cost 预算，要求用户确认 | cli/benchmark.py | `nanobot benchmark prepare --profile ci` 成功，不依赖 Langfuse |
 | **S9 Experiment Runner** | 22. `run` 子命令封装 `langfuse.run_experiment(data=dataset, task=_mybot_task_callback, evaluators=...)`<br>23. `_mybot_task_callback(item)` 执行 Luna Agent + Skill，返回 artifact 路径/内容<br>24. OfficeBench 官方 evaluator 作为 SDK evaluator function，返回 `Evaluation(value=score, comment=...)` | Experiment Runner 可用 | `nanobot benchmark run --profile office-smoke` 创建 Dataset Run，Langfuse 有 24 traces |
-| **S10 LLM-as-a-Judge** | 25. 在 Langfuse UI 配置 Terra OpenAI-compatible LLM Connection（base_url/api_key/model=gpt-5-6-terra）<br>26. 配置 OCB/PresentBench Custom LLM-as-a-Judge（rubric/prompt template）<br>27. 设置 Dataset filter、scope、sampling | LLM Connection + Judge 配置 | Langfuse 对 Dataset Run 自动执行 Judge，生成 `mybot_score` + reasoning |
+| **S10 LLM-as-a-Judge** | 25. 在 Langfuse UI 配置 Terra OpenAI-compatible LLM Connection（base_url/api_key/model=`gpt-5.6-terra`）<br>26. 配置 OCB/PresentBench Custom LLM-as-a-Judge（rubric/prompt template）<br>27. 设置 Dataset filter、scope、sampling | LLM Connection + Judge 配置 | Langfuse 对 Dataset Run 自动执行 Judge，生成 `mybot_score` + reasoning |
 | **S11 SDK Evaluator** | 28. OpenXML/渲染/文件检查作为本地 SDK evaluator function（同步函数，返回 `Evaluation`）<br>29. 注册到 `run_experiment(evaluators=[officebench_official, openxml_check, ...])` | 本地 evaluator 集成 | Dataset Run 有 `official_score` + `openxml_valid` Score |
 | **S12 Annotation Queue** | 30. `export` 子命令通过 Langfuse API 查询 Dataset Run 的 Scores、Annotation Queue 状态<br>31. 判断审核完整性（smoke 全部审核，release 抽样审核完成）<br>32. 生成去敏 JSON/Markdown 快照，更新 README 受控区块 | export 功能 | `nanobot benchmark export --dataset-run <id>` 生成 benchmarks/latest.md |
 
@@ -237,6 +237,251 @@ OfficePython 是公平 Python baseline，不得通过 prompt、Dataset 或 evalu
 - 已新增 `nanobot benchmark prepare/estimate/run/export`、三个固定 revision/license 的 adapter、独立 benchmark venv、OCB 固定行号 smoke、OfficeBench 官方 `evaluation.py` 原样 evaluator、Dataset item 去敏、隔离 testbed/reference、Annotation Queue 建立与 export 硬门。
 - 已新增离线 contract 测试；`tests/cli/test_benchmark_contract.py`、`tests/runtime/test_langfuse_observability.py` 与 Office Skill/runtime 定向测试通过。
 - 尚未产生可发布的真实质量数字：`prepare/run/export` 的 Cloud 写入、Terra `mybot_score`、PresentBench media spike、人工 Queue 完成和真实 LibreOffice release gate 需要用户配置/审核后执行；仓库不得填入占位分数。
+
+### P5.1 用户配置与真实运行步骤（必须按顺序）
+
+下面区分三套不同凭据，不能混用：
+
+| 配置 | 保存位置 | 用途 | 是否进入仓库 |
+| --- | --- | --- | --- |
+| Luna 中转站 Key/Base URL | `~/.nanobot/config.json` 的 `providers.openai.*` | Mybot 被测 Agent 调用 `gpt-5.6-luna` | 否 |
+| Langfuse Project Public/Secret Key | `~/.nanobot/config.json` 的 `observability.langfuse.*`，或 `LANGFUSE_*` 环境变量 | SDK 向日本区 Project 写 Trace、Dataset、Run、Score | 否 |
+| Terra 中转站 Key/Base URL | Langfuse Project 的 LLM Connection | OCB/PresentBench Judge 调用 `gpt-5.6-terra` | 否；也不保存到 Mybot 前端 |
+
+#### 第 0 步：先验证无 Key 基线
+
+```bash
+cd /Users/wuhao.597/develop/Mybot
+source venv/bin/activate
+nanobot benchmark run --profile ci
+```
+
+当前预期是 `47 passed`。这一步不访问网络、不读取任何真实模型或 Langfuse Key；失败时先修本地代码或依赖，不继续真实 benchmark。
+
+#### 第 1 步：配置被测 Agent 的 Luna Provider
+
+只把以下字段合并进 `~/.nanobot/config.json`，不要覆盖已有配置，也不要把真实值写入仓库文档：
+
+```json
+{
+  "providers": {
+    "openai": {
+      "apiKey": "<GPT-5.6 中转站 API Key>",
+      "apiBase": "https://<GPT-5.6 中转站地址>/v1"
+    }
+  }
+}
+```
+
+- Agent preset 固定为 `gpt-5-6-luna`，实际发送给 Provider 的 model 是 `gpt-5.6-luna`；两者已经内置，无需新建 model preset。
+- Terra 可以复用同一中转站，但 Judge 凭据必须在第 7 步另存到 Langfuse LLM Connection；Langfuse Project Key 不能当作模型 Key。
+- 配置文件只保存在用户目录，建议执行 `chmod 600 ~/.nanobot/config.json`。
+- 手工修改配置后，benchmark CLI 的新进程会直接读取；已运行的 gateway 若要产生普通聊天 Trace，需要重启。
+
+#### 第 2 步：在日本区创建 Langfuse Project 并配置 SDK Key
+
+1. 只打开 `https://jp.cloud.langfuse.com`，注册或登录日本区账号；不要使用欧盟/美国区 Project 的 Key。
+2. 新建专用 Project，例如 `Mybot Public Benchmark`。公开 benchmark 与个人/公司数据不要混在同一 Project。
+3. 在 Project Settings 的 API Keys 页面新建 Key Pair，记录 `public key` 和 `secret key`；Secret 只显示一次时立即存入密码管理器。
+4. 先以 metadata-only 模式合并以下配置：
+
+```json
+{
+  "observability": {
+    "langfuse": {
+      "enabled": true,
+      "baseUrl": "https://jp.cloud.langfuse.com",
+      "publicKey": "<pk-lf-...>",
+      "secretKey": "<sk-lf-...>",
+      "captureContent": false
+    }
+  }
+}
+```
+
+Key 也可通过 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY` 和 `LANGFUSE_BASE_URL` 提供，但 `enabled` 与 `captureContent` 仍必须在 config 中明确设置。Base URL 必须是 `https://jp.cloud.langfuse.com`；不要写默认欧盟地址。日志、截图、issue、commit 和导出文件都不得包含 Secret Key。
+
+#### 第 3 步：安装并锁定稳定版 LibreOffice
+
+1. 从 LibreOffice 官方渠道安装稳定 release，不使用 Codex bundled runtime 中的 `LibreOfficeDev`、alpha、beta 或 nightly。
+2. 找到真实 `soffice` 绝对路径。macOS 常见示例为 `/Applications/LibreOffice.app/Contents/MacOS/soffice`，实际以本机安装为准。
+3. 运行并保留完整输出：
+
+```bash
+/absolute/path/to/soffice --version
+```
+
+4. 后续每次 `prepare` 同时传入相同的绝对路径和上述输出的完整原文。路径不可用或版本文本不完全一致时 CLI 会失败。
+
+当前机器已发现的 Codex runtime `soffice` 返回 `LibreOfficeDev 26.8.0.0.alpha0`；它只能用于开发排查，不能作为 smoke/release 发布证据。
+
+#### 第 4 步：填写 Luna/Terra 真实价格
+
+编辑 `benchmarks/office/profiles.json` 的 `pricing_usd_per_million_tokens`：
+
+```json
+{
+  "input": 0.0,
+  "output": 0.0,
+  "judge_input": 0.0,
+  "judge_output": 0.0
+}
+```
+
+四个值依次是 Luna 输入、Luna 输出、Terra Judge 输入、Terra Judge 输出的美元/百万 token 价格。用中转站实际计费表填写非零值，不把 Luna 价格复制成 Terra 价格，也不把人民币/千 token 价格直接填入。价格为私密合同信息且不能提交时必须先停止：当前 CLI 没有私密外部价格覆盖，不能用假值绕过成本确认。
+
+#### 第 5 步：完成数据许可与跨境上传确认
+
+逐项审查 `benchmarks/office/profiles.json` 固定的 revision 和许可证：
+
+- OCB code：MIT；Dataset：CDLA-Permissive-2.0。
+- OfficeBench：Apache-2.0。
+- PresentBench code：Apache-2.0；prompt/rubric 标记为 CC-BY-NC-4.0，源材料保留各自原始条款。
+
+必须确认 prompt、expected output、rubric、引用文件和需要的渲染媒体均可上传日本区 Cloud。公司、客户、个人、受保密约束或许可不明确的数据一律不上传。
+
+- 尚未全部确认：保持 `captureContent=false`，第 6 步只能执行 redacted prepare；不得传 `--allow-licensed-content`，也不得运行真模型。
+- 全部确认：先记录审查人、日期、固定 revision 和结论，再将 `captureContent` 临时改为 `true`，并在 licensed prepare 中显式传入 `--allow-licensed-content`。
+
+`captureContent=true` 是进程级内容开关，会让该配置下的普通 Agent Trace 也可能包含正文。开启期间不要运行个人/公司任务；benchmark 完成后必须在第 13 步恢复为 `false`。
+
+#### 第 6 步：先做 metadata-only 日本区 Cloud preflight
+
+保持 `captureContent=false`，不带 `--allow-licensed-content`：
+
+```bash
+nanobot benchmark prepare --profile office-smoke \
+  --soffice /absolute/path/to/soffice \
+  --soffice-version '<完整的 soffice --version 输出>'
+```
+
+首次执行会在 `~/.cache/nanobot/benchmarks/` 建立独立 venv、下载固定 revision、创建 `redacted` Dataset，并自动完成日本区写入、flush、API 回读和 deep link smoke。成功标准：
+
+1. CLI 输出 `Prepared office-smoke`。
+2. `~/.cache/nanobot/benchmarks/office-smoke.prepared.json` 包含 `cloud_smoke.trace_id` 和 `cloud_smoke.deep_link`。
+3. deep link 能在当前 Project 打开 `mybot.benchmark.cloud_smoke` Trace。
+4. redacted Dataset item 只有 hash/metadata，`expected_output.content_withheld=true`，没有 prompt、Office 原文件或 Secret。
+
+认证失败、Project 区域错误、flush 后无法回读、deep link 404 或 redacted item 泄漏正文时立即停止并轮换已泄漏的 Key。
+
+#### 第 7 步：创建 Terra LLM Connection 和两个 Judge
+
+在同一个日本区 Langfuse Project 中：
+
+1. 进入 Project Settings -> LLM Connections，新增 OpenAI-compatible/Custom OpenAI Connection。
+2. Base URL 填 Terra 中转站的 OpenAI-compatible `/v1` 地址，API Key 填模型中转站 Key，model 填实际模型名 `gpt-5.6-terra`。不要填 Mybot preset 名 `gpt-5-6-terra`，也不要填 Langfuse Project Secret Key。
+3. 连接名固定且可辨识，例如 `mybot-terra-judge-v1`；使用无敏感内容的最小 prompt 执行连接测试，确认响应、usage 和错误信息正常。
+4. 新建 OCB Judge：只过滤 `metadata.benchmark=ocb` 且 `metadata.evaluation_source=langfuse_terra` 的 Experiment items；映射 Dataset `input`、task `output` 和 `expected_output`；Score 名必须精确为 `mybot_score`，数值范围 `0..1`，保留 reasoning/comment，sampling 为 100%。
+5. 新建 PresentBench Judge：过滤条件改为 `metadata.benchmark=presentbench`，其余 Score 契约相同。不得把这两个 Judge 应用到 OfficeBench；OfficeBench 使用本地官方 evaluator 的 `official_score`。
+6. 保存 evaluator 名称、版本、Connection 名、model、prompt/rubric 版本和 filter，后续不得在同一比较序列中静默修改。
+
+若当前 Langfuse UI 必须先选择一个已有 Dataset/Run 才能映射 evaluator 字段，则本步先完成 1-3，执行第 8 步生成 licensed Dataset 后，再返回完成 4-6；真实 run 前两个 Judge 必须已经启用。
+
+PresentBench 必须先检查 Langfuse Dataset item 和 evaluator 能否实际消费 rubric 与媒体。当前阶段只声明 media spike，不能用 `rubric_sha256`、本地文件路径或无图输入假装完成视觉评分。若 Cloud Judge 看不到真实 rubric/media，停止 PresentBench 发布，记录 `unscored`，后续只允许实现计划中的本地视觉 SDK evaluator fallback；不得人工补一个伪 `mybot_score` 绕过 export。
+
+#### 第 8 步：执行 licensed prepare
+
+仅在第 5 步全部批准、`captureContent=true` 后执行：
+
+```bash
+nanobot benchmark prepare --profile office-smoke \
+  --soffice /absolute/path/to/soffice \
+  --soffice-version '<完整的 soffice --version 输出>' \
+  --allow-licensed-content
+```
+
+成功后应创建名称含 `licensed-v1` 的三个不可变 Dataset，prepared 文件中 `licensed_content_uploaded=true`。逐个抽查 Dataset item：内容与固定 revision 一致、没有本机绝对路径/Key/个人数据，OCB/PresentBench 只包含已经批准的内容。redacted Dataset 与 licensed Dataset 名称不同，不能把旧 redacted Dataset 当作可运行输入。
+
+#### 第 9 步：先估算，再明确确认 smoke 成本
+
+```bash
+nanobot benchmark estimate \
+  --profile office-smoke \
+  --model-preset gpt-5-6-luna
+```
+
+确认输出中的三个 case count、两个 Skill、总 `skill_runs` 和 `estimated_usd`。任何价格仍为零时命令会失败；估算异常时不要直接给 `run` 加 `--confirm-cost`。
+
+#### 第 10 步：运行真实 office-smoke
+
+```bash
+nanobot benchmark run \
+  --profile office-smoke \
+  --model-preset gpt-5-6-luna \
+  --confirm-cost
+```
+
+一次 smoke 会创建 3 个 benchmark x 2 个 Skill = 6 个 Dataset Run、6 个 Annotation Queue，共 24 条 experiment traces。保存 CLI 输出中的每个 `dataset_run=<id>`、`review_queue=<id>` 和 URL。成功运行后逐项确认：
+
+- OCB 与 PresentBench 每个 item 最终都有 Terra Judge 产生的 `mybot_score` 和 reasoning；Judge 异步未完成时继续等待，不导出。
+- OfficeBench 每个 item 有 `official_score`、`official_evaluator_ok=true` 和 `output_present=true`。
+- 每个 Agent/Tool/Generation observation 层级正确，model、usage、latency 和错误可下钻；同一次 LLM 调用没有 drop-in/manual 双重 generation。
+- 失败 item 不在原 Run 中伪装重试；新建带 `parent_run_id` 的 retry Dataset Run，并单独审核。
+
+#### 第 11 步：完成 PresentBench media spike
+
+从两个 PresentBench smoke Run 各抽至少一个 item，确认 Judge 实际收到允许上传的渲染媒体，并能把视觉维度写入 reasoning/Score。只看到文件名、hash、本机路径或纯文本不算通过。平台不支持媒体时，把视觉维度标为 `unscored` 并停止 PresentBench 发布，直到本地 SDK evaluator fallback 有代码、测试和 Score 写回证据。
+
+#### 第 12 步：在六个 Annotation Queue 完成人工审核
+
+Queue 名固定为 `mybot-office-smoke-<benchmark>-<skill>-review`。smoke 的 24 条 trace 必须全部审核：
+
+1. 打开 item 的 input/output、artifact hash、Judge/official Score 和 Trace。
+2. 填写 `mybot-human-review`，数值范围 `0..1`。
+3. 写明通过/失败原因；需要纠正时保留 comment/corrected output。
+4. 将 Queue item 状态改为 `COMPLETED`，保留 reviewer 身份。
+
+仅点完成但没有 `mybot-human-review` Score 不算审核完成。OCB/PresentBench Judge 与人工结论冲突、OfficeBench infrastructure error、视觉 `unscored` 均应先处理，不能靠人工 Queue 掩盖缺失的必需机器 Score。
+
+#### 第 13 步：逐个导出并恢复安全默认值
+
+每个 Dataset Run 独立导出：
+
+```bash
+nanobot benchmark export --dataset-run <一个已完成审核的 Dataset Run ID>
+```
+
+export 会检查 item 完整性、必需 Score、Queue 完成数量、`mybot-human-review` 和真实 deep link；失败信息必须修复，禁止手工编辑 README 绕过。成功后生成 `benchmarks/exports/<run-id>.{json,md}`，并把 README 受控区块更新为本次 Run。六个 Run 可依次留档，但 README 只展示最后一次成功导出的 Run；选择要公开展示的 Run 最后导出。
+
+导出后检查快照没有 Key、正文、原始 Office 文件和本机敏感路径。随后把 `captureContent` 恢复为 `false`；若不需要普通任务持续上报，再把 `enabled` 恢复为 `false`。已运行 gateway 需重启后才应用观测开关。
+
+#### 第 14 步：smoke 全部通过后再跑 release
+
+release 必须重新 prepare，不能复用 smoke prepared 文件：
+
+```bash
+nanobot benchmark prepare --profile office-release \
+  --soffice /absolute/path/to/soffice \
+  --soffice-version '<完整的 soffice --version 输出>' \
+  --allow-licensed-content
+
+nanobot benchmark estimate \
+  --profile office-release \
+  --model-preset gpt-5-6-luna \
+  --presentbench-sample 60
+
+nanobot benchmark run \
+  --profile office-release \
+  --model-preset gpt-5-6-luna \
+  --presentbench-sample 60 \
+  --confirm-cost
+```
+
+PresentBench 只允许 `60`（25%）、`119`（50%）或 `238`（full），estimate 与 run 必须使用同一档。release 每个 Queue 至少完成 CLI 固定的稳定 5% 样本，并手工补审高风险、Judge 异常、官方/Judge 分歧和视觉 `unscored`；全部必需 Score/审核齐全后才逐 Run export、检查 diff、提交和推送结果快照。
+
+#### 停止条件
+
+| 条件 | 必须动作 |
+| --- | --- |
+| `ci` 失败 | 不配置 Cloud，不跑真模型 |
+| Langfuse 不是日本区、auth/readback/deep link 失败 | 修正 Project/Key/endpoint 后重做 preflight |
+| 只有 LibreOfficeDev/alpha/beta/nightly | 不作为发布环境，安装稳定版 |
+| 四项价格为零、单位不确定或价格不能安全记录 | 不传 `--confirm-cost` |
+| 任一数据许可或跨境上传未批准 | 只做 redacted prepare，保持 `captureContent=false` |
+| Terra Connection 测试失败或 Judge filter/Score 名不正确 | 不跑或不导出 OCB/PresentBench |
+| PresentBench rubric/media 未真正进入 Judge | 标为 `unscored`，停止 PresentBench 发布 |
+| 必需 Score、Queue review 或 deep link 缺失 | 让 export fail closed，不手工填 README |
+| 发现 Key、PII、公司内容或本机敏感路径泄漏 | 立即停用 Cloud、轮换 Key、删除受影响 Cloud 数据并重新审查 |
 
 ### 验证要求（全阶段）
 
