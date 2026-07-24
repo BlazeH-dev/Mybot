@@ -1,6 +1,6 @@
 # P5 Trace、Eval、可观测与公开测评
 
-> 状态：S5.0 与 P5 Core 已完成（2026-07-18）；P5.1 Langfuse 可观测与公开 benchmark 扩展待实施。
+> 状态：S5.0、P5 Core 与 P5.1 代码实现已完成（2026-07-24）；日本区 Cloud/Terra Judge/Annotation Queue 的真实 smoke 与审核结果待外部配置后执行。
 > Langfuse 部署固定采用日本区 Langfuse Cloud（东京，`https://jp.cloud.langfuse.com`），不实施本地自托管。P5.1 以 Langfuse Python SDK 为观测与评估主干；Mybot 不再建设平行的 Trace、Experiment、Score、Judge 或人工审核系统。
 
 ## 1. 最终职责边界
@@ -156,7 +156,7 @@ nanobot benchmark prepare --profile office-release
 nanobot benchmark estimate --profile office-release --model-preset gpt-5-6-luna
 nanobot benchmark run --profile ci
 nanobot benchmark run --profile office-smoke --model-preset gpt-5-6-luna
-nanobot benchmark run --profile office-release --model-preset gpt-5-6-luna --presentbench-sample 50 --confirm-cost
+nanobot benchmark run --profile office-release --model-preset gpt-5-6-luna --presentbench-sample 60 --confirm-cost
 nanobot benchmark export --dataset-run <langfuse-dataset-run-id>
 ```
 
@@ -180,7 +180,7 @@ Experiment Runner 当前不承诺断点续跑。首版依赖其错误隔离；�
 
 ### profile 与审核
 
-- `office-smoke`：OCB、OfficeBench Office subset、PresentBench 各 4 个固定分层 case，两个 Skill 同题；12 个 experiment traces 全部加入 Annotation Queue。
+- `office-smoke`：OCB、OfficeBench Office subset、PresentBench 各 4 个固定分层 case，两个 Skill 同题；12 个 case 产生 24 个 Skill experiment traces，全部加入 Annotation Queue。
 - `office-release`：OCB 全量、固定 OfficeBench Office subset；PresentBench 在 full/50%/25% 三档成本估算后确认。换档使用不同 Dataset/series，不混合分母。
 - release 顺序固定为 `prepare -> estimate -> run_experiment -> Annotation Queue -> export`；run 阶段禁止下载或修改依赖。
 - release 约 5% 分层抽样，并额外审核高风险、Judge 异常和视觉 `unscored`；审核完成状态直接从 Annotation Queue/API 判断，不回写本地。
@@ -225,10 +225,18 @@ OfficePython 是公平 Python baseline，不得通过 prompt、Dataset 或 evalu
 | 阶段 | 步骤 | 产出 | 验证 |
 |------|------|------|------|
 | **S8 Benchmark CLI** | 19. 新建 `nanobot/cli/benchmark.py`，实现 `prepare/estimate/run/export` 子命令<br>20. `prepare`：校验 OCB/OfficeBench/PresentBench 资产、revision/SHA/license，创建 Langfuse Dataset（如果 enabled）<br>21. `estimate`：计算 token/cost 预算，要求用户确认 | cli/benchmark.py | `nanobot benchmark prepare --profile ci` 成功，不依赖 Langfuse |
-| **S9 Experiment Runner** | 22. `run` 子命令封装 `langfuse.run_experiment(data=dataset, task=_mybot_task_callback, evaluators=...)`<br>23. `_mybot_task_callback(item)` 执行 Luna Agent + Skill，返回 artifact 路径/内容<br>24. OfficeBench 官方 evaluator 作为 SDK evaluator function，返回 `Evaluation(value=score, comment=...)` | Experiment Runner 可用 | `nanobot benchmark run --profile office-smoke` 创建 Dataset Run，Langfuse 有 12 traces |
+| **S9 Experiment Runner** | 22. `run` 子命令封装 `langfuse.run_experiment(data=dataset, task=_mybot_task_callback, evaluators=...)`<br>23. `_mybot_task_callback(item)` 执行 Luna Agent + Skill，返回 artifact 路径/内容<br>24. OfficeBench 官方 evaluator 作为 SDK evaluator function，返回 `Evaluation(value=score, comment=...)` | Experiment Runner 可用 | `nanobot benchmark run --profile office-smoke` 创建 Dataset Run，Langfuse 有 24 traces |
 | **S10 LLM-as-a-Judge** | 25. 在 Langfuse UI 配置 Terra OpenAI-compatible LLM Connection（base_url/api_key/model=gpt-5-6-terra）<br>26. 配置 OCB/PresentBench Custom LLM-as-a-Judge（rubric/prompt template）<br>27. 设置 Dataset filter、scope、sampling | LLM Connection + Judge 配置 | Langfuse 对 Dataset Run 自动执行 Judge，生成 `mybot_score` + reasoning |
 | **S11 SDK Evaluator** | 28. OpenXML/渲染/文件检查作为本地 SDK evaluator function（同步函数，返回 `Evaluation`）<br>29. 注册到 `run_experiment(evaluators=[officebench_official, openxml_check, ...])` | 本地 evaluator 集成 | Dataset Run 有 `official_score` + `openxml_valid` Score |
 | **S12 Annotation Queue** | 30. `export` 子命令通过 Langfuse API 查询 Dataset Run 的 Scores、Annotation Queue 状态<br>31. 判断审核完整性（smoke 全部审核，release 抽样审核完成）<br>32. 生成去敏 JSON/Markdown 快照，更新 README 受控区块 | export 功能 | `nanobot benchmark export --dataset-run <id>` 生成 benchmarks/latest.md |
+
+### P5.1 代码实现记录（2026-07-24）
+
+- 已落地 `LangfuseConfig`、环境变量回退、默认关闭、masking 和进程级 client registry；启用后 JSONL `TraceHook` 与 Langfuse `LangfuseTraceHook` 互斥。
+- 已在 AgentLoop、SubagentManager、AgentRunner、OpenAI-compatible Provider 和 facade 接入 agent/generation/tool observation、父子 OTel context、usage/error/status 和 flush/release。
+- 已新增 `nanobot benchmark prepare/estimate/run/export`、三个固定 revision/license 的 adapter、独立 benchmark venv、OCB 固定行号 smoke、OfficeBench 官方 `evaluation.py` 原样 evaluator、Dataset item 去敏、隔离 testbed/reference、Annotation Queue 建立与 export 硬门。
+- 已新增离线 contract 测试；`tests/cli/test_benchmark_contract.py`、`tests/runtime/test_langfuse_observability.py` 与 Office Skill/runtime 定向测试通过。
+- 尚未产生可发布的真实质量数字：`prepare/run/export` 的 Cloud 写入、Terra `mybot_score`、PresentBench media spike、人工 Queue 完成和真实 LibreOffice release gate 需要用户配置/审核后执行；仓库不得填入占位分数。
 
 ### 验证要求（全阶段）
 

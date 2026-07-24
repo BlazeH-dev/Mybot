@@ -1,6 +1,7 @@
 """Configuration schema using Pydantic."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -319,6 +320,33 @@ class GatewayConfig(Base):
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
+class LangfuseConfig(Base):
+    """Langfuse Cloud observability configuration."""
+
+    enabled: bool = False
+    base_url: str = "https://jp.cloud.langfuse.com"
+    public_key: str | None = Field(default=None, repr=False)
+    secret_key: str | None = Field(default=None, repr=False)
+    capture_content: bool = False
+
+    def resolved_public_key(self) -> str | None:
+        return self.public_key or os.environ.get("LANGFUSE_PUBLIC_KEY")
+
+    def resolved_secret_key(self) -> str | None:
+        return self.secret_key or os.environ.get("LANGFUSE_SECRET_KEY")
+
+    def resolved_base_url(self) -> str:
+        if self.base_url != "https://jp.cloud.langfuse.com":
+            return self.base_url
+        return os.environ.get("LANGFUSE_BASE_URL", self.base_url)
+
+
+class ObservabilityConfig(Base):
+    """External observability integrations."""
+
+    langfuse: LangfuseConfig = Field(default_factory=LangfuseConfig)
+
+
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""
 
@@ -378,6 +406,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     model_presets: dict[str, ModelPresetConfig] = Field(
         default_factory=default_model_presets,

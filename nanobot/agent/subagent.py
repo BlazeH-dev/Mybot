@@ -31,6 +31,7 @@ from nanobot.runtime.interactions import (
     InteractionStatus,
     InteractionStrategy,
 )
+from nanobot.runtime.langfuse import LangfuseRuntime
 from nanobot.runtime.policy import PermissionDecision, PolicyEngine, PolicyGateOutcome
 from nanobot.runtime.trace import TraceContext, TraceHook, current_trace_context, emit_trace_event
 from nanobot.security.sandbox import SandboxMode
@@ -110,6 +111,7 @@ class SubagentManager:
         max_iterations: int | None = None,
         max_concurrent_subagents: int | None = None,
         llm_wall_timeout_for_session: Callable[[str | None], float | None] | None = None,
+        observability: LangfuseRuntime | None = None,
     ):
         defaults = AgentDefaults()
         self.provider = provider
@@ -130,7 +132,8 @@ class SubagentManager:
             if max_concurrent_subagents is not None
             else defaults.max_concurrent_subagents
         )
-        self.runner = AgentRunner(provider)
+        self.observability = observability
+        self.runner = AgentRunner(provider, observability=observability)
         self._llm_wall_timeout_for_session = llm_wall_timeout_for_session
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_statuses: dict[str, SubagentStatus] = {}
@@ -554,13 +557,26 @@ class SubagentManager:
             )
             child_scope = build_workspace_scope(root, "restricted", source_channel="subagent")
             token = bind_workspace_scope(child_scope)
-            child_trace = TraceHook(
-                root.parents[3] / "trace" / f"{safe_parent_task}.jsonl",
-                task_id=safe_parent_task,
-                actor=f"child:{task_id}",
-                model=self.model,
-                parent=parent_trace,
-            )
+            if self.observability is not None:
+                from nanobot.runtime.langfuse_hook import LangfuseTraceHook
+
+                child_trace = LangfuseTraceHook(
+                    self.observability,
+                    task_id=safe_parent_task,
+                    actor=f"child:{task_id}",
+                    model=self.model,
+                    session_id=sess_key,
+                    plan_hash=parent_plan_hash,
+                    sandbox_mode="restricted",
+                )
+            else:
+                child_trace = TraceHook(
+                    root.parents[3] / "trace" / f"{safe_parent_task}.jsonl",
+                    task_id=safe_parent_task,
+                    actor=f"child:{task_id}",
+                    model=self.model,
+                    parent=parent_trace,
+                )
 
             async def _policy_gate(*, tool_call, tool, params, spec) -> PolicyGateOutcome:
                 del spec

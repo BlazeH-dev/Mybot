@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "repositories": {
+    "ocb": {
+      "url": "https://github.com/microsoft/OfficeComprehensionBench",
+      "revision": "f5b560356c8c5fff78569307d655f76d9ea9f6f7",
+      "license": "MIT",
+      "license_sha256": "1126322e2cc8d165adc4c792eeb195717de2bcc7b39be1ce77959d78e87ef685",
+      "dataset_url": "https://huggingface.co/datasets/microsoft/OfficeComprehensionBenchmark",
+      "dataset_id": "microsoft/OfficeComprehensionBenchmark",
+      "dataset_revision": "9c6de493c0a03cae50f6cf7d0143fbbba1557188",
+      "dataset_license": "CDLA-Permissive-2.0"
+    },
+    "officebench": {
+      "url": "https://github.com/zlwang-cs/OfficeBench",
+      "revision": "b978b808667c32b52ce19a67ce1def1de9ae02b7",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    "presentbench": {
+      "url": "https://github.com/PresentBench/PresentBench",
+      "revision": "2f01aaf2957004f4f136796147e11f7e52d84684",
+      "license": "Apache-2.0",
+      "license_sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+      "dataset_url": "https://huggingface.co/datasets/PresentBench/PresentBench",
+      "dataset_id": "PresentBench/PresentBench",
+      "dataset_revision": "31ec40084405c5f2e6b8b5adedf2999b6060e7e1",
+      "dataset_license": "mixed; prompts/rubrics CC-BY-NC-4.0, source materials retain original terms"
+    }
+  },
+  "smoke_cases": {
+    "ocb": ["602", "631", "15", "121"],
+    "officebench": ["1-10/0", "1-11/0", "1-15/0", "1-16/0"],
+    "presentbench": [
+      "academia/CVPR_2023/Attribute-preserving_Face_Dataset_Anonymization_via_Latent_Code_Optimization",
+      "advertising/Apple_Mac/MacBook_Air",
+      "economics/Alphabet_Investor_Relations/2024q1",
+      "education/CSAPP-Lectures_2015Fall/Lecture01"
+    ]
+  },
+  "skills": ["officecli", "office-python"],
+  "models": {
+    "agent": "gpt-5-6-luna",
+    "judge": "gpt-5-6-terra"
+  },
+  "pricing_usd_per_million_tokens": {
+    "input": 0.0,
+    "output": 0.0,
+    "judge_input": 0.0,
+    "judge_output": 0.0
+  },
+  "estimate_tokens_per_case": {
+    "agent_input": 18000,
+    "agent_output": 5000,
+    "judge_input": 12000,
+    "judge_output": 1500
+  }
+}

@@ -18,6 +18,7 @@ from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
 from nanobot.agent.tools.base import ToolSuspensionResult
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobot.runtime.langfuse import LangfuseRuntime, value_summary
 from nanobot.utils.file_edit_events import (
     StreamingFileEditTracker,
     build_file_edit_end_event,
@@ -145,8 +146,13 @@ class ToolSuspensionError(RuntimeError):
 class AgentRunner:
     """Run a tool-capable LLM loop without product-layer concerns."""
 
-    def __init__(self, provider: LLMProvider):
+    def __init__(
+        self,
+        provider: LLMProvider,
+        observability: LangfuseRuntime | None = None,
+    ):
         self.provider = provider
+        self.observability = observability
 
     @staticmethod
     def _merge_message_content(left: Any, right: Any) -> str | list[dict[str, Any]]:
@@ -769,6 +775,75 @@ class AgentRunner:
         hook: AgentHook,
         context: AgentHookContext,
     ):
+        primary = getattr(self.provider, "_primary", None)
+        uses_drop_in = bool(
+            getattr(self.provider, "uses_langfuse_drop_in", False)
+            or getattr(primary, "uses_langfuse_drop_in", False)
+        )
+        if self.observability is None or uses_drop_in:
+            return await self._request_model_unobserved(spec, messages, hook, context)
+
+        with self.observability.observation(
+            name="mybot.llm.request",
+            as_type="generation",
+            input=messages,
+            model=spec.model,
+            model_parameters={
+                "temperature": spec.temperature,
+                "max_tokens": spec.max_tokens,
+                "reasoning_effort": spec.reasoning_effort,
+            },
+            metadata={
+                "mybot.actor": spec.actor,
+                "mybot.task.id": spec.task_id,
+                "mybot.plan.hash": spec.plan_hash,
+                "mybot.input.summary": value_summary(messages),
+            },
+        ) as observation:
+            response = await self._request_model_unobserved(
+                spec,
+                messages,
+                hook,
+                context,
+                completion_started=observation.mark_completion_started,
+            )
+            usage = self._usage_dict(response.usage)
+            observation.update(
+                output=self.observability.content({
+                    "content": response.content,
+                    "reasoning_content": response.reasoning_content,
+                    "tool_calls": [
+                        call.to_openai_tool_call() for call in response.tool_calls
+                    ],
+                    "finish_reason": response.finish_reason,
+                }),
+                usage_details={
+                    "input": usage.get("prompt_tokens", 0),
+                    "output": usage.get("completion_tokens", 0),
+                    "total": usage.get("total_tokens", 0),
+                    "cache_read_input_tokens": usage.get("cached_tokens", 0),
+                },
+                metadata=self.observability.metadata({
+                    "mybot.output.summary": value_summary(response.content),
+                    "mybot.finish_reason": response.finish_reason,
+                    "error.kind": response.error_kind,
+                    "error.status_code": response.error_status_code,
+                }),
+                level="ERROR" if response.finish_reason == "error" else "DEFAULT",
+                status_message=(response.content or "")[:500]
+                if response.finish_reason == "error"
+                else None,
+            )
+            return response
+
+    async def _request_model_unobserved(
+        self,
+        spec: AgentRunSpec,
+        messages: list[dict[str, Any]],
+        hook: AgentHook,
+        context: AgentHookContext,
+        completion_started: Callable[[], None] | None = None,
+    ):
         timeout_s: float | None = spec.llm_timeout_s
         if timeout_s is None:
             # Default to a finite timeout to avoid per-session lock starvation when an LLM
@@ -797,6 +872,14 @@ class AgentRunner:
 
         progress_state: dict[str, bool] | None = None
         live_file_edits: StreamingFileEditTracker | None = None
+        completion_marked = False
+
+        def _mark_completion_started() -> None:
+            nonlocal completion_marked
+            if completion_marked or completion_started is None:
+                return
+            completion_marked = True
+            completion_started()
 
         if (
             spec.progress_callback is not None
@@ -812,18 +895,22 @@ class AgentRunner:
             )
 
         async def _tool_call_delta(delta: dict[str, Any]) -> None:
+            if delta:
+                _mark_completion_started()
             if live_file_edits is not None:
                 await live_file_edits.update(delta)
 
         if wants_streaming:
             async def _stream(delta: str) -> None:
                 if delta:
+                    _mark_completion_started()
                     context.streamed_content = True
                 await hook.on_stream(context, delta)
 
             async def _thinking(delta: str) -> None:
                 if not delta:
                     return
+                _mark_completion_started()
                 context.streamed_reasoning = True
                 await hook.emit_reasoning(delta)
 
@@ -842,6 +929,7 @@ class AgentRunner:
                 nonlocal stream_buf
                 if not delta:
                     return
+                _mark_completion_started()
                 prev_clean = strip_think(stream_buf)
                 stream_buf += delta
                 new_clean = strip_think(stream_buf)
@@ -1037,6 +1125,52 @@ class AgentRunner:
         return results, events, fatal_error
 
     async def _run_tool(
+        self,
+        spec: AgentRunSpec,
+        tool_call: ToolCallRequest,
+        external_lookup_counts: dict[str, int],
+        workspace_violation_counts: dict[str, int],
+    ) -> tuple[Any, dict[str, str], BaseException | None]:
+        if self.observability is None:
+            return await self._run_tool_unobserved(
+                spec,
+                tool_call,
+                external_lookup_counts,
+                workspace_violation_counts,
+            )
+
+        with self.observability.observation(
+            name=tool_call.name,
+            as_type="tool",
+            input=tool_call.arguments,
+            metadata={
+                "mybot.tool.call_id": tool_call.id,
+                "mybot.actor": spec.actor,
+                "mybot.task.id": spec.task_id,
+                "mybot.arguments.summary": value_summary(tool_call.arguments),
+            },
+        ) as observation:
+            result, event, error = await self._run_tool_unobserved(
+                spec,
+                tool_call,
+                external_lookup_counts,
+                workspace_violation_counts,
+            )
+            is_error = event.get("status") == "error" or error is not None
+            observation.update(
+                output=self.observability.content(result),
+                metadata=self.observability.metadata({
+                    "mybot.tool.status": event.get("status"),
+                    "mybot.tool.detail": event.get("detail"),
+                    "mybot.result.summary": value_summary(result),
+                    "error.type": type(error).__name__ if error is not None else None,
+                }),
+                level="ERROR" if is_error else "DEFAULT",
+                status_message=str(error)[:500] if error is not None else None,
+            )
+            return result, event, error
+
+    async def _run_tool_unobserved(
         self,
         spec: AgentRunSpec,
         tool_call: ToolCallRequest,

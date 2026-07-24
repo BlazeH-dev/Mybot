@@ -58,6 +58,10 @@ def _append(path: str | Path, row: dict[str, Any]) -> None:
 
 
 def emit_trace_event(name: str, attributes: dict[str, Any] | None = None) -> None:
+    from nanobot.runtime.langfuse import emit_langfuse_event
+
+    if emit_langfuse_event(name, attributes):
+        return
     ctx = current_trace_context()
     if ctx is None:
         return

@@ -56,6 +56,7 @@ from nanobot.runtime.interactions import (
     InteractionStatus,
     InteractionStrategy,
 )
+from nanobot.runtime.langfuse import LangfuseRuntime
 from nanobot.runtime.policy import (
     PermissionDecision,
     PolicyEngine,
@@ -243,6 +244,7 @@ class AgentLoop:
         preset_snapshot_loader: preset_helpers.PresetSnapshotLoader | None = None,
         runtime_events: RuntimeEventBus | None = None,
         runtime_model_publisher: Callable[[str, str | None], None] | None = None,
+        observability: LangfuseRuntime | None = None,
     ):
         from nanobot.config.schema import ToolsConfig
 
@@ -303,6 +305,7 @@ class AgentLoop:
         self._start_time = time.time()
         self._last_usage: dict[str, int] = {}
         self._extra_hooks: list[AgentHook] = hooks or []
+        self.observability = observability
 
         self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
         self.sessions = session_manager or SessionManager(workspace)
@@ -310,7 +313,7 @@ class AgentLoop:
         # One file-read/write tracker per logical session. The tool registry is
         # shared by this loop, so tools resolve the active state via contextvars.
         self._file_state_store = FileStateStore()
-        self.runner = AgentRunner(provider)
+        self.runner = AgentRunner(provider, observability=observability)
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -323,6 +326,7 @@ class AgentLoop:
             max_iterations=self.max_iterations,
             max_concurrent_subagents=max_concurrent_subagents,
             llm_wall_timeout_for_session=lambda sk: runner_wall_llm_timeout_s(self.sessions, sk),
+            observability=observability,
         )
         self._unified_session = unified_session
         self._max_messages = max_messages if max_messages > 0 else 120
@@ -387,43 +391,54 @@ class AgentLoop:
         if bus is None:
             bus = MessageBus()
         defaults = config.agents.defaults
-        provider = extra.pop("provider", None) or make_provider(config)
-        resolved = config.resolve_preset()
-        model = extra.pop("model", None) or resolved.model
-        context_window_tokens = extra.pop("context_window_tokens", None) or resolved.context_window_tokens
-        provider_snapshot_loader = extra.pop("provider_snapshot_loader", None)
-        preset_snapshot_loader = extra.pop("preset_snapshot_loader", None) or preset_helpers.make_preset_snapshot_loader(
-            config,
-            provider_snapshot_loader,
-        )
-        return cls(
-            bus=bus,
-            provider=provider,
-            workspace=config.workspace_path,
-            model=model,
-            max_iterations=defaults.max_tool_iterations,
-            max_concurrent_subagents=defaults.max_concurrent_subagents,
-            context_window_tokens=context_window_tokens,
-            context_block_limit=defaults.context_block_limit,
-            max_tool_result_chars=defaults.max_tool_result_chars,
-            provider_retry_mode=defaults.provider_retry_mode,
-            tool_hint_max_length=defaults.tool_hint_max_length,
-            restrict_to_workspace=config.tools.restrict_to_workspace,
-            mcp_servers=config.tools.mcp_servers,
-            channels_config=config.channels,
-            timezone=defaults.timezone,
-            unified_session=defaults.unified_session,
-            disabled_skills=defaults.disabled_skills,
-            session_ttl_minutes=defaults.session_ttl_minutes,
-            consolidation_ratio=defaults.consolidation_ratio,
-            max_messages=defaults.max_messages,
-            tools_config=config.tools,
-            model_presets=preset_helpers.configured_model_presets(config),
-            model_preset=defaults.model_preset,
-            provider_snapshot_loader=provider_snapshot_loader,
-            preset_snapshot_loader=preset_snapshot_loader,
-            **extra,
-        )
+        observability = extra.pop("observability", None)
+        acquired_observability = False
+        if observability is None and config.observability.langfuse.enabled:
+            observability = LangfuseRuntime.acquire(config.observability.langfuse)
+            acquired_observability = True
+        try:
+            provider = extra.pop("provider", None) or make_provider(config)
+            resolved = config.resolve_preset()
+            model = extra.pop("model", None) or resolved.model
+            context_window_tokens = extra.pop("context_window_tokens", None) or resolved.context_window_tokens
+            provider_snapshot_loader = extra.pop("provider_snapshot_loader", None)
+            preset_snapshot_loader = extra.pop("preset_snapshot_loader", None) or preset_helpers.make_preset_snapshot_loader(
+                config,
+                provider_snapshot_loader,
+            )
+            return cls(
+                bus=bus,
+                provider=provider,
+                workspace=config.workspace_path,
+                model=model,
+                max_iterations=defaults.max_tool_iterations,
+                max_concurrent_subagents=defaults.max_concurrent_subagents,
+                context_window_tokens=context_window_tokens,
+                context_block_limit=defaults.context_block_limit,
+                max_tool_result_chars=defaults.max_tool_result_chars,
+                provider_retry_mode=defaults.provider_retry_mode,
+                tool_hint_max_length=defaults.tool_hint_max_length,
+                restrict_to_workspace=config.tools.restrict_to_workspace,
+                mcp_servers=config.tools.mcp_servers,
+                channels_config=config.channels,
+                timezone=defaults.timezone,
+                unified_session=defaults.unified_session,
+                disabled_skills=defaults.disabled_skills,
+                session_ttl_minutes=defaults.session_ttl_minutes,
+                consolidation_ratio=defaults.consolidation_ratio,
+                max_messages=defaults.max_messages,
+                tools_config=config.tools,
+                model_presets=preset_helpers.configured_model_presets(config),
+                model_preset=defaults.model_preset,
+                provider_snapshot_loader=provider_snapshot_loader,
+                preset_snapshot_loader=preset_snapshot_loader,
+                observability=observability,
+                **extra,
+            )
+        except BaseException:
+            if acquired_observability and observability is not None:
+                observability.release()
+            raise
 
     def _sync_subagent_runtime_limits(self) -> None:
         """Keep subagent runtime limits aligned with mutable loop settings."""
@@ -901,13 +916,27 @@ class AgentLoop:
         if not isinstance(trace_workspace, Path):
             trace_workspace = self.workspace if isinstance(self.workspace, Path) else None
         if trace_workspace is not None:
-            trace_hook = TraceHook(
-                trace_workspace / ".nanobot-runtime" / "trace" / f"{trace_task_id}.jsonl",
-                task_id=trace_task_id,
-                actor="main",
-                model=self.model,
-                initial_events=initial_trace_events,
-            )
+            if self.observability is not None:
+                from nanobot.runtime.langfuse_hook import LangfuseTraceHook
+
+                trace_hook = LangfuseTraceHook(
+                    self.observability,
+                    task_id=trace_task_id,
+                    actor="main",
+                    model=self.model,
+                    session_id=active_session_key,
+                    plan_hash=plan_hash,
+                    sandbox_mode=getattr(sandbox_mode, "value", str(sandbox_mode)),
+                    initial_events=initial_trace_events,
+                )
+            else:
+                trace_hook = TraceHook(
+                    trace_workspace / ".nanobot-runtime" / "trace" / f"{trace_task_id}.jsonl",
+                    task_id=trace_task_id,
+                    actor="main",
+                    model=self.model,
+                    initial_events=initial_trace_events,
+                )
             if isinstance(hook, CompositeHook):
                 hook = CompositeHook([*hook._hooks, trace_hook])
             else:
@@ -1427,6 +1456,13 @@ class AgentLoop:
             except (RuntimeError, BaseExceptionGroup):
                 logger.debug("MCP server '{}' cleanup error (can be ignored)", name)
         self._mcp_stacks.clear()
+        if self.observability is not None:
+            observability = self.observability
+            self.observability = None
+            self.runner.observability = None
+            self.subagents.observability = None
+            observability.flush()
+            observability.release()
 
     def _schedule_background(self, coro) -> None:
         """Schedule a coroutine as a tracked background task (drained on shutdown)."""
@@ -2429,12 +2465,13 @@ class AgentLoop:
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
         ephemeral: bool = False,
         tools: ToolRegistry | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> OutboundMessage | None:
         """Process a message directly and return the outbound payload."""
         await self._connect_mcp()
         msg = InboundMessage(
             channel=channel, sender_id="user", chat_id=chat_id,
-            content=content, media=media or [],
+            content=content, media=media or [], metadata=dict(metadata or {}),
         )
         # Share the dispatch lock so direct calls serialize with bus turns.
         lock = self._session_locks.setdefault(session_key, asyncio.Lock())

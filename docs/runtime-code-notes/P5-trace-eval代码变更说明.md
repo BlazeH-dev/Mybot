@@ -1,7 +1,7 @@
 # P5 Cassette、Trace、Eval 与安全红队代码说明
 
 > 对应计划：`docs/plans/runtime-steps/P5-trace-eval.md`
-> 当前状态：S5.0 与 Core 已完成（2026-07-18）。P5.1 Langfuse 接入方案已评审并更新实施步骤（2026-07-23），待实施。
+> 当前状态：S5.0、P5 Core 与 P5.1 代码实现已完成（2026-07-24）。日本区 Cloud/Terra Judge/人工审核仍需外部配置与真实 smoke，未生成虚假 benchmark 数字。
 
 ## P5.1 核心改动（相比原方案）
 
@@ -16,6 +16,14 @@
 4. **Config schema 增强**：新增 `config.observability.langfuse.*` 字段（enabled/baseUrl/publicKey/secretKey/captureContent），provider 根据 config 条件设置环境变量并导入 `langfuse.openai.AsyncOpenAI`。
 
 5. **Benchmark CLI 新建**：`nanobot/cli/benchmark.py` 实现 `prepare/estimate/run/export`，封装 `langfuse.run_experiment()`。
+
+### P5.1 已落地的代码边界
+
+- `nanobot/config/schema.py` 新增 `observability.langfuse`，默认关闭；`publicKey/secretKey` 不进入 repr，支持 `LANGFUSE_*` 回退。
+- `nanobot/runtime/langfuse.py` 复用 Langfuse SDK 的 observation、OTel masking、content hash/length、flush/shutdown 和 registry；`langfuse_hook.py` 管理 agent observation、事件、session 和父子 context。
+- `AgentRunner` 在非 drop-in provider 路径逐请求创建 generation，在每次工具调用创建 tool observation；OpenAI-compatible provider 使用 SDK drop-in 时跳过重复 generation。
+- `nanobot/benchmark_adapters.py` 与 `nanobot/cli/benchmark.py` 固定 OCB/OfficeBench/PresentBench revision、license digest、独立依赖、OCB 四个 smoke row、OfficeBench 官方 evaluator、Dataset 去敏、workspace staging、成本确认、Annotation Queue 和 export 完整性闸门。
+- 离线验证覆盖 13 个 P5.1 contract/observability 测试；真实 Cloud、Terra Judge、media 支持、人工审核和发布分数必须在配置后重新执行。
 
 ### 实施步骤概览
 
@@ -156,7 +164,7 @@ child `TraceHook` 接收 parent TraceContext：
 - `parent_span_id` 指向父 span。
 - actor 写成 `child:<id>`。
 
-因此现有导出可以在标准查看器中还原父子关系；当前仓库尚未真正接入或部署 Langfuse。
+因此现有 JSONL 导出可以还原 Core 父子关系；启用配置后，Langfuse OTel exporter 负责持久 Trace，默认关闭时仍保留 JSONL 本地路径。
 
 ### OTLP 导出
 
@@ -331,7 +339,7 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 - OpenXML 损坏。
 - 未确认外发。
 
-软评分可能受模型、prompt 和价格变化影响。P5 的原则是先把可以确定性证明的安全与正确性做成硬门，Judge 只作为离线加分项，而且当前尚未实现。
+软评分可能受模型、prompt 和价格变化影响。P5 的原则是先把可以确定性证明的安全与正确性做成硬门；Langfuse Judge 只作为可追踪的质量评估，不能覆盖数字、权限、文件和 OpenXML hard gate。
 
 ## 验证与历史结果
 
@@ -350,11 +358,12 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 
 这些数字是当时证据，当前状态应重新运行命令确认。
 
-## 未实现和不能夸大的部分
+## 仍未完成和不能夸大的部分
 
-- 没有 LLM Judge/Verifier 线上能力。
-- 没有 OTel-native Langfuse SDK 接入、本地 span exporter 或 dataset/experiment/score 关联；当前只有直接追加的本地 JSONL 与最小 OTLP JSON 导出。
-- 没有 OCB、OfficeBench Office subset 或 PresentBench adapter 与真模型基线。
+- 尚未完成日本区 Langfuse Cloud 的真实写入/flush/API 回读/deep link 证据；代码已提供 prepare 的 Cloud smoke 硬门。
+- 尚未配置 Terra LLM Connection 和 OCB/PresentBench Custom LLM-as-a-Judge，因此没有 `mybot_score` 真模型数字。
+- 尚未完成 PresentBench media 到 Judge 的真实 spike、Annotation Queue 人工完成和 `benchmark export` 发布快照。
+- OfficeBench adapter/evaluator、OCB/PresentBench adapter 和离线 contract 已落地，但不等于已完成真模型质量基线。
 - P1.1 已将 Python baseline 落地为通用 `office-python`；P5 Core 的 `office_baseline` 已切换到中立 OpenXML fixture，不再依赖旧周报资产。
 - 没有真实 DeepSeek/GPT 多模型质量-价格矩阵。
 - 没有 KV cache 优化结论。
@@ -362,7 +371,7 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 - evidence metric 依赖固定测试产生的证据，不是生产监控万能扫描器。
 - committed fake-provider Subagent 对比不能证明真实模型一定更快。
 
-## P5.1 后续实施边界（尚未实现）
+## P5.1 外部配置与发布前置
 
 ### P5.1a：Langfuse Python SDK 作为唯一观测后端
 
@@ -382,7 +391,7 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 3. OfficeBench 官方 evaluator、OpenXML/渲染/文件检查作为本地 SDK evaluator function 返回 Langfuse `Evaluation`；不创建第二套 EvalResult/Score 数据库。
 4. OCB/PresentBench 使用 Langfuse Custom LLM-as-a-Judge，通过 OpenAI-compatible LLM Connection 调用 `gpt-5-6-terra`，记录 `mybot_score` 和 reasoning；PresentBench 视觉媒体不兼容时只允许该维度使用本地 SDK evaluator fallback，Score 仍写 Langfuse。
 5. JSON Schema、正则、长度等轻量线上检查使用 Langfuse Code Evaluator；Policy/OCC/HITL/恢复仍是本地 Runtime hard gate，不交给异步 evaluator 决策。
-6. 人工审计使用 Langfuse Annotation Queue；smoke 全 12 case，release 约 5% 分层抽样并额外审核高风险、Judge 异常和视觉 `unscored`。不存在 `audit-sync` 和本地 `human_audit` 真相源。
+6. 人工审计使用 Langfuse Annotation Queue；smoke 全 12 case 的两个 Skill 结果共 24 traces，release 约 5% 分层抽样并额外审核高风险、Judge 异常和视觉 `unscored`。不存在 `audit-sync` 和本地 `human_audit` 真相源。
 7. `export --dataset-run` 读取 Langfuse 的完成状态、Scores 和 Annotation Queue，生成 README 快照；Dataset Run、Score、Annotation 是评估真相源。
 
 ### 结果口径、环境与恢复

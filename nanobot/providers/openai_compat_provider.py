@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib.util
 import json
 import os
 import secrets
@@ -337,6 +336,7 @@ class OpenAICompatProvider(LLMProvider):
         extra_body: dict[str, Any] | None = None,
         api_type: str = "auto",
         extra_query: dict[str, str] | None = None,
+        langfuse_config: Any | None = None,
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
@@ -345,6 +345,10 @@ class OpenAICompatProvider(LLMProvider):
         self._extra_body = extra_body or {}
         self._api_type = api_type if spec and spec.name == "openai" else "auto"
         self._extra_query = extra_query or {}
+        self._langfuse_config = langfuse_config
+        self.uses_langfuse_drop_in = bool(
+            langfuse_config is not None and langfuse_config.enabled
+        )
 
         if api_key and spec and spec.env_key:
             self._setup_env(api_key, api_base)
@@ -369,7 +373,7 @@ class OpenAICompatProvider(LLMProvider):
         self._responses_failures: dict[str, int] = {}
         self._responses_tripped_at: dict[str, float] = {}
 
-    def _build_client(self) -> None:
+    def _build_client(self, client_class: Any | None = None) -> None:
         """Create the OpenAI client using the current module-level AsyncOpenAI."""
         import httpx
 
@@ -389,7 +393,8 @@ class OpenAICompatProvider(LLMProvider):
                 limits=httpx.Limits(keepalive_expiry=0),
                 timeout=timeout_s,
             )
-        self._client = AsyncOpenAI(
+        selected_client = client_class or AsyncOpenAI
+        self._client = selected_client(
             api_key=self._api_key_for_client,
             base_url=self._effective_base,
             default_headers=self._default_headers,
@@ -406,20 +411,20 @@ class OpenAICompatProvider(LLMProvider):
         async with self._client_lock:
             if self._client is not None:
                 return self._client
-            global AsyncOpenAI
-            if AsyncOpenAI is None:
-                if os.environ.get("LANGFUSE_SECRET_KEY") and importlib.util.find_spec("langfuse"):
-                    from langfuse.openai import AsyncOpenAI as _AsyncOpenAI
-                else:
-                    if os.environ.get("LANGFUSE_SECRET_KEY"):
-                        logger.warning(
-                            "LANGFUSE_SECRET_KEY is set but langfuse is not installed; "
-                            "install with `pip install langfuse` to enable tracing"
-                        )
-                    from openai import AsyncOpenAI as _AsyncOpenAI
-                AsyncOpenAI = _AsyncOpenAI
+            if self.uses_langfuse_drop_in:
+                from nanobot.runtime.langfuse import configure_langfuse_environment
 
-            self._build_client()
+                configure_langfuse_environment(self._langfuse_config)
+                from langfuse.openai import AsyncOpenAI as LangfuseAsyncOpenAI
+
+                client_class = LangfuseAsyncOpenAI
+            else:
+                global AsyncOpenAI
+                if AsyncOpenAI is None:
+                    from openai import AsyncOpenAI
+                client_class = AsyncOpenAI
+
+            self._build_client(client_class)
             return self._client
 
     def _setup_env(self, api_key: str, api_base: str | None) -> None:

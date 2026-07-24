@@ -74,6 +74,7 @@ class Nanobot:
         *,
         session_key: str = "sdk:default",
         hooks: list[AgentHook] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> RunResult:
         """Run the agent once and return the result.
 
@@ -90,6 +91,7 @@ class Nanobot:
         try:
             response = await self._loop.process_direct(
                 message, session_key=session_key,
+                metadata=metadata,
             )
         finally:
             self._loop._extra_hooks = prev
@@ -110,4 +112,3 @@ class Nanobot:
 
     async def __aexit__(self, *exc: object) -> None:
         await self.aclose()
-

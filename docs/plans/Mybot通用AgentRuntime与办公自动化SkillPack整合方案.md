@@ -190,7 +190,7 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 | [S5.0 轻量回放](runtime-steps/P5-trace-eval.md)                       | 已完成 | 4 个关键 cassette smoke                              | 无 API key、无网络即可回归关键 Agent 行为                  |
 | [P4 Artifact/Checkpoint](runtime-steps/P4-artifact-checkpoint.md) | 已完成 | 输入快照、artifact/lineage、计划任务恢复                      | kill→resume 可验证，uncertain 不自动重试               |
 | [P8 Subagent](runtime-steps/P8-多agent编排.md)                       | 已完成 | 数量/嵌套/权限/生命周期/上下文/产物治理                            | 父子 trace 完整并有单/多 Agent 对比                     |
-| [P5 Trace/Eval/Observability](runtime-steps/P5-trace-eval.md)              | Core 已完成 / P5.1 待实施 | Langfuse SDK observation、Dataset/Experiment、SDK evaluator、Terra Judge、Annotation Queue | 本地硬门可回归，真模型质量在 Langfuse 可比较、审核和下钻 |
+| [P5 Trace/Eval/Observability](runtime-steps/P5-trace-eval.md)              | P5.1 代码完成 / 外部 smoke 待配置 | Langfuse SDK observation、Dataset/Experiment、SDK evaluator、Terra Judge、Annotation Queue | 本地硬门可回归；完成日本区配置后才发布真模型质量 |
 | [P6 Research](runtime-steps/P6-通用性扩展.md)                          | 选做（未实现） | 1–2 天最小 Research Skill 通用性验证                  | 若启动，不改 Runtime 核心即可复用治理设施                   |
 | [P7 交付物](runtime-steps/P7-面试交付物.md)                               | 持续  | benchmark、README 最终结果页、架构/quickstart       | 陌生人可复现，表述与实际完成度一致                             |
 

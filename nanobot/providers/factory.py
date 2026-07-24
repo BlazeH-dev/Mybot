@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +11,12 @@ from nanobot.providers.base import LLMProvider
 from nanobot.providers.fallback_provider import FallbackProvider
 from nanobot.providers.registry import find_by_name
 from nanobot.providers.unconfigured_provider import UnconfiguredProvider
+
+
+def _credential_fingerprint(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -103,6 +110,7 @@ def _make_provider_core(
             extra_body=p.extra_body if p else None,
             api_type=p.api_type if p and provider_name == "openai" else "auto",
             extra_query=p.extra_query if p else None,
+            langfuse_config=config.observability.langfuse,
         )
 
     provider.generation = resolved.to_generation_settings()
@@ -214,6 +222,11 @@ def provider_signature(
         resolved.temperature,
         resolved.reasoning_effort,
         resolved.context_window_tokens,
+        config.observability.langfuse.enabled,
+        config.observability.langfuse.resolved_base_url(),
+        _credential_fingerprint(config.observability.langfuse.resolved_public_key()),
+        _credential_fingerprint(config.observability.langfuse.resolved_secret_key()),
+        config.observability.langfuse.capture_content,
         tuple(_fallback_signature(fallback) for fallback in fallback_presets),
     )
 
