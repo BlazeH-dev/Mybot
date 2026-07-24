@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,14 +12,23 @@ import pyarrow.parquet as parquet
 import pytest
 from typer.testing import CliRunner
 
-from nanobot.benchmark_adapters import materialize_ocb, materialize_officebench
+from nanobot.benchmark_adapters import (
+    materialize_ocb,
+    materialize_officebench,
+    materialize_presentbench,
+)
 from nanobot.cli.benchmark import (
     BenchmarkError,
+    _case_manifest_digests,
+    _cloud_smoke,
     _dataset_row_payload,
     _manifest,
+    _missing_ocb_references,
     _officebench_evaluator,
+    _select_values,
     _stage_case_workspace,
     _update_readme_benchmark_block,
+    _validate_case_assets,
     benchmark_app,
     estimate_payload,
     export_run,
@@ -29,23 +39,73 @@ def _response(data, **meta):
     return SimpleNamespace(data=data, meta=SimpleNamespace(**meta))
 
 
-def test_profiles_pin_public_revisions_and_require_all_prices() -> None:
+class _FakeCloudRuntime:
+    def __init__(self, failures: int):
+        self.base_url = "https://jp.cloud.langfuse.com"
+        self._remaining_failures = failures
+        self.readback_calls = 0
+        self.client = SimpleNamespace(
+            api=SimpleNamespace(trace=SimpleNamespace(get=self._get_trace)),
+            get_current_trace_id=lambda: "trace-id",
+            _get_project_id=lambda: "project-id",
+        )
+
+    @contextmanager
+    def observation(self, **kwargs):
+        yield SimpleNamespace(observation=object())
+
+    def flush(self, *, strict: bool = False):
+        assert strict is True
+
+    def _get_trace(self, trace_id: str):
+        assert trace_id == "trace-id"
+        self.readback_calls += 1
+        if self._remaining_failures:
+            self._remaining_failures -= 1
+            raise RuntimeError("not ingested yet")
+        return SimpleNamespace(id=trace_id)
+
+
+def test_profiles_pin_public_revisions_and_estimate_tokens() -> None:
     manifest = _manifest()
     for name, spec in manifest["repositories"].items():
         assert len(spec["revision"]) == 40, name
         assert len(spec["license_sha256"]) == 64, name
     assert manifest["smoke_cases"]["ocb"] == ["602", "631", "15", "121"]
-    assert estimate_payload("office-smoke", 238, manifest)["pricing_configured"] is False
-    priced = json.loads(json.dumps(manifest))
-    priced["pricing_usd_per_million_tokens"] = {
-        "input": 1,
-        "output": 2,
-        "judge_input": 3,
-        "judge_output": 4,
-    }
-    estimate = estimate_payload("office-smoke", 238, priced)
+    assert "pricing_usd_per_million_tokens" not in manifest
+    estimate = estimate_payload("office-smoke", 238, manifest)
     assert estimate["skill_runs"] == 24
-    assert estimate["pricing_configured"] is True
+    assert estimate["judge_runs"] == 16
+    assert estimate["estimated_tokens"] == {
+        "agent_input": 432000,
+        "agent_output": 120000,
+        "judge_input": 192000,
+        "judge_output": 24000,
+        "total": 768000,
+    }
+
+
+def test_cloud_smoke_waits_for_delayed_trace_ingestion(monkeypatch) -> None:
+    runtime = _FakeCloudRuntime(failures=12)
+    monkeypatch.setattr("nanobot.cli.benchmark.time.sleep", lambda _seconds: None)
+
+    result = _cloud_smoke(runtime)
+
+    assert runtime.readback_calls == 13
+    assert result == {
+        "trace_id": "trace-id",
+        "deep_link": "https://jp.cloud.langfuse.com/project/project-id/traces/trace-id",
+    }
+
+
+def test_cloud_smoke_fails_after_bounded_readback_attempts(monkeypatch) -> None:
+    runtime = _FakeCloudRuntime(failures=100)
+    monkeypatch.setattr("nanobot.cli.benchmark.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(BenchmarkError, match="trace readback failed"):
+        _cloud_smoke(runtime)
+
+    assert runtime.readback_calls == 30
 
 
 def test_ocb_adapter_uses_explicit_row_ids(tmp_path: Path) -> None:
@@ -77,6 +137,36 @@ def test_ocb_adapter_uses_explicit_row_ids(tmp_path: Path) -> None:
     assert [item["metadata"]["case_id"] for item in materialized] == ["2", "0"]
     assert materialized[0]["input"]["format"] == "pptx"
     assert materialized[0]["input"]["reference_sha256"][0]
+
+
+def test_missing_ocb_references_are_reported_without_local_paths() -> None:
+    rows = [{
+        "input": {
+            "reference_paths": ["/private/cache/missing.pptx", "/private/cache/ready.xlsx"],
+            "reference_sha256": [None, "a" * 64],
+        },
+    }]
+
+    assert _missing_ocb_references(rows) == ["missing.pptx"]
+
+
+def test_case_manifest_digests_and_assets_fail_closed(tmp_path: Path) -> None:
+    for benchmark in ("ocb", "officebench", "presentbench"):
+        (tmp_path / f"office-smoke-{benchmark}.jsonl").write_text(benchmark, encoding="utf-8")
+    digests = _case_manifest_digests(tmp_path, "office-smoke")
+    assert set(digests) == {"ocb", "officebench", "presentbench"}
+    assert all(len(value) == 64 for value in digests.values())
+
+    with pytest.raises(BenchmarkError, match="missing.pptx"):
+        _validate_case_assets({
+            "ocb": [{"input": {"reference_paths": [str(tmp_path / "missing.pptx")]}}],
+        })
+
+
+def test_run_filters_are_validated_and_deduplicated() -> None:
+    assert _select_values(["ocb", "ocb"], ("ocb", "officebench"), "benchmark") == ("ocb",)
+    with pytest.raises(BenchmarkError, match="unknown benchmark"):
+        _select_values(["presentbench"], ("ocb", "officebench"), "benchmark")
 
 
 def test_officebench_staging_and_pinned_evaluator_contract(tmp_path: Path) -> None:
@@ -129,7 +219,10 @@ def test_dataset_payload_never_uploads_local_paths() -> None:
             "material_paths": ["/private/material.pdf"],
             "source_config": "/private/config.json",
         },
-        "expected_output": {"gold": ["answer"]},
+        "expected_output": {
+            "gold": ["answer"],
+            "rubric": {"criteria": ["correct"]},
+        },
     }
     withheld_input, withheld_expected = _dataset_row_payload(
         row,
@@ -143,8 +236,29 @@ def test_dataset_payload_never_uploads_local_paths() -> None:
     )
     assert uploaded_input["prompt"] == "licensed prompt"
     assert uploaded_expected == row["expected_output"]
-    serialized = json.dumps(uploaded_input)
+    serialized = json.dumps({"input": uploaded_input, "expected_output": uploaded_expected})
     assert "/private/" not in serialized
+
+
+def test_presentbench_adapter_embeds_rubric_without_local_path(tmp_path: Path) -> None:
+    case_root = tmp_path / "advertising" / "example"
+    task_root = case_root / "generation_task"
+    task_root.mkdir(parents=True)
+    (task_root / "instructions.md").write_text("Create a deck", encoding="utf-8")
+    rubric = {"criteria": [{"name": "content", "weight": 1.0}]}
+    (task_root / "judge_prompt.json").write_text(json.dumps(rubric), encoding="utf-8")
+    (case_root / "material.pdf").write_bytes(b"fixture")
+
+    rows = materialize_presentbench(
+        tmp_path,
+        tmp_path / "presentbench.jsonl",
+        cases=["advertising/example"],
+    )
+
+    expected = rows[0]["expected_output"]
+    assert expected["rubric"] == rubric
+    assert "judge_prompt_path" not in expected
+    assert "/Users/" not in json.dumps(expected)
 
 
 class _FakeExperiments:
@@ -264,7 +378,16 @@ def test_export_rejects_missing_remote_judge_score() -> None:
 def test_ci_estimate_needs_no_keys_or_network() -> None:
     result = CliRunner().invoke(benchmark_app, ["estimate", "--profile", "ci"])
     assert result.exit_code == 0
-    assert '"estimated_usd": 0' in result.stdout
+    assert '"total": 0' in result.stdout
+
+
+def test_run_has_no_price_confirmation_option() -> None:
+    result = CliRunner().invoke(benchmark_app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--confirm-cost" not in result.stdout
+    assert "--parent-run-id" in result.stdout
+    assert "--benchmark" in result.stdout
+    assert "--skill" in result.stdout
 
 
 def test_export_readme_block_is_controlled(tmp_path: Path) -> None:

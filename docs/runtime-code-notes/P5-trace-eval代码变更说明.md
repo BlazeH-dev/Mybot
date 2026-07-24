@@ -1,7 +1,7 @@
 # P5 Cassette、Trace、Eval 与安全红队代码说明
 
 > 对应计划：`docs/plans/runtime-steps/P5-trace-eval.md`
-> 当前状态：S5.0、P5 Core 与 P5.1 代码实现已完成（2026-07-24）。日本区 Cloud/Terra Judge/人工审核仍需外部配置与真实 smoke，未生成虚假 benchmark 数字。
+> 当前状态：S5.0、P5 Core 与 P5.1 代码实现已完成（2026-07-24）。日本区 Cloud、Luna、Terra Connection/Judge、licensed Dataset 与 token 估算已验证；真实 smoke 因两个 OCB PDF 转 PPTX 资产缺少 Adobe 凭据停止，人工审核与发布数字未完成。
 
 ## P5.1 核心改动（相比原方案）
 
@@ -22,8 +22,8 @@
 - `nanobot/config/schema.py` 新增 `observability.langfuse`，默认关闭；`publicKey/secretKey` 不进入 repr，支持 `LANGFUSE_*` 回退。
 - `nanobot/runtime/langfuse.py` 复用 Langfuse SDK 的 observation、OTel masking、content hash/length、flush/shutdown 和 registry；`langfuse_hook.py` 管理 agent observation、事件、session 和父子 context。
 - `AgentRunner` 在非 drop-in provider 路径逐请求创建 generation，在每次工具调用创建 tool observation；OpenAI-compatible provider 使用 SDK drop-in 时跳过重复 generation。
-- `nanobot/benchmark_adapters.py` 与 `nanobot/cli/benchmark.py` 固定 OCB/OfficeBench/PresentBench revision、license digest、独立依赖、OCB 四个 smoke row、OfficeBench 官方 evaluator、Dataset 去敏、workspace staging、成本确认、Annotation Queue 和 export 完整性闸门。
-- 离线验证覆盖 13 个 P5.1 contract/observability 测试；真实 Cloud、Terra Judge、media 支持、人工审核和发布分数必须在配置后重新执行。
+- `nanobot/benchmark_adapters.py` 与 `nanobot/cli/benchmark.py` 固定 OCB/OfficeBench/PresentBench revision、license digest、独立依赖、OCB 四个 smoke row、OfficeBench 官方 evaluator、Dataset 去敏、workspace staging、token 估算、Annotation Queue 和 export 完整性闸门。
+- benchmark contract 当前覆盖 15 个定向测试；日本区 Cloud 写入/回读、Luna 探针、Terra Connection/Judge、licensed Dataset 与 token 估算已有真实证据。完整机器 Score、media 支持、人工审核和发布分数仍须在 OCB 资产补齐后执行。
 
 ### 实施步骤概览
 
@@ -53,7 +53,7 @@ Cassette Agent smoke
   固定模型响应，测真实 AgentLoop/Runner 工具协议，无 Key、无网络
 
 真模型 benchmark
-  测质量、成本和时延，但不放进确定性 CI
+  测质量、token 和时延，但不放进确定性 CI
 ```
 
 同时增加 Trace 解释执行过程，Eval 对结果做硬门判定，红队验证攻击后果。
@@ -339,7 +339,7 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 - OpenXML 损坏。
 - 未确认外发。
 
-软评分可能受模型、prompt 和价格变化影响。P5 的原则是先把可以确定性证明的安全与正确性做成硬门；Langfuse Judge 只作为可追踪的质量评估，不能覆盖数字、权限、文件和 OpenXML hard gate。
+软评分可能受模型和 prompt 变化影响。P5 的原则是先把可以确定性证明的安全与正确性做成硬门；Langfuse Judge 只作为可追踪的质量评估，不能覆盖数字、权限、文件和 OpenXML hard gate。
 
 ## 验证与历史结果
 
@@ -360,12 +360,15 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 
 ## 仍未完成和不能夸大的部分
 
-- 尚未完成日本区 Langfuse Cloud 的真实写入/flush/API 回读/deep link 证据；代码已提供 prepare 的 Cloud smoke 硬门。
-- 尚未配置 Terra LLM Connection 和 OCB/PresentBench Custom LLM-as-a-Judge，因此没有 `mybot_score` 真模型数字。
+- 日本区 Langfuse Cloud 的真实写入/flush/API 回读/deep link 已通过，redacted 与 licensed Dataset 均已建立；这只能证明基础设施，不代表质量基线。
+- Terra Connection `mybot-terra-judge-v1`、`mybot_score` evaluator v1 与 OCB/PresentBench 两条 100% experiment 规则已创建并启用；尚无完整成功 Run 的 `mybot_score`，不能发布真模型数字。
 - 尚未完成 PresentBench media 到 Judge 的真实 spike、Annotation Queue 人工完成和 `benchmark export` 发布快照。
+- 首个 OCB/OfficeCLI Run `8e63bb66-f505-4e08-b16a-70399467e074` 有 1 item 完成、3 item 因本地引用缺失失败，未创建 Queue；它是基础设施失败记录，不是质量结果。
+- OCB 固定 smoke 已取得 `Candy.xlsx` 和 `Data Access Plan Template _final.docx`；`science_mixed_long_1.pptx`、`winml_gdc.pptx` 的上游 PDF 必须由固定官方 downloader 使用 Adobe PDF Services 转换。用户需在当前 shell 提供 `PDF_SERVICES_CLIENT_ID`/`PDF_SERVICES_CLIENT_SECRET` 后重跑 licensed prepare。
+- 工作材料中曾出现真实外观的 Langfuse Secret；当前 `HEAD`/diff 已清除，但旧 Key Pair 仍须由用户在日本区 Project 撤销并轮换，更新本机配置后以 `captureContent=false` 重做 Cloud preflight，才能继续 licensed run。
 - OfficeBench adapter/evaluator、OCB/PresentBench adapter 和离线 contract 已落地，但不等于已完成真模型质量基线。
 - P1.1 已将 Python baseline 落地为通用 `office-python`；P5 Core 的 `office_baseline` 已切换到中立 OpenXML fixture，不再依赖旧周报资产。
-- 没有真实 DeepSeek/GPT 多模型质量-价格矩阵。
+- 没有真实 DeepSeek/GPT 多模型质量-token 矩阵。
 - 没有 KV cache 优化结论。
 - visual sanity 不是审美或排版质量评分。
 - evidence metric 依赖固定测试产生的证据，不是生产监控万能扫描器。
@@ -381,24 +384,25 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 | Langfuse Project Key | `observability.langfuse.publicKey/secretKey` 或对应 `LANGFUSE_*` | `LangfuseRuntime` 连接 `https://jp.cloud.langfuse.com` | `auth_check()`、write、flush、API readback、deep link 全通过 |
 | 内容开关 | `observability.langfuse.captureContent` | `false` 时 span masking 与 Dataset redaction；`true` 时允许已审公开内容进入 Run/Judge | 未审数据必须为 `false`；真模型 run 要求 `true` |
 | Terra Connection | Langfuse LLM Connection：OpenAI-compatible Base URL/Key，model `gpt-5.6-terra` | Cloud Judge 产生 OCB/PresentBench `mybot_score` | Connection test、filter、100% sampling、每 item Score/reasoning |
-| LibreOffice | `--soffice <绝对路径>` + `--soffice-version '<完整输出>'` | prepare fingerprint 与 Office evaluator/render 环境 | 稳定 release；路径存在且版本完全匹配 |
-| 模型价格 | `benchmarks/office/profiles.json` 四项美元/百万 token 非零值 | `estimate_payload()` 计算调用前预算 | `pricing_configured=true`，用户才可传 `--confirm-cost` |
+| Adobe PDF Services | 当前 shell 的 `PDF_SERVICES_CLIENT_ID/PDF_SERVICES_CLIENT_SECRET`，只从密码管理器注入 | 固定 OCB downloader 将两个上游 PDF 导出为 PPTX | 四个 OCB smoke 引用存在且摘要非空；Key 不进入 config/Git/cache |
+| LibreOffice | `/Applications/LibreOffice.app/Contents/MacOS/soffice` + 完整输出 `LibreOffice 26.2.4.2 0229ac93fcf0d7cbc6376066c6f35021cef002dc` | prepare fingerprint 与 Office evaluator/render 环境 | 稳定 release；路径存在且版本完全匹配 |
+| Token 估算 | `benchmarks/office/profiles.json` 的 `estimate_tokens_per_case` | `estimate_payload()` 按 Agent/Judge input/output 计算调用规模 | 输出 `estimated_tokens` 分项与 total；不读取价格、不计算金额 |
 | 许可/跨境审查 | 固定 revision 的 OCB、OfficeBench、PresentBench 内容审查记录 | 决定是否允许 `--allow-licensed-content` | 未全部批准只生成 redacted Dataset，禁止真实 run |
 
-完整操作顺序维护在 `docs/plans/runtime-steps/P5-trace-eval.md` 的“P5.1 用户配置与真实运行步骤（必须按顺序）”：无 Key CI -> Luna Provider -> 日本区 Project -> 稳定 LibreOffice -> 价格 -> 许可 -> redacted Cloud preflight -> Terra Connection/Judge -> licensed prepare -> estimate -> 六个 smoke Run -> PresentBench media spike -> 六个 Queue 人审 -> 逐 Run export -> 恢复 `captureContent=false` -> release。
+完整操作顺序维护在 `docs/plans/runtime-steps/P5-trace-eval.md` 的“P5.1 用户配置与真实运行步骤（必须按顺序）”：无 Key CI -> Luna Provider -> 日本区 Project -> 稳定 LibreOffice -> token 统计口径 -> 许可 -> redacted Cloud preflight -> Terra Connection/Judge -> Adobe OCB 转换与 licensed prepare -> estimate -> 失败 Run 关联重试及其余五组 smoke -> PresentBench media spike -> 六个 Queue 人审 -> 逐 Run export -> 恢复 `captureContent=false` -> release。换电脑时仍必须重做本地依赖、配置、LibreOffice、cache、CI 和 preflight；Project 资源可按 runbook 边界复用。
 
-实现层必须保留以下 fail-closed 语义：价格为零不能 run；未带许可确认不能 run；`captureContent=false` 不能 run licensed Dataset；缺 `mybot_score/official_score`、缺 `mybot-human-review`、Queue 未完成或 deep link 不可构造都不能 export。当前发现的 `LibreOfficeDev 26.8.0.0.alpha0` 不能作为 release 证据。
+实现层必须保留以下 fail-closed 语义：未带许可确认不能 run；`captureContent=false` 不能 run licensed Dataset；缺 `mybot_score/official_score`、缺 `mybot-human-review`、Queue 未完成或 deep link 不可构造都不能 export。稳定版 LibreOffice 已安装并锁定路径/版本；Codex runtime 的 `LibreOfficeDev 26.8.0.0.alpha0` 仍不能作为 release 证据。
 
 ### P5.1a：Langfuse Python SDK 作为唯一观测后端
 
 - `TraceHook` 保留为 AgentHook 上的语义入口，负责 `mybot.*`、Runtime 语义和字段 allowlist；Interaction/Checkpoint/ArtifactStore 仍是 Runtime 状态真相源。
 - 锁定 Langfuse Python SDK，直接使用 OTel 上下文、observation、`propagate_attributes()`、`mask_otel_spans`、batch/retry/flush 和 Cloud 传输。不实现 `TraceEvent -> CompositeTraceSink`、生产 JSONL exporter、HTTP 客户端或发送队列。
-- 实施前 spike 验证 async/Subagent 父子关系、agent/generation/tool/guardrail 映射、usage/cost、有限时间 shutdown 和日本区 API 回读。测试使用 OTel in-memory exporter；普通任务不持久双写 JSONL。
+- 实施前 spike 验证 async/Subagent 父子关系、agent/generation/tool/guardrail 映射、usage token、有限时间 shutdown 和日本区 API 回读。测试使用 OTel in-memory exporter；普通任务不持久双写 JSONL。
 - SDK 随 Mybot 默认安装并锁定版本，不安装 Langfuse Skill，不让前端 JS/TS SDK发送主 Trace，也不把 secret key 暴露给浏览器。
 - `after_iteration` 只保留摘要；Provider 和 Runner 工具边界必须逐调用创建 generation/tool observation。
 - Cloud 默认关闭时，普通 Runtime 和本地 CI 继续运行，但不承诺持久 Trace 或离线补传；smoke/release 必须通过日本区真实写入、flush、回读和 deep link。
 - 默认只上传脱敏 metadata、hash、长度、状态和指标；原始 Office 文件、正文、完整 artifact、密钥和个人信息不进入 Cloud。日本区属于跨境数据传输，敏感数据保持关闭。
-- Langfuse UI 负责 Trace/Sessions、Dataset/Experiment、Scores、成本/延迟 Dashboard、Monitors 和 Annotation Queue；Mybot WebUI 不复制这些能力。
+- Langfuse UI 负责 Trace/Sessions、Dataset/Experiment、Scores、token/延迟 Dashboard、Monitors 和 Annotation Queue；Mybot WebUI 不复制这些能力。
 
 ### P5.1b：Langfuse Evaluation 主流程
 
@@ -418,7 +422,7 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 - 每个 revision 使用新的不可变 Dataset 名称或固定 version；Dataset metadata 记录 SHA/license、adapter/constraints、Python、LibreOffice、Skill、model 和 evaluator config。实验 fingerprint 写入 Langfuse metadata，不建本地 run 数据库。
 - release 固定 `prepare -> estimate -> run_experiment -> Annotation Queue -> export`；失败 item 首版使用带 `parent_run_id` 的 retry Dataset Run，不实现自定义 status/resume 状态机。
 - `ci` 完全离线；`office-smoke` 三套各 4 case；`office-release` OCB 全量、固定 OfficeBench subset 和 PresentBench full/50%/25% 独立 Dataset/series。三套结果不合成总分。
-- 成本估算和用户确认仍由 Mybot 在调用前完成；实际 token/cost、P50/P95、Score 趋势和 Dashboard 全由 Langfuse 产生。
+- 调用前 token 估算由 Mybot 完成；实际 input/output/cache token、P50/P95、Score 趋势和 Dashboard 全由 Langfuse 产生，不读取价格或计算金额。
 
 ## 面试怎么讲
 

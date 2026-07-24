@@ -176,7 +176,7 @@ def materialize_presentbench(
             },
             "expected_output": {
                 "rubric_sha256": _digest(judge_prompt),
-                "judge_prompt_path": str(judge_path),
+                "rubric": judge_prompt,
             },
             "metadata": {
                 "benchmark": "presentbench",

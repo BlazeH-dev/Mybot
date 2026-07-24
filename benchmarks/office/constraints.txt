@@ -8,6 +8,8 @@ pytz==2025.2
 pdf2docx==0.5.8
 pyarrow==23.0.1
 PyYAML==6.0.3
+python-dotenv==1.2.1
+pdfservices-sdk==4.2.0
 Pillow==12.1.0
 PyMuPDF==1.26.7
 python-docx==1.2.0

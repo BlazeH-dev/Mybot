@@ -5,8 +5,8 @@ rendered media, virtual environments, traces, scores, and reviewer state live ou
 cache selected by `nanobot benchmark prepare` and in Langfuse Japan Cloud.
 
 `profiles.json` pins code and dataset revisions, license identities, smoke cases, compared Skills,
-models, and pre-run pricing assumptions. Fill non-zero Luna/Terra pricing before relying on
-`estimate`; actual tokens and cost remain Langfuse generation metrics.
+models, and per-case token assumptions. `estimate` reports the expected Luna Agent and Terra Judge
+input/output token volume; actual token usage remains available in Langfuse generation metrics.
 
 PresentBench source materials retain their original licenses. `prepare` validates the pinned
 metadata but does not upload material files. Only content explicitly cleared by the operator may be

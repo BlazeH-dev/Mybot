@@ -43,12 +43,6 @@
     "agent": "gpt-5-6-luna",
     "judge": "gpt-5-6-terra"
   },
-  "pricing_usd_per_million_tokens": {
-    "input": 0.0,
-    "output": 0.0,
-    "judge_input": 0.0,
-    "judge_output": 0.0
-  },
   "estimate_tokens_per_case": {
     "agent_input": 18000,
     "agent_output": 5000,

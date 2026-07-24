@@ -29,8 +29,11 @@ _ROOT = Path(__file__).resolve().parents[2]
 _PROFILE_PATH = _ROOT / "benchmarks" / "office" / "profiles.json"
 _CONSTRAINTS_PATH = _ROOT / "benchmarks" / "office" / "constraints.txt"
 _PROFILES = frozenset({"ci", "office-smoke", "office-release"})
+_BENCHMARKS = ("ocb", "officebench", "presentbench")
 _SKILLS = ("officecli", "office-python")
 _PRESENTBENCH_SAMPLES = frozenset({60, 119, 238})
+_CLOUD_READBACK_ATTEMPTS = 30
+_CLOUD_READBACK_INTERVAL_SEC = 2
 _WORKSPACES: dict[str, Path] = {}
 _WORKSPACES_LOCK = threading.Lock()
 
@@ -46,6 +49,15 @@ def _manifest() -> dict[str, Any]:
 def _validate_profile(profile: str) -> None:
     if profile not in _PROFILES:
         raise BenchmarkError(f"unknown profile {profile!r}; choose one of {sorted(_PROFILES)}")
+
+
+def _select_values(values: list[str] | None, allowed: tuple[str, ...], label: str) -> tuple[str, ...]:
+    if not values:
+        return allowed
+    invalid = sorted(set(values) - set(allowed))
+    if invalid:
+        raise BenchmarkError(f"unknown {label}: {invalid}; choose from {list(allowed)}")
+    return tuple(dict.fromkeys(values))
 
 
 def _cache_root(cache_dir: Path | None) -> Path:
@@ -188,6 +200,13 @@ def _prepared_path(root: Path, profile: str) -> Path:
     return root / f"{profile}.prepared.json"
 
 
+def _case_manifest_digests(root: Path, profile: str) -> dict[str, str]:
+    return {
+        benchmark: hashlib.sha256((root / f"{profile}-{benchmark}.jsonl").read_bytes()).hexdigest()
+        for benchmark in ("ocb", "officebench", "presentbench")
+    }
+
+
 def _load_prepared(root: Path, profile: str) -> dict[str, Any]:
     path = _prepared_path(root, profile)
     if not path.is_file():
@@ -198,6 +217,16 @@ def _load_prepared(root: Path, profile: str) -> dict[str, Any]:
     payload["fingerprint"] = expected
     if expected != actual:
         raise BenchmarkError(f"prepared profile fingerprint mismatch: {path}")
+    manifest_root = Path(payload["case_manifest_root"])
+    expected_manifests = payload.get("case_manifest_sha256")
+    if not isinstance(expected_manifests, dict):
+        raise BenchmarkError(f"prepared profile lacks case manifest digests: re-run prepare for {profile}")
+    try:
+        actual_manifests = _case_manifest_digests(manifest_root, profile)
+    except FileNotFoundError as exc:
+        raise BenchmarkError(f"prepared case manifest is unavailable: {exc.filename}") from exc
+    if expected_manifests != actual_manifests:
+        raise BenchmarkError(f"prepared case manifests changed: re-run prepare for {profile}")
     return payload
 
 
@@ -209,6 +238,42 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def _missing_ocb_references(rows: list[dict[str, Any]]) -> list[str]:
+    return sorted({
+        Path(path).name
+        for row in rows
+        for path, digest in zip(
+            row["input"].get("reference_paths", []),
+            row["input"].get("reference_sha256", []),
+            strict=True,
+        )
+        if not digest
+    })
+
+
+def _download_ocb_references(
+    python: Path,
+    source_root: Path,
+    data_root: Path,
+    rows: list[dict[str, Any]],
+) -> None:
+    missing = _missing_ocb_references(rows)
+    if not missing:
+        return
+    _run([
+        str(python),
+        str(source_root / "download_and_convert_files.py"),
+        "--manifest",
+        str(data_root / "data" / "ocb_source_urls.parquet"),
+        "--output-dir",
+        str(data_root / "reference_files"),
+        "--filename",
+        ",".join(missing),
+        "--delay",
+        "0",
+    ])
 
 
 def _item_field(item: Any, name: str, default: Any = None) -> Any:
@@ -319,7 +384,7 @@ def _cloud_smoke(runtime: LangfuseRuntime) -> dict[str, str]:
         raise BenchmarkError("Langfuse observation did not produce a trace id")
     runtime.flush(strict=True)
     last_error: Exception | None = None
-    for _ in range(10):
+    for attempt in range(_CLOUD_READBACK_ATTEMPTS):
         try:
             runtime.client.api.trace.get(trace_id)
             project_id = runtime.client._get_project_id()
@@ -331,7 +396,8 @@ def _cloud_smoke(runtime: LangfuseRuntime) -> dict[str, str]:
             return {"trace_id": trace_id, "deep_link": deep_link}
         except Exception as exc:
             last_error = exc
-            time.sleep(1)
+            if attempt + 1 < _CLOUD_READBACK_ATTEMPTS:
+                time.sleep(_CLOUD_READBACK_INTERVAL_SEC)
     raise BenchmarkError(f"Langfuse trace readback failed after flush: {last_error}")
 
 
@@ -510,7 +576,12 @@ def prepare(
             python,
             ocb_spec,
             root / "datasets" / "ocb",
-            ["data/ocb_qna_data.parquet", "README.md", "NOTICES.md"],
+            [
+                "data/ocb_qna_data.parquet",
+                "data/ocb_source_urls.parquet",
+                "README.md",
+                "NOTICES.md",
+            ],
         )
         present_data = _download_hf_snapshot(
             python,
@@ -538,23 +609,40 @@ def prepare(
             case_ids=ocb_case_ids,
         )
         ocb_rows = _read_rows(case_manifest_root / f"{profile}-ocb.jsonl")
-        _download_hf_snapshot(
-            python,
-            ocb_spec,
-            ocb_data,
-            [
-                f"reference_files/{Path(path).name}"
-                for row in ocb_rows
-                for path in row["input"].get("reference_paths", [])
-            ],
-        )
-        _materialize_manifest(
-            python,
-            "ocb",
-            ocb_data,
-            case_manifest_root / f"{profile}-ocb.jsonl",
-            case_ids=ocb_case_ids,
-        )
+        if allow_licensed_content:
+            _download_hf_snapshot(
+                python,
+                ocb_spec,
+                ocb_data,
+                [
+                    f"reference_files/{Path(path).name}"
+                    for row in ocb_rows
+                    for path in row["input"].get("reference_paths", [])
+                ],
+            )
+            _download_ocb_references(
+                python,
+                Path(sources["ocb"]),
+                ocb_data,
+                ocb_rows,
+            )
+            _materialize_manifest(
+                python,
+                "ocb",
+                ocb_data,
+                case_manifest_root / f"{profile}-ocb.jsonl",
+                case_ids=ocb_case_ids,
+            )
+            missing_ocb = _missing_ocb_references(
+                _read_rows(case_manifest_root / f"{profile}-ocb.jsonl")
+            )
+            if missing_ocb:
+                raise BenchmarkError(
+                    "OCB reference assets remain unavailable after the pinned official downloader: "
+                    + ", ".join(missing_ocb)
+                    + ". Configure the upstream conversion credentials or place the official converted "
+                    "files in the external OCB reference_files cache, then rerun prepare."
+                )
         _materialize_manifest(
             python,
             "officebench",
@@ -578,7 +666,7 @@ def prepare(
             ),
         )
         prepared = {
-            "schema_version": 1,
+            "schema_version": 2,
             "profile": profile,
             "repositories": manifest["repositories"],
             "sources": sources,
@@ -591,6 +679,7 @@ def prepare(
             "libreoffice": libreoffice,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
+        prepared["case_manifest_sha256"] = _case_manifest_digests(case_manifest_root, profile)
         prepared["asset_fingerprint"] = _fingerprint(prepared)
         runtime = _langfuse_runtime()
         try:
@@ -621,22 +710,20 @@ def estimate_payload(profile: str, presentbench_sample: int, manifest: dict[str,
         counts = {"ocb": 1018, "officebench": 93, "presentbench": presentbench_sample}
     runs = sum(counts.values()) * len(manifest["skills"])
     token_estimate = manifest["estimate_tokens_per_case"]
-    prices = manifest["pricing_usd_per_million_tokens"]
-    agent_cost = runs * (
-        token_estimate["agent_input"] * prices["input"]
-        + token_estimate["agent_output"] * prices["output"]
-    ) / 1_000_000
     judged = (counts["ocb"] + counts["presentbench"]) * len(manifest["skills"])
-    judge_cost = judged * (
-        token_estimate["judge_input"] * prices["judge_input"]
-        + token_estimate["judge_output"] * prices["judge_output"]
-    ) / 1_000_000
+    estimated_tokens = {
+        "agent_input": runs * token_estimate["agent_input"],
+        "agent_output": runs * token_estimate["agent_output"],
+        "judge_input": judged * token_estimate["judge_input"],
+        "judge_output": judged * token_estimate["judge_output"],
+    }
+    estimated_tokens["total"] = sum(estimated_tokens.values())
     return {
         "profile": profile,
         "case_counts": counts,
         "skill_runs": runs,
-        "estimated_usd": round(agent_cost + judge_cost, 4),
-        "pricing_configured": all(float(value) > 0 for value in prices.values()),
+        "judge_runs": judged,
+        "estimated_tokens": estimated_tokens,
     }
 
 
@@ -653,11 +740,11 @@ def estimate(
     model_preset: str = typer.Option("gpt-5-6-luna", "--model-preset"),
     presentbench_sample: int = typer.Option(238, "--presentbench-sample", min=1, max=238),
 ) -> None:
-    """Print a pre-run token/cost estimate without calling any model."""
+    """Print a pre-run token estimate without calling any model."""
     try:
         _validate_profile(profile)
         if profile == "ci":
-            console.print(json.dumps({"profile": "ci", "estimated_usd": 0}, indent=2))
+            console.print(json.dumps({"profile": "ci", "estimated_tokens": {"total": 0}}, indent=2))
             return
         _validate_presentbench_sample(profile, presentbench_sample)
         manifest = _manifest()
@@ -665,10 +752,6 @@ def estimate(
             raise BenchmarkError(f"Office comparison is fixed to {manifest['models']['agent']}")
         payload = estimate_payload(profile, presentbench_sample, manifest)
         console.print_json(data=payload)
-        if not payload["pricing_configured"]:
-            raise BenchmarkError(
-                "pricing is zero/unconfigured in benchmarks/office/profiles.json; fill Luna/Terra rates before run"
-            )
     except BenchmarkError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
@@ -686,6 +769,23 @@ def _load_case_items(
         profile,
         presentbench_sample=presentbench_sample,
     )
+
+
+def _validate_case_assets(items: dict[str, list[dict[str, Any]]]) -> None:
+    missing = sorted({
+        Path(path).name
+        for rows in items.values()
+        for row in rows
+        for field in ("reference_paths", "material_paths")
+        for path in row["input"].get(field, [])
+        if not Path(path).is_file()
+    })
+    if missing:
+        raise BenchmarkError(
+            "prepared benchmark assets are unavailable: "
+            + ", ".join(missing)
+            + "; re-run prepare before any model call"
+        )
 
 
 async def _run_agent_item(
@@ -888,7 +988,9 @@ def run(
     model_preset: str = typer.Option("gpt-5-6-luna", "--model-preset"),
     cache_dir: Path | None = typer.Option(None, "--cache-dir"),
     presentbench_sample: int = typer.Option(238, "--presentbench-sample", min=1, max=238),
-    confirm_cost: bool = typer.Option(False, "--confirm-cost"),
+    benchmarks: list[str] | None = typer.Option(None, "--benchmark"),
+    skills: list[str] | None = typer.Option(None, "--skill"),
+    parent_run_id: str | None = typer.Option(None, "--parent-run-id"),
 ) -> None:
     """Run offline CI gates or thinly invoke Langfuse Experiment Runner."""
     try:
@@ -909,13 +1011,14 @@ def run(
             return
         manifest = _manifest()
         _validate_presentbench_sample(profile, presentbench_sample)
+        selected_benchmarks = _select_values(benchmarks, _BENCHMARKS, "benchmark")
+        selected_skills = _select_values(skills, _SKILLS, "Skill")
+        if parent_run_id and (len(selected_benchmarks) != 1 or len(selected_skills) != 1):
+            raise BenchmarkError(
+                "--parent-run-id requires exactly one --benchmark and one --skill"
+            )
         if model_preset != manifest["models"]["agent"]:
             raise BenchmarkError(f"Office comparison is fixed to {manifest['models']['agent']}")
-        estimate_data = estimate_payload(profile, presentbench_sample, manifest)
-        if not estimate_data["pricing_configured"]:
-            raise BenchmarkError("pricing is unconfigured; run estimate after filling profiles.json")
-        if not confirm_cost:
-            raise BenchmarkError("review `benchmark estimate`, then pass --confirm-cost")
         root = _cache_root(cache_dir)
         prepared = _load_prepared(root, profile)
         if not prepared.get("licensed_content_uploaded"):
@@ -928,7 +1031,13 @@ def run(
             profile,
             presentbench_sample=presentbench_sample,
         )
-        missing = [name for name, values in items.items() if not values]
+        selected_items = {
+            name: values
+            for name, values in items.items()
+            if name in selected_benchmarks
+        }
+        _validate_case_assets(selected_items)
+        missing = [name for name, values in selected_items.items() if not values]
         if missing:
             raise BenchmarkError(
                 "prepared case manifests are incomplete for " + ", ".join(missing)
@@ -942,10 +1051,16 @@ def run(
             "prepared_fingerprint": prepared["fingerprint"],
             "presentbench_sample": str(presentbench_sample),
             "annotation_review_policy": "smoke=100%; release=stable 5% sample",
+            "benchmark_filter": list(selected_benchmarks),
+            "skill_filter": list(selected_skills),
         }
+        if parent_run_id:
+            metadata["parent_run_id"] = parent_run_id
         run_root = root / "runs" / profile / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
         try:
             for benchmark, benchmark_items in items.items():
+                if benchmark not in selected_benchmarks:
+                    continue
                 dataset_name = prepared["datasets"][benchmark]
                 if benchmark == "presentbench" and profile == "office-release" and presentbench_sample != 238:
                     dataset_name = f"{dataset_name}-n{presentbench_sample}"
@@ -961,7 +1076,7 @@ def run(
                     str(source["metadata"]["case_id"]): source
                     for source in benchmark_items
                 }
-                for skill in _SKILLS:
+                for skill in selected_skills:
                     def task(*, item, _skill=skill, _benchmark=benchmark):
                         case_id = _case_id(item)
                         try:
