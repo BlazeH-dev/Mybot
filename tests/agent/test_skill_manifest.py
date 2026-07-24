@@ -282,7 +282,7 @@ def test_disabled_skill_can_be_listed_for_catalog_but_not_agent(tmp_path: Path) 
     assert loader.get_skill_status("alpha")["status"] == "disabled"
 
 
-@pytest.mark.parametrize("name", ["office-automation", "officecli"])
+@pytest.mark.parametrize("name", ["office-python", "officecli"])
 def test_packaged_office_manifests_are_valid(name: str, tmp_path: Path) -> None:
     loader = SkillsLoader(tmp_path, builtin_skills_dir=BUILTIN_SKILLS_DIR)
 

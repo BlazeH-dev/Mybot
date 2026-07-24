@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "fixture_digest": "9c0ae8c3ae82264a36bbfd49519ded18ccf754fe9fc88e5bc06738c101d40373",
+  "fixture_digest": "88ed53310c87e355baeb4e25bbcf64f7e4866e85179949f42b5812fab318114f",
   "passed": true,
   "case_count": 5,
   "hard_failures": 0,
@@ -81,7 +81,7 @@
           "issues": [],
           "details": {
             "validated_files": [
-              "../office_weekly/sales_data.xlsx"
+              "../office_python/sample.xlsx"
             ]
           },
           "hard_gate": true

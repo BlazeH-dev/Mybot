@@ -1,502 +1,250 @@
-# P1 双 Office Skill 垂直切片代码变更说明
+# P1 Office 垂直切片代码变更说明
 
 > 对应计划：`docs/plans/runtime-steps/P1-office垂直切片.md`
-> 当前状态：双 Skill 边界、共享确定性事实层、Python 渲染链、OfficeCLI 独立能力包、静态 Plan Tool、pytest 回归与 WebUI artifact 面板均已落地。
-> 2026-07-14 修订：撤销“单 Skill + OfficeCLI 默认后端 + legacy Python 后端”的结构，改为两个地位独立、可分别启用或禁用的 Skill。
-> 2026-07-16 修复：新增随 Python 包安装的固定版本 launcher，首次调用按 provider contract 下载、校验并缓存 v1.0.135，不再要求用户手工准备 binary。
-> 2026-07-16：阶段计划仅合并重复背景与步骤，双 Skill、facts、路由、contract、测试和 plan 契约不变。
-> 2026-07-18：plan-only 确认已接入持久化 `InteractionRequest`，以 `awaiting_plan_confirmation` 挂起并在 typed WebSocket/WebUI 回复后恢复原 tool call。
-> 2026-07-20：修复 plan-only 完成后计划卡片右下角“执行计划”缺失；挂起工具保留已成功的 plan result 事件，按钮直接响应 hash-bound `plan_confirmation`。
-> 2026-07-20：计划确认不再额外展示通用 InteractionRequest 卡片；页面只保留计划卡片右下角“执行计划”入口。
-> 2026-07-23 规划：P1.1 将 `office-automation` 直接改名并扩展为通用 `OfficePython`（Skill id `office-python`），不保留旧 id 兼容迁移；当前代码、manifest、测试和配置尚未实施，本说明仍以真实 id `office-automation` 描述现状。
+> 当前状态：P1 Core 与 P1.1 OfficePython 已完成（2026-07-24）。
 
-## 阶段目标
+## 1. 这一阶段解决什么问题
 
-P1 要验证的不是某一个 Office 库，而是一条可治理、可测试、可替换的 Office 任务链：
+Office 文件任务不是“让模型写一段文字”就结束。它同时需要：
 
-```text
-输入文件 / 用户要求
-  -> 独立 Skill 路由
-     ├── office-automation（Python 工作流）
-     └── officecli（OfficeCLI 完整能力）
-  -> 共享输入检查与 verified facts（仅定量任务必需）
-  -> Skill 自有工作流 / 中间表示
-  -> docx / xlsx / pptx 与质量、验证、预览产物
-```
+1. 从输入文件获得可核对的结构和数字。
+2. 让模型负责规划与内容组织，让确定性代码负责文件操作。
+3. 不覆盖用户输入，批量编辑失败时不留下半成品。
+4. 对 Python 库无法保真的 OOXML 特性诚实返回 unsupported。
+5. 用两个独立 Skill 在相同条件下比较，而不是把 OfficeCLI 藏进 Python baseline。
 
-两个 Skill 的关系是：
-
-- `office-automation`：原有 Python Office 工作流，拥有自己的 report/slide DSL、validator、`python-docx` 和 `python-pptx` 渲染器。
-- `officecli`：基于 OfficeCLI v1.0.135 官方能力快照的独立 Skill，可使用其 help、view、DOM、batch、validate、raw、MCP、plugin 等能力。
-- 两者共享确定性输入检查、`verified_facts.json` 和 Runtime 公共治理，但不要求共享 DSL。
-- 未显式指定时，通用 Office 请求优先匹配 `officecli`；用户明确要求原 Python 方案时使用 `office-automation`。
-- 两者都通过现有 `disabledSkills` 独立开关；OfficeCLI binary 缺失只会使 `officecli` unavailable，不影响 Python Skill。
-
-P1 继续复用现有 Agent 工具与 Skill 渐进披露机制，没有为 Office 在 `loop.py` 或 `runner.py` 中写私有分支。
-
-## 先建立三个核心认识
-
-### 垂直切片不是“只做一层”
-
-垂直切片是从用户入口一直打通到最终产物：上传文件、选择 Skill、抽取事实、生成中间表示、渲染 Office 文件、校验、展示和测试都要跑通。它比只写一个 `render_pptx.py` 更能暴露真实架构问题。
-
-### LLM 负责组织，确定性代码负责数字
-
-模型可以决定报告结构、标题和叙述，但 GMV、订单、转化率等数字由 Python 脚本从 Excel 计算，再通过 fact id 引用。这样把“语言生成能力”和“数值正确性”拆开。
-
-### Skill 是方法说明，不是权限
-
-`SKILL.md` 告诉模型如何完成 Office 工作，真正执行文件写入、Shell、OfficeCLI 时仍要经过 P3 的 Policy、Sandbox 和 approval。这个分层是后续 Runtime 通用化的基础。
-
-## 代码变更
-
-### 1. 共享 Office 确定性核心
-
-新增：
+最终结构是：
 
 ```text
-nanobot/skills/_shared/office_core/
-├── __init__.py
-├── common.py
-├── references/
-│   ├── metric_spec.example.json
-│   └── verified_facts.schema.json
-└── scripts/
-    ├── __init__.py
-    ├── inspect_workbook.py
-    └── extract_facts.py
+SkillsLoader
+  ├── officecli
+  ├── office-python
+  └── _shared/office_core（代码依赖，不是 Skill）
+
+office-python request JSON
+  -> scripts/office.py
+  -> python-docx / openpyxl / python-pptx
+  -> 临时 OpenXML 文件
+  -> validate
+  -> os.replace() 原子发布
+  -> result JSON
 ```
 
-这个目录没有 `SKILL.md`，因此不会被 `SkillsLoader` 当成第三个 Skill，也不会进入模型的 Skills summary。
+## 2. 双 Skill 边界
 
-共享层只负责可以确定性复用的事实工作：
+### OfficePython
 
-- 只读检查工作簿，生成紧凑 `workbook_schema.json`。
-- 按 metric spec 计算指标，生成 `verified_facts.json`。
-- 提供 JSON 读写、fact 格式化等公共函数。
-
-`office-automation/scripts/inspect_workbook.py`、`extract_facts.py` 与 `_common.py` 保留兼容入口，内部转发到共享实现，避免旧脚本路径立即失效。
-
-### 2. 恢复独立 Python Skill：`office-automation`
-
-当前目录：
+`nanobot/skills/office-python/` 是通用 Python baseline：
 
 ```text
-nanobot/skills/office-automation/
-├── SKILL.md
-├── assets/
-├── references/
-│   ├── plan.schema.json
-│   ├── report_dsl.schema.json
-│   └── slide_dsl.schema.json
-└── scripts/
-    ├── _common.py
-    ├── extract_facts.py
-    ├── inspect_workbook.py
-    ├── render_docx.py
-    ├── render_pptx.py
-    └── validate.py
+SKILL.md
+skill.yaml
+references/
+  constraints.txt
+  request.schema.json
+scripts/
+  office.py
 ```
 
-主要调整：
+它只暴露一个脚本入口，不依赖 OfficeCLI、OfficeCLI compiler 或 OfficeCLI backend。支持的传输
+操作固定为 `inspect/query/create/apply/validate/render`，格式固定为 `docx/xlsx/pptx`。
 
-- `SKILL.md` 明确这是原 Python Office 工作流，不再把 OfficeCLI 描述成内部默认后端。
-- `render_docx.py` 只使用 `python-docx`。
-- `render_pptx.py` 只使用 `python-pptx`，并继续执行 PPT 页数约束。
-- 删除 `--backend`、`--officecli-bin`、`MYBOT_OFFICE_BACKEND` 等后端切换语义。
-- 保留 Skill 自己的 DSL、validator、plan 校验与 artifact 约定。
+### OfficeCLI
 
-Python 路径的确定性链路为：
+`nanobot/skills/officecli/` 继续承担默认通用 Office 路由，使用固定 v1.0.135 contract 和项目
+launcher。OfficeCLI 的 DOM/query/batch/view/validate/raw 等能力没有被 Python 接口裁剪；P3 在
+运行时按实际工具与参数做 allow/ask/deny。
+
+### Shared facts
+
+`nanobot/skills/_shared/office_core/` 保留 workbook inspect 与 verified facts：定量任务必须先把
+关键值写成带 fact id、来源、计算和展示值的结构化事实；纯格式和提取任务不创建形式化空 facts。
+
+共享的是事实、输入快照和验证器，不是某一方的操作 DSL。这样两个 Skill 面对同一数据，但不会因
+共享 OfficeCLI action space 而破坏公平性。
+
+## 3. `office.py` 的接口怎样工作
+
+### Request/result
+
+request 必须包含：
 
 ```text
-Excel
-  -> shared inspect_workbook.py
-  -> shared extract_facts.py
-  -> verified_facts.json
-  -> report_dsl.json / slide_dsl.json
-  -> office-automation/validate.py
-  -> python-docx / python-pptx
-  -> weekly_report.docx / weekly_review.pptx
+schema_version
+operation / format
+input_artifact / output_artifact
+selector
+payload
+options.artifact_root
 ```
 
-### 3. 新增独立 OfficeCLI Skill：`officecli`
-
-当前目录：
+result 无论成功、失败还是 unsupported，都有稳定字段：
 
 ```text
-nanobot/skills/officecli/
-├── SKILL.md
-├── references/
-│   ├── officecli-runtime.json
-│   └── upstream-snapshot.md
-└── scripts/
-    ├── compile_officecli.py
-    ├── officecli_backend.py
-    ├── render_docx.py
-    └── render_pptx.py
+status
+matches / changes
+artifact / validation / rendered_assets
+warnings
+error
+duration_ms
 ```
 
-版本与来源固定为：
+CLI 把错误写进 result JSON 后返回非零 exit code，Agent 不需要从 stderr 猜语义。
 
-- 官方仓库：`https://github.com/iOfficeAI/OfficeCLI`
-- tag：`v1.0.135`
-- 上游 `SKILL.md` SHA：`0b110eab23229c3b2f507b1802f3bcd37e44a8dd`
-- license：Apache-2.0
+### 中立 selector
 
-`SKILL.md` 和 `officecli-runtime.json` 保留 OfficeCLI 的完整能力面，包括：
+selector 使用 `paragraph/table/cell/sheet/slide/shape`、index、name、text_contains、range 等通用
+概念。例如：
 
-- help、create、view、get、query、validate。
-- add、set、remove、move、swap、batch。
-- raw、raw-set、add-part。
-- plugins、MCP、watch、install、config、update。
+```json
+{"kind":"paragraph","text_contains":"Draft"}
+{"kind":"cell","sheet":"Data","range":"A1:D20"}
+{"kind":"shape","slide":1,"text_contains":"Old title"}
+```
 
-这些能力不会在 Skill 层被删除。P3 Runtime Policy 将按操作、参数、目标路径和网络边界分类为 allow / ask / deny。manifest 或 Skill 只能声明需求，不能自行授予权限；restricted workspace 外路径直接 hard deny，用户必须切换 workspace 或显式选择 Full Access。公网域名只能由参数绑定 approval 最小放宽，路径逃逸、受保护目录、SSRF/私网和敏感信息硬边界不可被审批放宽。
+它没有 OfficeCLI DOM path，也不会把 Python baseline 变成 OfficeCLI 的另一层 wrapper。
 
-`compile_officecli.py`、`render_docx.py`、`render_pptx.py` 是现有 grounded report/deck 的兼容 helper：
+## 4. 三种格式的实现
+
+### DOCX
+
+`python-docx` 负责 paragraph、heading/style、list、table/cell、inline image、header/footer。inspect
+额外给出段落、表格、图片、section 和 style 摘要；query 返回可序列化匹配项。
+
+编辑现有 DOCX 前直接检查 OOXML ZIP：出现 `<w:ins>`、`<w:del>`、move 标记或启用 tracked
+revisions 时返回 `unsupported_features`。这样不会让 python-docx 保存时静默丢失修订语义。
+
+### XLSX
+
+`openpyxl` 负责 sheet、cell/range、formula 和基础 bar/line chart。query 可以选择 sheet、cell、
+formula 或 chart；apply 支持 set/clear cell、append row、add/rename sheet 和 add chart。
+
+读取时保留 formula；`options.data_only=true` 只影响 query 视图，不改变源文件。
+
+### PPTX
+
+`python-pptx` 负责 slide、title/content/blank 基础 layout、shape text、textbox 和 picture。编辑前
+检查 `ppt/diagrams/`、多个 slide master 和 `<p:timing>`，分别把 SmartArt、复杂母版和动画/timing
+标成 unsupported，避免“文件能保存”被误解为“语义完整保真”。
+
+## 5. 为什么输入只读、输出原子
+
+`_validate_request()` 先做以下检查：
+
+- 输入存在且扩展名与 format 一致。
+- output 不能等于 input。
+- create/apply/render 的 output 必须位于 `options.artifact_root` 下。
+- create/apply 输出扩展名与 Office 格式一致，render 输出 `.pdf`。
+
+执行前记录输入 SHA-256，结束后再次计算。若输入变化，结果返回
+`readonly_input_violated`。
+
+create/apply 使用 `_atomic_office_write()`：
+
+1. 在最终输出同一目录创建临时文件。
+2. 加载源文件并顺序执行整个 actions 数组。
+3. 保存并验证临时文件非空。
+4. 全部成功后 `os.replace(temp, output)`。
+5. 任一步失败都删除临时文件，既有 output 保持不变。
+
+同目录临时文件保证最终 rename 在同一文件系统内，避免跨设备 rename 破坏原子性。
+
+## 6. LibreOffice 为什么是外部锁定依赖
+
+Python 库不负责完整排版渲染。`render` 因此调用外部 `soffice --headless --convert-to pdf`，但要求
+request 同时提供：
+
+```json
+{
+  "libreoffice": {
+    "path": "/absolute/path/to/soffice",
+    "expected_version": "LibreOffice 24.2.7.2"
+  }
+}
+```
+
+脚本先执行 `--version` 精确匹配，再在 artifact 目录的临时文件夹转换，最后原子发布 PDF。result
+记录真实 path/version/hash。项目不下载、打包或暗中选择 LibreOffice；普通 CI 用小型可执行替身验证
+协议，正式 smoke/release 必须在 P5.1 prepare manifest 中锁真实外部安装。
+
+## 7. 旧工作流怎样退出
+
+P1.1 直接删除：
+
+- `nanobot/skills/office-automation/`
+- report/slide DSL schema 与 validator
+- DOCX/PPTX 周报专用 renderer
+- `tests/fixtures/office_weekly/`
+- `tests/skills/test_office_weekly.py`
+
+没有保留旧 id alias、旧 session 路由或输出迁移。`nanobot/config/loader.py` 只从
+`agents.defaults.disabledSkills` 删除 `office-automation`，不会把“用户曾禁用旧 Skill”解释为“自动
+禁用新 Skill”。
+
+OfficeCLI 的有效 launcher/provider contract 测试移动到 `test_officecli_runtime.py`；历史
+OfficeCLI compatibility helper 仍存在，但不使用旧周报 fixture，也不进入公平 benchmark。
+
+## 8. Fixture 与确定性证据
+
+`tests/fixtures/office_python/` 提供三份 request template、三份可重生 OpenXML 文件和
+`make_fixture.py`。样本只验证通用接口，不携带周报业务数据、固定叙事或偏向某个 Skill 的断言。
+
+`tests/skills/test_office_python.py` 覆盖：
+
+- Skill 发现、独立禁用、单入口与精确 constraints。
+- 三格式 create → inspect → query → apply → validate。
+- source hash 不变和 artifact root 拒绝。
+- 多 action 后段失败时不覆盖既有 output。
+- tracked changes 返回 unsupported。
+- LibreOffice 版本锁与 rendered asset 审计。
+- shared workbook inspect/facts 继续可用。
+
+P5 Core 的 `tests/fixtures/runtime_eval/office_baseline.json` 也改用中立 `sample.xlsx`，因此删除旧
+周报 fixture 不会削弱 OpenXML、file-openable、artifact-completion 与 data-consistency hard gate。
+
+## 9. 验证结果
+
+P1.1 定向验证：
 
 ```text
-verified facts + 原固定 DSL
-  -> compile_officecli.py
-  -> 可重放 add/set batch
-  -> 固定版本 OfficeCLI
-  -> Office 文件 + validation/run/preview sidecar
+tests/skills/test_office_python.py
+tests/skills/test_officecli_runtime.py
+tests/config/test_config_migration.py
+tests/agent/test_skill_manifest.py
+
+57 passed
 ```
 
-它们不是 OfficeCLI Skill 的唯一工作流，也不代表两个 Skill 必须共享 DSL。`render_pptx.py` 会在调用 OfficeCLI 前检查公共 `pptx_max_pages` 约束，避免兼容 helper 绕过页数限制。
-
-### 4. OfficeCLI 运行契约
-
-`nanobot/skills/officecli/references/officecli-runtime.json` 记录：
-
-- 固定验证版本与 release URL。
-- 各平台 release asset 名称与 SHA-256。
-- 完整能力列表。
-- 兼容 batch helper 当前允许的 `add/set` 操作。
-- Runtime Policy 的 allow/ask 提示，而不是静态删减能力。
-- `OFFICECLI_SKIP_UPDATE=1`、`OFFICECLI_NO_AUTO_RESIDENT=1` 与 `OFFICECLI_RESIDENT_FLUSH=each` 等隔离运行设置；兼容 helper 使用一次性进程，截图文件已完整落盘但浏览器仍不退出时终止对应进程组并记录 `timed_out_after_output`；上游成功生成有效 PNG 却返回纯路径而非 JSON 时记录 `unstructured_output`，其他命令继续严格要求结构化 JSON。
-
-`officecli_backend.py` 负责：
-
-- 查找 binary 并严格检查 v1.0.135；测试或显式诊断可使用允许非固定版本的参数。
-- 使用 argv 数组执行，不经过 shell。
-- 关闭自动更新并使用隔离 HOME，避免污染用户插件和配置。
-- 执行 batch 后显式 flush/close。
-- 同时检查进程退出码、结构化 JSON 的 success 和 unsupported-property warning。
-- 生成 batch、validation、run metadata 和可选 preview。
-
-P1 不允许 Agent 任务调用上游 `latest`、`install` 或 `update`。Mybot Python 包提供同名 `officecli` launcher：首次调用时从唯一 provider contract 选择平台资产，下载 v1.0.135、校验 SHA-256、原子缓存并强制 `OFFICECLI_SKIP_UPDATE=1`；后续直接复用缓存。平台/版本/checksum 不在 launcher 内重复维护。
-
-launcher 缓存目录在进入 OfficeCLI 临时 `HOME` 隔离前显式固定，避免每个 DOM 子命令重复下载；`SkillsLoader` 除 PATH 外还检查当前 Python 的 scripts 目录，因此直接执行 `venv/bin/nanobot gateway` 时也能发现同目录 console script。
-
-### 5. Skill 路由、可用性与开关
-
-现有 `SkillsLoader` 已支持两类独立控制：
-
-- `metadata.nanobot.requires.bins`：`officecli` 声明需要 `officecli` 命令；正常安装 Mybot 时 console script 与 `nanobot` 一起生成，首次执行再准备固定 binary。
-- `agents.defaults.disabledSkills`：可按 Skill 名分别禁用 `officecli` 或 `office-automation`。
-
-路由偏好写在两个 Skill 的 description 和正文中，不在 Runtime 写 Office 专用 if/else：
-
-- 通用 Office 请求默认优先 `officecli`。
-- 明确要求 Python/原 Office Skill 时使用 `office-automation`。
-- 对比任务可以同时运行两个 Skill，使用同一输入快照、facts 和输出约束。
-- OfficeCLI unavailable/disabled 时，只有请求语义允许才回退到 Python Skill，并应向用户说明原因。
-
-### 6. 静态 Plan Tool
-
-P1 继续复用已落地的静态计划工具：
+中立 fixture 与 P5 Core 联合回归：
 
 ```text
-nanobot/agent/tools/plan.py
-nanobot/session/plan_state.py
-tests/agent/tools/test_plan_tool.py
+tests/runtime/test_replay_trace_eval.py + tests/skills/test_office_python.py
+21 passed
 ```
 
-`plan` 工具固定提供 `create/get/confirm/update_step/complete`：
-
-- create 规范化计划并计算不可变 contract hash。
-- 普通 WebUI 回合发送 `execution_mode=default`；复杂任务调用 create 后计划自动进入 active，模型可直接执行并持续更新步骤。
-- 输入框“计划”按钮发送 `execution_mode=plan_only`；AgentLoop 只暴露 plan、文件读取/搜索和网页读取工具，禁止 Shell、写文件、CLI、MCP 与其他副作用。
-- plan-only create 的 plan 记录保持 `awaiting_confirmation`，Runner 以 `awaiting_plan_confirmation` 停止，并创建绑定 task id、plan hash 和原 `tool_call_id` 的持久化 `InteractionRequest`；同一回合禁止 confirm。
-- confirm 必须提交精确 hash，并记录确认消息 id；计划卡片的“执行计划”按钮会发送带 task id 与 hash 的显式确认消息。
-- update_step 检查依赖顺序。
-- complete 核对计划产物与实际交付路径。
-- 完整计划写入 `.nanobot-runtime/artifacts/<task_id>/plan.json`，上下文只追加紧凑摘要。
-
-WebUI 新增 `PlanProgressCard`，直接消费现有结构化 tool progress event，因此实时流和 transcript 重放使用同一数据源。卡片只显示最新计划快照，展示 pending / in_progress / done / skipped，并在待确认状态提供执行按钮。
-
-plan-only create 属于“工具已成功、turn 待人工恢复”；Runner 因此在 tool progress 中保留 plan JSON 的 `end` 事件，不再把它降级为无 result 的 error。卡片右下角“执行计划”优先查找 task id + plan hash 精确匹配的 pending `plan_confirmation`，并调用 typed interaction response；仅对无持久化交互的旧历史保留聊天确认兼容路径。
-
-pending `plan_confirmation` 仍保留在 `useNanobotStream` 状态中用于 revision-bound 确认，但 `InteractionRequests` 不渲染该 kind；因此不会在输入框上方再出现重复的计划确认卡。
-
-P3 已用持久化 `InteractionRequest` 承接通用问题、plan-only/手动计划确认、恢复决定和高风险审批：`required` 必须回答，`auto_resolve` 到 deadline 后按默认值或最佳判断继续，安全 approval 固定 `expire_and_deny`。普通 WebUI 自动激活计划不创建 plan confirmation，但其每个工具调用仍经过独立 policy/approval。等待时当前 LLM 调用已结束，task/turn 逻辑挂起并释放 Runner 资源；typed 回答或 deadline 恢复同一执行链，普通聊天不能绕过待处理交互。P4 checkpoint 只服务 active/completed 且 `approved_plan_hash` 绑定当前 hash 的计划任务。
-
-### 7. WebUI artifact 面板
-
-现有实现继续复用：
-
-```text
-webui/src/components/OfficeArtifactsPanel.tsx
-webui/src/components/MessageBubble.tsx
-webui/src/components/thread/PlanProgressCard.tsx
-webui/src/tests/office-artifacts-panel.test.tsx
-webui/src/tests/message-bubble.test.tsx
-webui/src/tests/plan-progress-card.test.tsx
-```
-
-面板从 assistant 文本中识别 `.nanobot-runtime/artifacts/<task_id>/...`，展示 plan、quality report、facts、DSL、docx、pptx、OfficeCLI batch/validation/run sidecar 和 preview。P1 不新增复杂后端协议；P4/P5 后再接正式 artifact/trace API。
-
-### 8. 测试调整
-
-`tests/skills/test_office_weekly.py` 现在显式区分：
-
-- `PYTHON_SKILL_DIR`
-- `OFFICECLI_SKILL_DIR`
-- `SHARED_CORE_DIR`
-
-测试不再用同一脚本的 `--backend` 参数切换实现，覆盖：
-
-- 两个 Skill 均可发现，`_shared` 不可发现。
-- OfficeCLI 缺失不隐藏 Python Skill；两个 Skill 可通过 `disabledSkills` 独立关闭。
-- shared inspect/extract 与固定 expected metrics 一致。
-- 缺列、空值、未知 fact、PPT 超页数等失败路径。
-- Python docx/pptx 可重新打开、无 fact 占位泄漏、关键数字来自 facts。
-- OfficeCLI contract 版本、能力、policy hints 和 asset checksum 完整。
-- OfficeCLI 兼容 compiler 只生成预期的可重放 `add/set` batch。
-- OfficeCLI PPT helper 在执行 binary 前强制页数约束。
-- 设置 `OFFICECLI_TEST_BIN` 时运行固定 binary 集成测试，检查 Office 文件、validation/run/batch sidecar 和 preview。
-
-## 为什么采用双 Skill，而不是融合为一个 Skill
-
-### 1. 能力模型不同
-
-Python Skill 是一个窄而确定的 grounded report/deck 工作流；OfficeCLI 是通用 Office DOM/CLI 能力。把两者塞进同一个 Skill 并用 `--backend` 切换，会让“选择工作流”和“选择渲染引擎”混在一起，也无法准确表达 OfficeCLI 的 xlsx、inspect、raw、MCP、plugin 等独立能力。
-
-### 2. 可以公平比较
-
-两个 Skill 独立后，可以在相同输入快照、facts 和约束下比较：
-
-- 生成质量与可打开性。
-- 命令/产物可重放程度。
-- token、耗时和工具调用成本。
-- 对 Runtime Policy、artifact、trace 的接入复杂度。
-
-即使 OfficeCLI 的某项结果不如 Python Skill，也保留并如实记录；比较结果不影响它作为独立附加能力存在。
-
-### 3. 治理边界更清晰
-
-独立 Skill 可以分别声明依赖、可用性和开关。Runtime 共享的是权限、输入快照、facts、artifact、checkpoint、trace 和 eval，而不是强迫所有 Skill 使用同一个私有 DSL。
-
-### 4. Grounding 只在需要时启用
-
-定量分析和定量结论必须使用 `verified_facts.json`。纯格式调整、查看、批注、文本抽取等任务不需要为了形式完整而创建空 facts 文件。
-
-## 一次完整任务怎样运行
-
-假设用户上传 `sales_data.xlsx` 和 `meeting_notes.md`，要求生成周报和汇报 PPT：
-
-1. WebSocket 保存受控附件路径，并把路径作为本轮 Runtime metadata 传给 AgentLoop。
-2. 复杂任务先调用静态 `plan(create)`。PlanTool 生成 task id、步骤和 `plan_hash`。
-3. P4 接入后，PlanTool 同时把输入复制到 task artifact 的 `inputs/`，后续不再依赖可能变化的原上传文件。
-4. Skill 先运行 `inspect_workbook.py`，确认 sheet、列名、数据类型和样例。
-5. `extract_facts.py` 根据 metric spec 做 `sum`、`ratio`、`top_by_sum`，写出 `verified_facts.json`。
-6. 模型生成 report/slide DSL，数字位置只引用 fact id。
-7. Python Skill 走 `python-docx/python-pptx`；OfficeCLI Skill 可把 DSL 编译成可重放 batch，或直接使用 OfficeCLI 的更完整能力。
-8. validator 检查标题、章节、fact 引用、PPT 页数、计划步骤和预期产物。
-9. 最终文件和 sidecar 写入 `.nanobot-runtime/artifacts/<task_id>/`，WebUI 展示计划与产物。
-
-面试时可以把这条链概括为：
-
-```text
-LLM 做规划和内容组织
-+ 确定性脚本做事实计算
-+ 受约束渲染器做文件生成
-+ Runtime 做权限、恢复、追踪和验收
-```
-
-## 关键实现为什么可靠
-
-### `verified_facts.json` 怎样防数字幻觉
-
-每条 fact 不只有一个值，还包含 `fact_id`、展示值、来源 workbook/sheet/columns/rows、计算方法和 confidence。DSL 中引用 `${fact:...}` 或 `fact_ref`，渲染时再替换为展示值。
-
-因此可以分别检查：
-
-- 计算是否正确。
-- 数字是否有来源。
-- DSL 是否引用了不存在的 fact。
-- 最终文件是否残留占位符。
-- 同一个事实在 DOCX 和 PPTX 中是否一致。
-
-### 为什么 OfficeCLI 要固定版本和 checksum
-
-如果任务运行时跟随 latest，同一份代码今天和下周可能生成不同结果，CI 也无法复现。固定 v1.0.135、平台资产名和 SHA-256 后，版本选择来自唯一 contract；launcher 只负责安全准备和执行，不维护第二份版本表。
-
-### 为什么 plan 做成静态工具
-
-动态生成工具 schema 会改变每轮 tool definitions，破坏稳定 prompt 前缀和缓存，也让恢复协议更复杂。静态 `plan` 工具只用 action 区分 create/get/confirm/update/complete，schema 稳定，计划内容作为数据持久化。
-
-## 验证方式
-
-### P1 Skill 回归
-
-```bash
-source venv/bin/activate
-pytest tests/skills/test_office_weekly.py -q
-```
-
-2026-07-14 双 Skill 重构后的本地结果：
-
-```text
-11 passed, 1 skipped
-```
-
-普通 CI 不访问 GitHub，覆盖 launcher 的平台映射、checksum、缓存复用、篡改恢复和禁更环境；真实 binary 集成 case 可使用 launcher 已验证的缓存路径或显式 `OFFICECLI_TEST_BIN`。
-
-2026-07-16 launcher 修复回归：
-
-```text
-tests/skills/test_officecli_runtime.py: 10 passed
-OFFICECLI_TEST_BIN=venv/bin/officecli 的 P1/SkillLoader/WebUI 路由相关回归: 80 passed
-ruff check nanobot/: passed
-```
-
-### Plan Tool 回归
-
-```bash
-source venv/bin/activate
-pytest tests/agent/test_execution_mode.py tests/agent/tools/test_plan_tool.py -q
-```
-
-覆盖 plan-only 工具收敛、默认 WebUI 自动激活、同回合禁止确认、hash 确认、依赖与 artifact 校验。
-
-```text
-11 passed
-```
-
-### Lint
-
-```bash
-source venv/bin/activate
-ruff check nanobot/skills tests/skills/test_office_weekly.py
-```
-
-### 固定 OfficeCLI binary 集成
-
-```bash
-OFFICECLI_TEST_BIN=/absolute/path/to/officecli \
-  venv/bin/python -m pytest \
-  tests/skills/test_office_weekly.py::test_officecli_backend_real_binary -q
-```
-
-也可直接使用随包安装的 launcher：
-
-```bash
-officecli --version
-OFFICECLI_TEST_BIN="$(venv/bin/python -c 'from nanobot.officecli_runtime import ensure_officecli; print(ensure_officecli())')" \
-  venv/bin/python -m pytest \
-  tests/skills/test_office_weekly.py::test_officecli_backend_real_binary -q
-```
-
-launcher 只下载 contract 固定的 v1.0.135 并校验 checksum，不跟随 latest。
-
-### 前端回归
-
-```bash
-cd webui
-bun run test -- \
-  src/tests/plan-progress-card.test.tsx \
-  src/tests/thread-composer-attach.test.tsx \
-  src/tests/nanobot-client.test.ts \
-  src/tests/useNanobotStream.test.tsx \
-  src/tests/i18n.test.tsx
-bun run lint
-bun run build
-```
-
-计划 UI 复用结构化 tool event 与 transcript，不从 assistant 自然语言猜测步骤状态。
-
-## 阶段验收情况
-
-已完成：
-
-- `office-automation` 恢复为独立 Python Skill，不依赖 OfficeCLI。
-- `officecli` 成为独立 Skill，保留 OfficeCLI 完整能力说明和固定版本契约。
-- 两个 Skill 共享 deterministic facts，但不强制共享 DSL。
-- 普通 Office 请求默认优先 `officecli`，明确 Python 请求使用 `office-automation`。
-- 两个 Skill 可通过 `disabledSkills` 独立禁用。
-- OfficeCLI binary 缺失只影响 `officecli` availability。
-- shared core 不进入 Skills summary。
-- Python deterministic artifact chain 通过。
-- OfficeCLI compiler、contract、约束和真实 binary 集成入口保留。
-- 静态 Plan Tool、artifact 面板和现有测试未回归。
-- WebUI 仅规划按钮、默认复杂任务自动 plan-and-execute、计划步骤卡片和执行入口已落地。
-- plan-only 确认已通过 typed `InteractionRequest` 持久化挂起/恢复，保留原 `tool_call_id` 和 plan hash 绑定。
-
-后续阶段接续：
-
-- P2（已完成）：两个 Skill 已增加正式 manifest，并由 `SkillsLoader` 提供 Registry、局部 fail closed、结构化 availability 与统一 disabled 语义；缺失 manifest 继续兼容。
-- P3（已完成）：参数级 allow/ask/deny、三档持久化 `InteractionRequest`、参数绑定 `expire_and_deny` approval、文件 fresh-read hash、统一 `LaunchSpec` 和不可放宽的 workspace/network/sensitive 边界已实现；受批直接 curl 只生成一次性 pinned one-shot，持久 session 保持断网。
-- P4（已完成）：已实现不可变输入快照、artifact/lineage 和已激活、hash 绑定计划任务的 checkpoint/resume；恢复状态使用 completed/pending/uncertain。
-- P5 Core（已完成）：已记录 Skill、引擎、facts、policy、artifact 和成本时长 trace，并以确定性 eval/红队验证“不可信内容无法诱导未授权副作用或泄漏”。
-- P8（已完成）：已支持最多 5 个直接子 Agent、禁止嵌套、权限只收紧、隔离上下文/产物、父 Agent 汇总事实与结果以及单/多 Agent 对比；共享 workspace 文件租约仅作选做增强。
-
-## P1.1 OfficePython 规划边界（尚未实现）
-
-用户已决定把现有 Python Skill 从单一周报/PPT 链扩展为通用 Office baseline，并将展示名改为 `OfficePython`、Skill id 改为 `office-python`。计划中的真实边界是：
-
-- 使用 `python-docx + lxml`、`openpyxl`、`python-pptx` 实现 DOCX/XLSX/PPTX 的 `inspect/query/create/apply/validate/render` 结构化 CLI；Skill 只调用单一 `scripts/office.py`，通过 request/result JSON 文件通信，不新增 Runtime typed tool。
-- selector 使用格式中立结构，不模仿 OfficeCLI DOM；输入文件始终只读，create/apply/render 只能写 task artifact，批量 apply 必须全有或全无。
-- LibreOffice headless 只承担打开、重算、转换和渲染验证，不作为 Agent 的 GUI action space，也不由项目下载。CI 不依赖它，smoke/release 缺失或版本漂移即失败。
-- 当前机器只发现 Codex runtime 内的 `LibreOfficeDev 26.8.0.0.alpha0`，没有可作为项目交付资产的系统 LibreOffice；正式 release 需要外部预装并锁定版本。
-- 删除当前 report/slide DSL、专用 renderer、周报 workflow 和 `tests/fixtures/office_weekly/`；不迁移旧周报数据、固定 DSL、expected metrics/constraints 或业务回归。保留 `_shared/office_core`、verified facts schema 和通用验证器，另建只覆盖新 JSON 接口与三种格式的最小中立 fixture；OfficeCLI 兼容 helper 不得进入公平比较路径。
-- 删除依赖旧 fixture/DSL 的周报专用测试；`test_office_weekly.py` 中仍有效的 OfficeCLI launcher/provider contract case 移入 `test_officecli_runtime.py`，OfficePython 另建中立接口测试。
-- tracked changes、复杂母版/动画、SmartArt 和 Python 库不能可靠保真的 OOXML 特性返回结构化 `unsupported`，不能以“命令成功”掩盖能力缺口。
-- 直接将目录、manifest 和 id 改为 `office-python`，删除旧 `office-automation` id、显式路由和历史兼容迁移；启动时只从 `disabledSkills` 删除旧 id，不迁移为新 id。
-- Python 依赖使用精确 pip constraints，不引入 uv/Poetry。
-- 公平比较时两个 Skill 使用相同输入、Luna、Policy、约束和 evaluator；分别报告 coverage 与共同任务质量，不允许 OfficePython 调用 OfficeCLI，也不通过 prompt 人为偏袒 OfficeCLI。
-
-这段是后续实施说明，不是当前代码能力。当前 `office-automation` 仍是窄而确定的 grounded report/deck 工作流。
-
-## 维护约定
-
-以后只要 P1 相关代码、方案、Skill 边界、测试、artifact 形状或执行语义发生变化，必须同时更新：
-
-1. `docs/plans/runtime-steps/P1-office垂直切片.md`
-2. 本代码变更说明
-3. `docs/修改记录.md`
-
-该规则已写入仓库根目录 `AGENTS.md`，并同样适用于 P0-P8 其他阶段的对应 runtime code notes。
+全量 `ruff check nanobot/` 通过。全量后端套件为 `4177 passed, 19 failed, 6 skipped`；19 个失败
+仍集中在本阶段未改动的内置 model preset 旧断言、Ant Ling/Novita/Skywork provider 自动路由和
+Nanobot facade 无 Key 配置，P1/Runtime 定向集合没有失败。
+
+## 10. 已知边界与后续
+
+- OfficePython 不承诺 tracked changes、SmartArt、动画或复杂母版的可编辑保真。
+- LibreOffice 真实版本未由仓库提供；没有外部安装时仍可 create/query/apply/validate，但不能真实 render。
+- P1.1 只固定公平比较契约，不伪造静态质量分。P5.1 用相同 Luna、Dataset、Policy 和 evaluator
+  分别运行两个 Skill，P7 只发布 Langfuse Dataset Run 导出的结果。
 
 ## 面试怎么讲
 
-### 30 秒回答
+> P1 我把 Python Office 从周报专用 DSL 改成一个真正通用的 JSON 执行接口，同时保留独立
+> OfficeCLI Skill。Python 侧对 DOCX/XLSX/PPTX 使用各自成熟库，输入只读，批量编辑先写临时
+> OpenXML 再原子发布；无法保真的 tracked changes、SmartArt 和动画明确返回 unsupported。两个
+> Skill 只共享事实和治理，不共享 action space，所以后续可以在同一 Dataset 上公平比较质量、成本
+> 和步骤数。
 
-> P1 我做了两个独立 Office Skill。Python Skill 是窄而确定的周报/PPT 工作流，OfficeCLI Skill 是固定版本的通用 Office CLI 能力。它们共享 workbook 检查和 verified facts，但不强制共享 DSL。模型负责规划和叙述，数字由确定性脚本计算，所有关键数字通过 fact id 进入产物。这样既能做真实交付，也能比较两种引擎，并让后续 policy、artifact、trace 对 Skill 保持通用。
+## 自测
 
-### 高频追问
-
-**为什么不把两个实现放在同一个 Skill 里加 `--backend`？**
-
-因为它们不是同一工作流的两个渲染器：OfficeCLI 还有 inspect、DOM、raw、plugin、MCP 等独立能力。合并会混淆能力发现、依赖、开关、路由和权限边界。
-
-**模型如果直接在文字里写数字怎么办？**
-
-Skill 约束定量结论必须先产出 facts；validator 和 P5 的 `data_consistency` 检查 expected quantitative key 与 fact id。它不是从语言风格上“劝模型别幻觉”，而是建立可验证的数据链。
-
-**自动激活 plan 是否等于自动批准危险操作？**
-
-不等于。plan 只确认任务契约；每个具体工具调用仍单独经过 P3 Policy。自动计划可以执行普通安全步骤，高风险写入、外发或网络仍可能进入 approval。
-
-**为什么 shared core 没有 `SKILL.md`？**
-
-它是两个 Skill 的代码依赖，不是第三个用户可选择能力。没有 `SKILL.md` 可以避免它进入 Skills summary，减少模型误路由。
-
-## 自测：读完 P1 应该能回答
-
-1. 什么是垂直切片，为什么 P1 不只是文件渲染？
-2. verified facts 的字段怎样支持追溯和验证？
-3. Python Skill 与 OfficeCLI Skill 的边界是什么？
-4. plan hash 解决什么问题，为什么确认后计划变化要重新确认？
-5. 为什么 Skill 路由不写进 AgentLoop 的 Office 专用分支？
-6. 为什么固定 OfficeCLI 版本、checksum 和禁用自更新？
+1. 为什么 result JSON 和进程 exit code 要同时存在？
+2. 为什么 output 必须和临时文件在同一目录？
+3. 为什么 `unsupported` 不能合并成普通 tool error？
+4. 旧 disabled id 为什么只删除而不映射到新 id？
+5. LibreOffice 版本为什么由 release manifest 锁定而不是项目下载？

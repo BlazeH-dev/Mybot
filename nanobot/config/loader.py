@@ -207,6 +207,21 @@ def _migrate_config(data: dict) -> dict:
         else:
             tools.pop("mySet", None)
 
+    # P1.1 retired the narrow office-automation Skill. A disabled retired id
+    # must not disable its independent office-python replacement.
+    agents = data.get("agents")
+    if isinstance(agents, dict):
+        defaults = agents.get("defaults")
+        if isinstance(defaults, dict):
+            disabled_key = (
+                "disabledSkills" if "disabledSkills" in defaults else "disabled_skills"
+            )
+            disabled = defaults.get(disabled_key)
+            if isinstance(disabled, list):
+                defaults[disabled_key] = [
+                    skill for skill in disabled if skill != "office-automation"
+                ]
+
     return data
 
 

@@ -207,6 +207,27 @@ def test_new_my_tool_keys_take_precedence_over_legacy(tmp_path) -> None:
     assert config.tools.my.allow_set is True
 
 
+def test_load_config_removes_retired_office_automation_disabled_skill(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {
+                        "disabledSkills": ["office-automation", "officecli", "custom"]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.agents.defaults.disabled_skills == ["officecli", "custom"]
+    assert "office-python" not in config.agents.defaults.disabled_skills
+
+
 def test_load_config_resets_ssrf_whitelist_when_next_config_is_empty(tmp_path) -> None:
     whitelisted = tmp_path / "whitelisted.json"
     whitelisted.write_text(

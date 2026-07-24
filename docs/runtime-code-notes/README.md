@@ -61,14 +61,14 @@ P0-P8 阶段不是互不相关的功能，而是逐层回答工程问题；当�
 | 阶段 | 状态 | 当前真实边界 |
 | --- | --- | --- |
 | [P0 准备](./P0-准备阶段代码变更说明.md) | 已完成 | 固定 Office fixture 与 CI 确定性回归门已落地。 |
-| [P1 Office 垂直切片](./P1-office垂直切片代码变更说明.md) | Core 已完成 / P1.1 待实施 | 双 Skill Core 已落地；`office-automation` 直接改名并通用化为 `OfficePython` 尚未实现。 |
+| [P1 Office 垂直切片](./P1-office垂直切片代码变更说明.md) | 已完成 | `officecli` 与通用 `office-python` 双 Skill 已落地；后者使用中立 JSON CLI、只读输入和原子 artifact 发布。 |
 | [P2 Skill Pack Manifest](./P2-skillpack-manifest代码变更说明.md) | 已完成 | typed manifest、局部 fail closed、结构化 availability、统一开关与显式单轮路由已落地。 |
 | [P3 Sandbox / Policy](./P3-policy权限层代码变更说明.md) | 已完成 | Exec/session/CLI Apps 统一 `LaunchSpec`，Seatbelt/Bubblewrap、受批直接 curl、Policy/HITL/OCC 与 fail-closed 已落地。 |
 | [P3.1 Workspace / Worktree](./P3.1-worktree隔离代码变更说明.md) | 选做（未实现） | 已完成 WebUI per-chat worktree、HEAD 基线、持久绑定、fork 和保守清理的契约设计；未排期，不计入 Runtime Core 验收。 |
 | [P4 Artifact / Checkpoint](./P4-artifact-checkpoint代码变更说明.md) | 已完成 Core | 输入快照、artifact/lineage、hash-bound checkpoint、pending/uncertain 恢复已落地；不承诺通用 exactly-once。 |
 | [P5 Trace / Eval](./P5-trace-eval代码变更说明.md) | Core 已完成 / P5.1 待实施 | cassette、脱敏 trace、12 个确定性 metric 和红队已落地；Langfuse SDK observation、Dataset/Experiment、SDK evaluator、Terra Judge、Cloud/Annotation Queue、独立 benchmark venv 和三套 adapter 未实现。 |
 | [P6 通用性扩展](./P6-通用性扩展代码变更说明.md) | 选做（未实现） | 仅完成 Research 最小闭环设计，未排期，不计入项目冻结和最终验收。 |
-| [P7 最终交付](./P7-面试交付物代码变更说明.md) | 持续维护 | 已有确定性 benchmark；OfficePython、三套公开 benchmark、Langfuse Experiment/Annotation Queue、smoke/release Cloud 硬门、export 快照和 README 最终结果页尚未完成。 |
+| [P7 最终交付](./P7-面试交付物代码变更说明.md) | 持续维护 | 已有确定性 benchmark 与 OfficePython；三套公开 benchmark、Langfuse Experiment/Annotation Queue、smoke/release Cloud 硬门、export 快照和 README 最终结果页尚未完成。 |
 | [P8 多 Agent 编排](./P8-多agent编排代码变更说明.md) | 已完成 Core | active-plan gate、最多 5 个 direct child、禁止嵌套、隔离 artifact/HITL/trace 已落地；共享文件租约未实现。 |
 
 ## 一条任务在系统里的总调用链

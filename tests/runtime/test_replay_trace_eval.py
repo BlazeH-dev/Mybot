@@ -128,7 +128,7 @@ def test_openxml_metric_parses_parts_and_rejects_broken_relationships(tmp_path: 
     valid = CaseContext(
         case_id="valid",
         root=Path.cwd(),
-        data={"files": ["tests/fixtures/office_weekly/sales_data.xlsx"]},
+        data={"files": ["tests/fixtures/office_python/sample.xlsx"]},
     )
     assert OpenXmlValidationMetric().score(valid).passed
 

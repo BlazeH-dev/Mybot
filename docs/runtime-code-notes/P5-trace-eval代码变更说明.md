@@ -355,7 +355,7 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 - 没有 LLM Judge/Verifier 线上能力。
 - 没有 OTel-native Langfuse SDK 接入、本地 span exporter 或 dataset/experiment/score 关联；当前只有直接追加的本地 JSONL 与最小 OTLP JSON 导出。
 - 没有 OCB、OfficeBench Office subset 或 PresentBench adapter 与真模型基线。
-- 当前 `office-automation` 尚未改名、扩展为通用 `OfficePython`。
+- P1.1 已将 Python baseline 落地为通用 `office-python`；P5 Core 的 `office_baseline` 已切换到中立 OpenXML fixture，不再依赖旧周报资产。
 - 没有真实 DeepSeek/GPT 多模型质量-价格矩阵。
 - 没有 KV cache 优化结论。
 - visual sanity 不是审美或排版质量评分。

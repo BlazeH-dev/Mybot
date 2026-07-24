@@ -5,7 +5,7 @@
 
 ## 这一阶段解决什么问题
 
-P1 已经有 `office-automation` 和 `officecli` 两个 Skill，但只有 `SKILL.md` 还不够解决工程治理问题：
+P1 当前有 `office-python` 和 `officecli` 两个 Skill，但只有 `SKILL.md` 还不够解决工程治理问题：
 
 - 程序怎样知道 Skill 的版本、入口、输入输出和 provider 依赖？
 - Skill 写坏了，是拖垮整个网关，还是只隔离自己？
@@ -157,7 +157,7 @@ WebUI 则需要看到完整 catalog，才能帮助用户修复问题：
 新增：
 
 ```text
-nanobot/skills/office-automation/skill.yaml
+nanobot/skills/office-python/skill.yaml
 nanobot/skills/officecli/skill.yaml
 ```
 

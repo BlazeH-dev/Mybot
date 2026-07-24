@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import time
 from pathlib import Path
@@ -53,6 +54,36 @@ def test_packaged_contract_selects_supported_platform_assets() -> None:
     assert mac.url.endswith("/v1.0.135/officecli-mac-arm64")
     assert alpine.platform_key == "linux-alpine-x64"
     assert windows.name == "officecli-win-x64.exe"
+
+
+def test_packaged_contract_keeps_version_capabilities_and_policy_boundaries() -> None:
+    contract = load_officecli_contract()
+
+    assert contract["provider"] == "officecli"
+    assert contract["validated_version"] == "1.0.135"
+    assert contract["allowed_batch_operations"] == ["add", "set"]
+    assert contract["runtime_environment"]["OFFICECLI_NO_AUTO_RESIDENT"] == "1"
+    assert {"raw-set", "plugins", "mcp", "watch", "install"}.issubset(
+        contract["capabilities"]
+    )
+    assert "raw-set" in contract["policy_hints"]["ask"]
+    assert all(len(asset["sha256"]) == 64 for asset in contract["assets"].values())
+
+
+def test_officecli_skill_routes_python_requests_to_office_python() -> None:
+    root = Path(__file__).resolve().parents[2]
+    skill_text = (root / "nanobot" / "skills" / "officecli" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    manifest = json.loads(
+        (root / "nanobot" / "skills" / "officecli" / "references" / "officecli-runtime.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert "`office-python`" in skill_text
+    assert "office-automation" not in skill_text
+    assert manifest["validated_version"] == "1.0.135"
 
 
 def test_unsupported_platform_fails_closed() -> None:

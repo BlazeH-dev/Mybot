@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "operation": "create",
+  "format": "docx",
+  "output_artifact": {"path": "${ARTIFACT_ROOT}/sample.docx"},
+  "selector": {"kind": "document"},
+  "payload": {
+    "title": "Neutral Document",
+    "paragraphs": [
+      {"text": "Draft paragraph", "style": "Normal"},
+      {"text": "Details", "heading_level": 1}
+    ],
+    "lists": [{"ordered": false, "items": ["First", "Second"]}],
+    "tables": [{"rows": [["Name", "Value"], ["Alpha", "10"]]}],
+    "header": "Fixture header",
+    "footer": "Fixture footer"
+  },
+  "options": {"artifact_root": "${ARTIFACT_ROOT}"}
+}

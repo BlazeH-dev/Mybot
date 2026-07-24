@@ -1,0 +1,29 @@
+name: office-python
+version: 1
+description: General Python baseline for inspect/query/create/apply/validate/render operations on DOCX, XLSX, and PPTX through request/result JSON.
+entrypoints:
+  - scripts/office.py
+inputs:
+  - docx
+  - xlsx
+  - pptx
+  - office-request-json
+outputs:
+  - office-result-json
+  - office-document
+  - validation
+  - rendered-asset
+tools:
+  required:
+    - read_file
+    - write_file
+    - exec
+    - plan
+providers: {}
+permissions:
+  required:
+    - filesystem:read
+    - filesystem:write-artifacts
+    - process:execute
+evals:
+  - office-python-neutral-interface

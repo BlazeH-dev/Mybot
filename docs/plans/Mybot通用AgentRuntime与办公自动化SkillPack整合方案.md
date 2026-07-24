@@ -1,6 +1,6 @@
 # Mybot 通用 Agent Runtime 与 Office Skill Pack 整合方案
 
-> 当前基线：2026-07-23。历史修订统一见 `docs/修改记录.md`，本文只保留当前有效决策。
+> 当前基线：2026-07-24。历史修订统一见 `docs/修改记录.md`，本文只保留当前有效决策。
 
 ## 1. 定位与目标
 
@@ -15,7 +15,7 @@ Mybot 基于 nanobot v0.2.1 二次开发，不重写 Agent 框架，而是在现
 
 Office 是首个验证领域，不是产品唯一方向：
 
-- 当前 `office-automation`：Python grounded report/deck 窄工作流；P1.1 将其直接改名为展示名 `OfficePython`、Skill id `office-python`，删除旧窄工作流及周报 fixture，并以最小中立 fixture 验证通用接口。
+- `office-python`：已落地的通用 Python Office baseline，通过单一 request/result JSON CLI 提供 DOCX/XLSX/PPTX 的 `inspect/query/create/apply/validate/render`；旧窄周报工作流和 fixture 已删除。
 - `officecli`：固定版本 OfficeCLI 的通用 Office 能力和默认路由。
 - 两者共享 verified facts、输入快照、通用验证器和 Runtime 治理，但各自保留操作接口；OfficePython 不得调用 OfficeCLI，比较结果必须来自相同条件下的公开 benchmark 和固定 evaluator 映射。
 
@@ -87,8 +87,8 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 - `disabledSkills` 是唯一启用/禁用入口，不建立平行配置。
 - WebUI 开关写入 `disabledSkills` 后应热刷新主 Agent 与子代理；只影响后续回合，不要求重启网关。
 - 用户可在单轮消息中用 `@skill-name` 显式指定可用 Skill；运行时必须校验其可用性并把正文作为本轮路由契约加载。未指定时，继续采用摘要 + 模型渐进选择。
-- 普通 Office 请求默认优先 `officecli`；用户明确要求 Python 时当前使用 `office-automation`，P1.1 完成后只使用 `office-python`。
-- P1.1 直接将目录、manifest、展示名和 Skill id 改为 `office-python`，提供 DOCX/XLSX/PPTX 的通用 `inspect/query/create/apply/validate/render`；删除旧 id、显式路由和历史兼容迁移代码。启动时仅清理 `disabledSkills` 中的旧 id，不迁移为新 id。
+- 普通 Office 请求默认优先 `officecli`；用户明确要求 Python 时使用 `office-python`。
+- P1.1 已将目录、manifest、展示名和 Skill id 改为 `office-python`，提供 DOCX/XLSX/PPTX 的通用 `inspect/query/create/apply/validate/render`；旧 id、显式路由和历史兼容入口已删除。启动时仅清理 `disabledSkills` 中的旧 id，不迁移为新 id。
 - OfficeCLI 版本、平台资产和 checksum 只有 provider contract 一个真相源；Mybot 安装的同名 launcher 可在首次使用时自动准备并校验固定资产，Agent 任务不得调用上游 latest/install/update。
 - 定量结论必须来自 `verified_facts.json`；纯格式、提取和批注任务不强制跑事实层。
 - 两个 Skill 的比较固定使用相同输入、`gpt-5-6-luna`、Policy、约束和 evaluator，分开报告 coverage 与共同任务质量；不得通过 prompt、路由或评分偏袒 OfficeCLI。
@@ -183,7 +183,7 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 | 阶段                                                                | 状态  | 交付范围                                              | 阶段出口                                          |
 | ----------------------------------------------------------------- | --- | ------------------------------------------------- | --------------------------------------------- |
 | [P0 准备](runtime-steps/P0-准备.md)                                   | 已完成 | 固定 Office fixture、Python 3.11 CI smoke            | fixture 可复算，workflow 可运行；远端状态以最新 Actions 记录为准 |
-| [P1 Office 垂直切片](runtime-steps/P1-office垂直切片.md)                  | Core 已完成 / P1.1 待实施 | 双 Skill Core；OfficePython 通用化、改名和公平基线       | 两条 Office 路径可独立运行并进行公平 coverage/质量比较                         |
+| [P1 Office 垂直切片](runtime-steps/P1-office垂直切片.md)                  | 已完成 | 双 Skill Core；OfficePython 通用化、改名和中立基线       | 两条 Office 路径可独立运行；公平质量比较由 P5.1 公开 benchmark 承接                         |
 | [P2 Manifest](runtime-steps/P2-skillpack-manifest.md)             | 已执行 | typed manifest、局部 fail closed、availability、开关     | 坏 Skill 不拖垮网关且不能进入候选                          |
 | [P3 Sandbox/Policy/HITL/OCC](runtime-steps/P3-policy权限层.md)       | 已完成 | 统一 LaunchSpec、Seatbelt/Bubblewrap、受批直接 curl、Policy/HITL/OCC | restricted fail closed，网络 grant 不泄漏到 session/CLI Apps |
 | [P3.1 Workspace/Worktree](runtime-steps/P3.1-worktree隔离.md)          | 选做（未实现） | WebUI 显式 per-chat worktree、持久绑定、fork 与保守清理       | 启动后不丢 dirty/新 commit，不扩大 Agent Git 权限              |
@@ -202,7 +202,8 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 
 ```text
 已完成主链：P0 → P1 → P2 → P3 → S5.0 → P4 → P8 → P5 Core
-后续主线：P1.1 OfficePython → P5.1 Observability/Eval → P7
+已完成追加阶段：P1.1 OfficePython
+后续主线：P5.1 Observability/Eval → P7
 选做候选：P6 Research 最小闭环；P3.1 Worktree MVP
 ```
 

@@ -38,7 +38,7 @@ evals: []
 
 ### Availability 与开关
 
-- `office-automation` 检查 Python 依赖和 shared core。
+- `office-python` 检查 Python 依赖和 shared core。
 - `officecli` 检查随包 launcher、固定 binary、版本、平台和 contract；launcher 可按 contract 准备缺失缓存。
 - availability 返回结构化原因，如 `missing_binary`、`version_mismatch`、`invalid_manifest`。
 - 复用 `agents.defaults.disabled_skills` / WebUI `disabledSkills`，不建立平行开关。
@@ -52,7 +52,7 @@ API/WebUI 只展示 name/version/source、enabled、valid/available、缺失依�
 - `SkillsLoader` 作为当前 Skill Registry：workspace 同名 Skill 覆盖 builtin；无 `skill.yaml` 继续走 legacy frontmatter；manifest 存在但无效时不得回退。
 - availability 统一返回 `enabled`、`valid`、`available`、`status`、结构化 `reasons`、provider 与 legacy requirements；disabled/invalid/unavailable Skill 不进入 Agent summary、显式上下文加载或 `/skill`。
 - WebUI catalog 仍展示 disabled/invalid/unavailable Skill 及诊断、工具/权限声明和 provider 状态；权限字段仅展示，不接入 ToolRegistry 或 policy 决策。
-- `office-automation` 与 `officecli` 已随包提供 manifest。OfficeCLI manifest 只引用 `references/officecli-runtime.json`；当前平台资产选择、固定版本和 checksum 校验继续由该唯一 contract 与随包 launcher 负责。
+- `office-python` 与 `officecli` 已随包提供 manifest。OfficeCLI manifest 只引用 `references/officecli-runtime.json`；当前平台资产选择、固定版本和 checksum 校验继续由该唯一 contract 与随包 launcher 负责。
 - wheel/sdist 构建包含 `nanobot/skills/**/*.yaml`。
 
 ## 测试与出口

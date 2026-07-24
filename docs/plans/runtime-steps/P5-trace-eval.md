@@ -198,7 +198,7 @@ Experiment Runner 当前不承诺断点续跑。首版依赖其错误隔离；�
 
 ## 8. OfficePython 与 OfficeCLI 公平比较
 
-P1.1 完成后，每个 Langfuse Experiment 固定同一 Dataset、Luna、Policy、约束和 evaluator config，一次只启用一个 Skill。使用 Dataset Run comparison、Score Analytics 和 Dashboard 比较：
+P1.1 已完成；每个 Langfuse Experiment 固定同一 Dataset、Luna、Policy、约束和 evaluator config，一次只启用一个 Skill。使用 Dataset Run comparison、Score Analytics 和 Dashboard 比较：
 
 - capability coverage：`supported/unsupported/passed/failed`；
 - common-task quality：OfficeBench official 或 OCB/PresentBench Mybot score、人工 Score、Token/cost、LLM/tool latency、tool success 和 Agent steps。

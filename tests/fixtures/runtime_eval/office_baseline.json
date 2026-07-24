@@ -9,29 +9,20 @@
     "replayability"
   ],
   "expected_artifacts": [
-    "../office_weekly/sales_data.xlsx",
-    "../office_weekly/meeting_notes.md"
+    "../office_python/sample.xlsx",
+    "../office_python/create_xlsx.json"
   ],
-  "files": ["../office_weekly/sales_data.xlsx"],
+  "files": ["../office_python/sample.xlsx"],
   "screenshots": ["../../../webui/public/brand/nanobot_logo.png"],
   "page_count": 1,
   "expected_facts": {
-    "total_gmv_cny": 1710000,
-    "total_orders": 570,
-    "conversion_rate": 0.0780821918,
-    "top_region_by_gmv": "East"
+    "total_amount": 30
   },
   "actual_facts": {
-    "total_gmv_cny": 1710000,
-    "total_orders": 570,
-    "conversion_rate": 0.0780821918,
-    "top_region_by_gmv": "East"
+    "total_amount": 30
   },
   "fact_ids": [
-    "total_gmv_cny",
-    "total_orders",
-    "conversion_rate",
-    "top_region_by_gmv"
+    "total_amount"
   ],
   "evidence": {
     "openxml_valid": true,
