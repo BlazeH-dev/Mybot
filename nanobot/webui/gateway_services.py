@@ -8,6 +8,8 @@ from typing import Any
 
 from loguru import logger as default_logger
 
+from nanobot.evaluations import EvaluationCatalog, EvaluationJobService
+from nanobot.evaluations.results import LangfuseEvaluationReader
 from nanobot.runtime.interactions import InteractionManager
 from nanobot.webui.gateway_tokens import GatewayTokenStore
 from nanobot.webui.media_gateway import WebUIMediaGateway
@@ -28,6 +30,8 @@ class GatewayServices:
     session_manager: Any | None
     cron_service: Any | None
     interactions: InteractionManager
+    evaluations: EvaluationJobService
+    evaluation_results: LangfuseEvaluationReader
 
 
 def build_gateway_services(
@@ -57,6 +61,9 @@ def build_gateway_services(
         default_restrict_to_workspace=default_restrict_to_workspace,
     )
     interactions = InteractionManager(workspace_path)
+    evaluation_catalog = EvaluationCatalog()
+    evaluations = EvaluationJobService(catalog=evaluation_catalog)
+    evaluation_results = LangfuseEvaluationReader()
     http = GatewayHTTPHandler(
         config=config,
         session_manager=session_manager,
@@ -71,6 +78,9 @@ def build_gateway_services(
         skills_workspace_path=workspace_path,
         disabled_skills=disabled_skills,
         cron_service=cron_service,
+        evaluation_catalog=evaluation_catalog,
+        evaluations=evaluations,
+        evaluation_results=evaluation_results,
         log=logger,
     )
     return GatewayServices(
@@ -82,4 +92,6 @@ def build_gateway_services(
         session_manager=session_manager,
         cron_service=cron_service,
         interactions=interactions,
+        evaluations=evaluations,
+        evaluation_results=evaluation_results,
     )

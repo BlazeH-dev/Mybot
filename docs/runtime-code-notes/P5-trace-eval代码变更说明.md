@@ -1,7 +1,19 @@
 # P5 Cassette、Trace、Eval 与安全红队代码说明
 
 > 对应计划：`docs/plans/runtime-steps/P5-trace-eval.md`
-> 当前状态：S5.0、P5 Core 与 P5.1 代码实现已完成（2026-07-24）。日本区 Cloud、Luna、Terra Connection/Judge、licensed Dataset 与 token 估算已验证；真实 smoke 因两个 OCB PDF 转 PPTX 资产缺少 Adobe 凭据停止，人工审核与发布数字未完成。
+> 当前状态：S5.0、P5 Core 与 P5.1 代码实现已完成（2026-07-24）。日本区 Cloud、Luna、Terra Connection/Judge、Adobe 官方转换、licensed Dataset 与 token 估算已验证；真实 smoke 正在执行，人工审核与发布数字未完成。
+
+## 2026-07-29 评测中心与可扩展 suite
+
+- 评测历史新增脱敏运行指标投影：`LangfuseEvaluationReader` 按 Dataset Run 的每个 Experiment item 查询 generation observations，汇总 input/output/total token、缓存 token、generation 次数、模型延迟和 TTFT；这些字段分别下沉到 Run 与 Case，usage 缺失时保持空值，不把 estimate 冒充实际消耗。Gateway 会把已关联 Langfuse Dataset Run 的实际指标回填到本地 Job 行，WebUI 历史表和 Case 明细同时展示 Score、实际 token 与性能指标。
+- 新增 `nanobot/evaluations/catalog.py`、`jobs.py`、`worker.py`、`results.py`：Office 是第一个受信任 suite，manifest 位于 `benchmarks/suites/office/manifest.yaml`，CLI 与 WebUI 共用 `EvaluationRequest`、preflight、estimate 和 command contract。
+- Job JSON、脱敏进度和 worker 日志保存到 `~/.cache/nanobot/benchmarks/jobs/`；这里只保留启动、阶段、Case 计数、链接和分数摘要，不保存完整 Trace、模型输出或 Judge reasoning。单 worker 队列、取消、重试、网关重启后的 interrupted 处理均由 Job Service 负责。
+- 真模型 Job 使用稳定 `resume_token`；每个 Agent Case 完成后将输入 SHA-256、模型输出、工具列表和 workspace 路径原子写入 `~/.cache/nanobot/benchmarks/runs/<profile>/jobs/<resume_token>/case-results/` 的 `0600` 私有 checkpoint。该缓存不进入 Job HTTP/UI，也不是 Score 真相源；Resume 时用于跳过模型调用并仅重跑缺失 evaluator/Trace。
+- `office-release` 用统一 `benchmark_samples` 选择 OCB、OfficeBench、PresentBench 的 25%/50%/全量档位。每个 benchmark 以固定 seed 和可公开复现的分层序列取样，25% 严格包含于 50%；非全量样本写入带 `-strat-v1-n<数量>` 后缀的独立 Dataset，防止实际调用规模与估算或历史顺序前 N 数据集混淆。旧 `presentbench_sample` 只保留旧请求/Job 兼容。
+- `GatewayHTTPHandler` 增加 catalog/readiness/runs/cases 查询；WebSocket 增加 `evaluation_start/cancel/retry/resume` 与 `evaluation_started/evaluation_resumed/evaluation_job_updated/validation_failed`，进度事件来自 CLI 的脱敏 JSONL。Langfuse 历史投影采用 stale-while-revalidate 缓存，远端慢查询在后台串行刷新，不阻塞本地 Job 轮询或页面恢复。
+- WebUI 新增 `#/evaluations` 页面和侧边栏入口，支持 benchmark、Skill、model preset、Runtime profile 选择、token 估算、硬门、确认启动、进度、Case 明细和 Langfuse 链接。新增 suite 时提交受信任 manifest/adapter/tests 即复用同一页面。
+- 首次 Job-backed `office-smoke` 在 `ocb/office-python` 四个 Agent Case 已落 checkpoint 后，卡在 Langfuse 4.14.1 `run_experiment()` 的内部 `flush()`：SDK 使用无超时 `Queue.join()`，消费线程死亡后不会自行恢复。`LangfuseRuntime` 现在替换该 resource flush：每次先保留健康 consumer、重建死亡的 score/media consumer，再分别以 30 秒上限等待 OTEL、score 和 media；仍无法清空时抛出明确超时，让 worker 标记失败并允许 Resume。`AgentLoop.close_mcp()` 对共享 runtime 只 `release()`，不再让并行 Case 在其他 owner 存活时重复强制 flush；最后 owner 的 `shutdown()` 仍执行完整有界 flush。
+
 
 ## P5.1 核心改动（相比原方案）
 
@@ -23,7 +35,7 @@
 - `nanobot/runtime/langfuse.py` 复用 Langfuse SDK 的 observation、OTel masking、content hash/length、flush/shutdown 和 registry；`langfuse_hook.py` 管理 agent observation、事件、session 和父子 context。
 - `AgentRunner` 在非 drop-in provider 路径逐请求创建 generation，在每次工具调用创建 tool observation；OpenAI-compatible provider 使用 SDK drop-in 时跳过重复 generation。
 - `nanobot/benchmark_adapters.py` 与 `nanobot/cli/benchmark.py` 固定 OCB/OfficeBench/PresentBench revision、license digest、独立依赖、OCB 四个 smoke row、OfficeBench 官方 evaluator、Dataset 去敏、workspace staging、token 估算、Annotation Queue 和 export 完整性闸门。
-- benchmark contract 当前覆盖 15 个定向测试；日本区 Cloud 写入/回读、Luna 探针、Terra Connection/Judge、licensed Dataset 与 token 估算已有真实证据。完整机器 Score、media 支持、人工审核和发布分数仍须在 OCB 资产补齐后执行。
+- benchmark/evaluation contract 覆盖 catalog、release 采样、Job 队列/恢复、progress 幂等、Langfuse 历史缓存与 usage 聚合；WebSocket 和评测页面分别有定向回归。日本区 Cloud 写入/回读、Luna 探针、Terra Connection/Judge、licensed Dataset 与 token 估算已有真实证据。完整机器 Score、media 支持、人工审核和发布分数仍须在 OCB 资产补齐后执行。
 
 ### 实施步骤概览
 
@@ -420,7 +432,7 @@ LLM Judge 适合评估文案覆盖、风格和版式合理性，但不适合推�
 - 不配置 Azure/Gemini/Anthropic Judge SDK；Terra 凭据、Base URL、model name 和 structured-output/tool-calling 配置放在 Langfuse Project LLM Connection。
 - 三套 adapter 共用独立 benchmark venv，只安装本地 task/evaluator 必需依赖；上游 revision 固定为 OCB `f5b560356c8c5fff78569307d655f76d9ea9f6f7`、OfficeBench `b978b808667c32b52ce19a67ce1def1de9ae02b7`、PresentBench `2f01aaf2957004f4f136796147e11f7e52d84684`。
 - 每个 revision 使用新的不可变 Dataset 名称或固定 version；Dataset metadata 记录 SHA/license、adapter/constraints、Python、LibreOffice、Skill、model 和 evaluator config。实验 fingerprint 写入 Langfuse metadata，不建本地 run 数据库。
-- release 固定 `prepare -> estimate -> run_experiment -> Annotation Queue -> export`；失败 item 首版使用带 `parent_run_id` 的 retry Dataset Run，不实现自定义 status/resume 状态机。
+- release 固定 `prepare -> estimate -> run_experiment -> Annotation Queue -> export`。Job Service 维护脱敏状态机与 Case checkpoint：Resume 复用同一 Job 和稳定 Dataset Run 名，远端成功 item 跳过，远端失败/未完成但有本地 checkpoint 的 item 不再调用 Luna，只重跑 evaluator/Trace；Retry 才创建新 Job。历史上没有 Job checkpoint 的失败 Run 仍使用 `parent_run_id` retry。
 - `ci` 完全离线；`office-smoke` 三套各 4 case；`office-release` OCB 全量、固定 OfficeBench subset 和 PresentBench full/50%/25% 独立 Dataset/series。三套结果不合成总分。
 - 调用前 token 估算由 Mybot 完成；实际 input/output/cache token、P50/P95、Score 趋势和 Dashboard 全由 Langfuse 产生，不读取价格或计算金额。
 

@@ -55,9 +55,32 @@
       "ariaLabel": "切换语言"
     },
     "apps": "应用",
+    "evaluations": "评测",
     "skills": {
       "title": "技能"
     }
+  },
+  "evaluations": {
+    "title": "评测中心",
+    "subtitle": "Benchmark 运行、评分进度与 Langfuse 跳转",
+    "refresh": "刷新",
+    "suite": "评测套件",
+    "profile": "Profile",
+    "action": "操作",
+    "benchmarks": "Benchmark",
+    "skills": "技能",
+    "models": "模型 preset",
+    "runtimeProfiles": "Runtime profile",
+    "licensedPrepare": "准备已授权内容",
+    "estimate": "估算与硬门",
+    "start": "启动评测",
+    "startPrepare": "开始准备",
+    "current": "当前队列",
+    "noCurrent": "没有运行中或排队中的评测。",
+    "history": "历史结果",
+    "noHistory": "还没有评测记录。",
+    "confirmTitle": "确认启动评测",
+    "confirmRisk": "我已核对 token 估算和数据上传范围。"
   },
   "settings": {
     "backToChat": "返回聊天",

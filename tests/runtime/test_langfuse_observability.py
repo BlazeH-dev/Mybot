@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
-from unittest.mock import patch
+from queue import Queue
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import pytest
@@ -15,7 +18,14 @@ from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.config.schema import Config, LangfuseConfig
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.openai_compat_provider import OpenAICompatProvider
-from nanobot.runtime.langfuse import LangfuseRuntime, build_span_mask
+from nanobot.runtime.langfuse import (
+    LangfuseFlushTimeoutError,
+    LangfuseRuntime,
+    _install_bounded_flush,
+    _repair_consumer_threads,
+    _wait_for_queue,
+    build_span_mask,
+)
 from nanobot.runtime.langfuse_hook import LangfuseTraceHook
 
 
@@ -100,6 +110,106 @@ def test_langfuse_enabled_requires_project_keys(monkeypatch) -> None:
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
     with pytest.raises(ValueError, match="publicKey/secretKey"):
         LangfuseRuntime(LangfuseConfig(enabled=True))
+
+
+def test_langfuse_queue_wait_is_bounded() -> None:
+    queue = Queue()
+    queue.put("never-acknowledged")
+
+    started = time.monotonic()
+    with pytest.raises(LangfuseFlushTimeoutError, match="1 unfinished"):
+        _wait_for_queue(queue, label="test", timeout=0.01)
+
+    assert time.monotonic() - started < 0.5
+
+
+def test_langfuse_client_internal_flush_uses_bounded_queue_wait() -> None:
+    resources = SimpleNamespace(
+        _shutdown=True,
+        tracer_provider=None,
+        _score_ingestion_queue=Queue(),
+        _media_upload_queue=Queue(),
+    )
+
+    class Client:
+        _resources = resources
+
+        def flush(self) -> None:
+            self._resources.flush()
+
+    client = Client()
+    _install_bounded_flush(client, timeout=0.01)
+    resources._score_ingestion_queue.put("never-acknowledged")
+
+    with pytest.raises(LangfuseFlushTimeoutError, match="score ingestion"):
+        client.flush()
+
+    resources._score_ingestion_queue.get_nowait()
+    resources._score_ingestion_queue.task_done()
+
+
+def test_langfuse_restarts_dead_consumer_threads() -> None:
+    score_queue = Queue()
+    media_queue = Queue()
+
+    class MediaManager:
+        def process_next_media_upload(self) -> None:
+            try:
+                media_queue.get(timeout=0.01)
+            except Exception:
+                return
+            media_queue.task_done()
+
+        def signal_shutdown(self, *, count: int = 1) -> None:
+            for _ in range(count):
+                media_queue.put(object())
+
+    resources = SimpleNamespace(
+        _shutdown=False,
+        _ingestion_consumers=[],
+        _media_upload_consumers=[],
+        _score_ingestion_queue=score_queue,
+        _score_ingestion_client=Mock(),
+        _media_upload_queue=media_queue,
+        _media_upload_enabled=True,
+        _media_upload_thread_count=1,
+        _media_manager=MediaManager(),
+        public_key="pk-test",
+        flush_at=1,
+        flush_interval=0.01,
+    )
+
+    _repair_consumer_threads(resources)
+
+    assert len(resources._ingestion_consumers) == 1
+    assert resources._ingestion_consumers[0].is_alive()
+    assert len(resources._media_upload_consumers) == 1
+    assert resources._media_upload_consumers[0].is_alive()
+    for consumer in resources._ingestion_consumers:
+        consumer.pause()
+    resources._media_manager.signal_shutdown(count=len(resources._media_upload_consumers))
+    for consumer in resources._media_upload_consumers:
+        consumer.pause()
+    for consumer in [*resources._ingestion_consumers, *resources._media_upload_consumers]:
+        consumer.join(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_agent_close_releases_shared_observability_without_forcing_flush() -> None:
+    from nanobot.agent.loop import AgentLoop
+
+    observability = SimpleNamespace(flush=Mock(), release=Mock())
+    loop = AgentLoop.__new__(AgentLoop)
+    loop._background_tasks = []
+    loop._mcp_stacks = {}
+    loop.observability = observability
+    loop.runner = SimpleNamespace(observability=observability)
+    loop.subagents = SimpleNamespace(observability=observability)
+
+    await loop.close_mcp()
+
+    observability.flush.assert_not_called()
+    observability.release.assert_called_once_with()
 
 
 @pytest.mark.asyncio

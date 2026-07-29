@@ -9,6 +9,7 @@ import {
 import { Moon, PanelLeft, Sun } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { DeleteConfirm } from "@/components/DeleteConfirm";
+import { EvaluationCenter } from "@/components/evaluations/EvaluationCenter";
 import { RenameChatDialog } from "@/components/RenameChatDialog";
 import { Sidebar } from "@/components/Sidebar";
 import { SessionSearchDialog } from "@/components/SessionSearchDialog";
@@ -70,7 +71,7 @@ const SIDEBAR_WIDTH = 272;
 const SIDEBAR_RAIL_WIDTH = 56;
 const TOKEN_REFRESH_MARGIN_MS = 30_000;
 const TOKEN_REFRESH_MIN_DELAY_MS = 5_000;
-type ShellView = "chat" | "settings" | "apps" | "skills";
+type ShellView = "chat" | "settings" | "apps" | "skills" | "evaluations";
 type ShellRoute = {
   view: ShellView;
   activeKey: string | null;
@@ -130,6 +131,9 @@ function readShellRoute(): ShellRoute {
   }
   if (path === "/skills") {
     return { view: "skills", activeKey, settingsSection: "skills" };
+  }
+  if (path === "/evaluations") {
+    return { view: "evaluations", activeKey, settingsSection: "overview" };
   }
   if (path.startsWith("/chat/")) {
     const encoded = path.slice("/chat/".length);
@@ -1161,6 +1165,12 @@ function Shell({
     setMobileSidebarOpen(false);
   }, [activeKey, navigate]);
 
+  const onOpenEvaluations = useCallback(() => {
+    setSessionSearchOpen(false);
+    navigate({ view: "evaluations", activeKey, settingsSection: "overview" });
+    setMobileSidebarOpen(false);
+  }, [activeKey, navigate]);
+
   const onSettingsSectionChange = useCallback(
     (section: SettingsSectionKey) => {
       navigate({
@@ -1322,6 +1332,12 @@ function Shell({
       });
       return;
     }
+    if (view === "evaluations") {
+      document.title = t("app.documentTitle.chat", {
+        title: t("evaluations.title", { defaultValue: "Evaluations" }),
+      });
+      return;
+    }
     document.title = activeSession
       ? t("app.documentTitle.chat", { title: headerTitle })
       : t("app.documentTitle.base");
@@ -1344,8 +1360,9 @@ function Shell({
     onOpenSettings,
     onOpenApps,
     onOpenSkills,
+    onOpenEvaluations,
     onOpenSearch: onOpenSessionSearch,
-    activeUtility: view === "apps" || view === "skills" ? view : null,
+    activeUtility: view === "apps" || view === "skills" || view === "evaluations" ? view : null,
     onToggleArchived,
     pinnedKeys: sidebarState.pinned_keys,
     archivedKeys: sidebarState.archived_keys,
@@ -1532,7 +1549,7 @@ function Shell({
                 onOpenModelSettings={onOpenModelSettings}
               />
             </div>
-            {view !== "chat" && (
+            {view !== "chat" && view !== "evaluations" && (
               <div className="absolute inset-0 flex flex-col">
                 <SettingsView
                   theme={theme}
@@ -1552,6 +1569,11 @@ function Shell({
                   isRestarting={isRestarting}
                   hostChromeInset={showHostChrome}
                 />
+              </div>
+              )}
+            {view === "evaluations" && (
+              <div className="absolute inset-0">
+                <EvaluationCenter hostChromeInset={showHostChrome} />
               </div>
             )}
           </main>

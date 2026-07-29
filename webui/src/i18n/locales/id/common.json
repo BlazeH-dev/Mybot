@@ -55,10 +55,12 @@
       "ariaLabel": "Ganti bahasa"
     },
     "apps": "Aplikasi",
+    "evaluations": "Evaluations",
     "skills": {
       "title": "Skill"
     }
   },
+  "evaluations": {"title": "Evaluation center", "subtitle": "Benchmark runs, scoring progress, and Langfuse handoff", "refresh": "Refresh", "suite": "Suite", "profile": "Profile", "action": "Action", "benchmarks": "Benchmarks", "skills": "Skills", "models": "Model presets", "runtimeProfiles": "Runtime profiles", "licensedPrepare": "Prepare licensed content", "estimate": "Estimate and gates", "start": "Start evaluation", "startPrepare": "Start prepare", "current": "Current queue", "noCurrent": "No active or queued evaluations.", "history": "Run history", "noHistory": "No evaluation runs yet.", "confirmTitle": "Confirm evaluation launch", "confirmRisk": "I reviewed the token estimate and data upload scope."},
   "settings": {
     "backToChat": "Kembali ke chat",
     "sidebar": {

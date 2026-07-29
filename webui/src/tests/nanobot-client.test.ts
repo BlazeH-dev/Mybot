@@ -484,6 +484,35 @@ describe("NanobotClient", () => {
     );
   });
 
+  it("sends evaluation resume and dispatches the resumed event", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    const handler = vi.fn();
+    client.onEvaluation(handler);
+    client.connect();
+    lastSocket().fakeOpen();
+
+    const requestId = client.resumeEvaluation("job-resume-1");
+    expect(JSON.parse(lastSocket().sent.at(-1) as string)).toEqual({
+      type: "evaluation_resume",
+      request_id: requestId,
+      job_id: "job-resume-1",
+    });
+
+    lastSocket().fakeMessage({
+      event: "evaluation_resumed",
+      request_id: requestId,
+      job: { job_id: "job-resume-1", status: "queued" },
+    });
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+      event: "evaluation_resumed",
+      job: expect.objectContaining({ job_id: "job-resume-1" }),
+    }));
+  });
+
   it("includes an explicit turn id on outbound WebUI messages", () => {
     const client = new NanobotClient({
       url: "ws://test",

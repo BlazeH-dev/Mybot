@@ -1461,7 +1461,6 @@ class AgentLoop:
             self.observability = None
             self.runner.observability = None
             self.subagents.observability = None
-            observability.flush()
             observability.release()
 
     def _schedule_background(self, coro) -> None:

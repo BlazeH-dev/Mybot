@@ -1,7 +1,9 @@
 # P5 Trace、Eval、可观测与公开测评
 
-> 状态：S5.0、P5 Core 与 P5.1 代码实现已完成（2026-07-24）；日本区 Cloud 写入/回读、Luna、Terra Connection、两个 Judge、licensed Dataset 和 token 估算已验证。真实 smoke 因两个 OCB PDF 转 PPTX 资产缺少 Adobe PDF Services 凭据而停止；完整机器评分、PresentBench media、人工审核与发布数字仍未完成。
+> 状态：S5.0、P5 Core 与 P5.1 代码实现已完成（2026-07-24）；日本区 Cloud 写入/回读、Luna、Terra Connection、两个 Judge、Adobe 官方转换、licensed Dataset 和 token 估算已验证。真实 smoke 正在执行；完整机器评分、PresentBench media、人工审核与发布数字仍未完成。
 > Langfuse 部署固定采用日本区 Langfuse Cloud（东京，`https://jp.cloud.langfuse.com`），不实施本地自托管。P5.1 以 Langfuse Python SDK 为观测与评估主干；Mybot 不再建设平行的 Trace、Experiment、Score、Judge 或人工审核系统。
+
+> 评测中心状态（2026-07-29）：已落地共享 `EvaluationCatalog`/Office suite adapter、持久化单 worker Job Service、HTTP 查询接口、WebSocket 启动/取消/重试与独立 `#/evaluations` 页面。Mybot 只保留 Job 启动、进度聚合、状态和 Langfuse 链接；Trace、Score、Judge reasoning 与人工审核仍以 Langfuse 为唯一真相源。
 
 ## 1. 最终职责边界
 
@@ -121,7 +123,7 @@ AgentLoop / AgentRunner / Provider / Tool / Runtime
 - `office-smoke/release` 必须通过日本区写入、flush、API 回读和 deep link smoke；失败则 experiment profile 失败。
 - 普通任务默认只上传 metadata、hash、长度、状态和指标。公开 benchmark 内容仅在许可证允许时上传；公司、客户、个人或敏感数据在合规审查前保持关闭。
 - 日本区属于跨境数据传输；计划不声称满足中国数据出境要求。
-- Mybot WebUI 不新增 Trace、Token、Dashboard 或 benchmark 面板，只提供 Langfuse deep link。Runtime 的 approval/checkpoint/artifact 当前状态仍由 Mybot UI 展示。
+- Mybot WebUI 不复制 Trace、Token 明细、Dashboard 或 benchmark 分数真相源；评测中心提供受硬门约束的 catalog/estimate、Job 进度、Case 状态、分数摘要和 Langfuse deep link。人工审核继续跳转 Langfuse，Runtime 的 approval/checkpoint/artifact 当前状态仍由 Mybot UI 展示。
 
 ## 5. P5.1b Langfuse Evaluation 主流程
 
@@ -156,18 +158,21 @@ nanobot benchmark prepare --profile office-release
 nanobot benchmark estimate --profile office-release --model-preset gpt-5-6-luna
 nanobot benchmark run --profile ci
 nanobot benchmark run --profile office-smoke --model-preset gpt-5-6-luna
-nanobot benchmark run --profile office-release --model-preset gpt-5-6-luna --presentbench-sample 60
+nanobot benchmark run --profile office-release --model-preset gpt-5-6-luna \
+  --ocb-sample 255 --officebench-sample 24 --presentbench-sample 60
 nanobot benchmark export --dataset-run <langfuse-dataset-run-id>
 ```
 
 - `ci` 只运行 deterministic/cassette/adapter contract，无 API Key、无网络、不开 Langfuse。
 - `prepare` 只做本地资产/依赖/license 校验，并将允许上传的 case、expected output、rubric 和 media 写入 Langfuse Dataset。
 - `estimate` 只统计调用前预计 token 规模；实际 token 由 Langfuse generation 与 Dashboard 统计。
-- `run` 是 `run_experiment()` 的薄封装，不实现并发器、Dataset Run、Score 存储、状态机或跨 run 分析。
+- `run` 仍是 `run_experiment()` 的薄封装，不重写其并发器、Dataset Run、Score 存储或跨 run 分析；WebUI/CLI 的 Job Service 只管理本机启动、进度、取消和恢复状态，绝不充当分数或趋势数据库。
 - `export` 从一个已完成且审计齐全的 Langfuse Dataset Run/API 读取结果，生成去敏 JSON/Markdown 和 README 受控区块；它不修改 Langfuse Score，也不建立本地可编辑真相源。
-- 删除 `benchmark status/resume/audit-sync/publish`、单 active run 锁和 Mybot benchmark WebUI。进度、错误 case、Score 和审核状态直接查看 Langfuse。
+- CLI 保留兼容入口并与 WebUI 共用受信任 suite adapter；评测中心使用 `~/.cache/nanobot/benchmarks/jobs/` 保存 Job 启动/进度/链接元数据，采用全局单运行加持久队列。进度、错误 case、Score 和审核状态由 Mybot 聚合并跳转 Langfuse，Job/API/UI 不保存或返回完整 Trace、模型输出。
 
-Experiment Runner 当前不承诺断点续跑。首版依赖其错误隔离；失败 item 使用新的 retry Dataset Run，并在 metadata 记录 `parent_run_id` 和筛选条件，不自建 case checkpoint。只有真实 token 数据证明整次/子集重跑不可接受时，才单独立项最小恢复层。
+Job-backed 真模型评测提供 Case 级断点续测。每个 Job 使用稳定 `resume_token` 和稳定 Dataset Run 名；Agent Case 完成后立即把输入指纹、模型输出、工具列表和 workspace 路径原子写入 `~/.cache/nanobot/benchmarks/runs/<profile>/jobs/<resume_token>/case-results/`，文件权限为 `0600`，只服务本机恢复且不进入 HTTP/UI。Resume 保留原 Job、Dataset Run、已完成 Case 和计数：Langfuse 已成功的 item 完全跳过，本地已完成但远端未成功的 item 复用 checkpoint 只重跑 evaluator/Trace，其余 Case 才再次调用模型。缓存输入指纹不匹配、文件损坏或 workspace 丢失时 fail closed 为未完成 Case。Retry 仍创建新 Job 并从头运行；网关重启后不自动恢复付费任务，由用户确认 token 与数据范围后手动 Resume。
+
+Langfuse 4.14.1 的 resource `flush()` 原生使用无超时队列等待；consumer 异常退出时会永久占用评测单 worker。Mybot 的 runtime compatibility guard 在 flush 前重建死亡的 score/media consumer，并给 OTEL、score queue、media queue 各设置 30 秒上限。超时必须使当前 Job 失败并保留 checkpoint，不得把心跳误当 benchmark 进展，也不得无限等待。共享 runtime 的临时 Agent 只释放引用；最后 owner 的 shutdown 负责最终有界 flush。
 
 ### 数据与环境
 
@@ -444,7 +449,7 @@ nanobot benchmark run \
   --model-preset gpt-5-6-luna
 ```
 
-本轮首次尝试的 OCB/OfficeCLI Dataset Run ID 为 `8e63bb66-f505-4e08-b16a-70399467e074`：1 个 item 完成，3 个 item 因本地 OCB 引用文件缺失失败，且未创建 Annotation Queue。它只能作为基础设施失败证据，不能发布为质量结果。完成第 8 步后，先把整个 OCB/OfficeCLI 组合重跑为带父 Run 关联的 retry Run（当前 CLI 不做 item 级筛选）：
+本轮首次尝试的 OCB/OfficeCLI Dataset Run ID 为 `8e63bb66-f505-4e08-b16a-70399467e074`：1 个 item 完成，3 个 item 因本地 OCB 引用文件缺失失败，且未创建 Annotation Queue。它发生在 Job checkpoint 上线前，只能作为基础设施失败证据，不能直接 Resume 或发布为质量结果。完成第 8 步后，先把整个 OCB/OfficeCLI 组合重跑为带父 Run 关联的 retry Run：
 
 ```bash
 nanobot benchmark run \
@@ -470,7 +475,7 @@ nanobot benchmark run --profile office-smoke --model-preset gpt-5-6-luna --bench
 - OCB 与 PresentBench 每个 item 最终都有 Terra Judge 产生的 `mybot_score` 和 reasoning；Judge 异步未完成时继续等待，不导出。
 - OfficeBench 每个 item 有 `official_score`、`official_evaluator_ok=true` 和 `output_present=true`。
 - 每个 Agent/Tool/Generation observation 层级正确，model、usage、latency 和错误可下钻；同一次 LLM 调用没有 drop-in/manual 双重 generation。
-- 失败 item 不在原 Run 中伪装重试；新建带 `parent_run_id` 的 retry Dataset Run，并单独审核。
+- 对上述无 Job checkpoint 的历史失败 Run，新建带 `parent_run_id` 的 retry Dataset Run 并单独审核。此后从评测中心启动的 Job 若中断，优先在同一 Job/同一稳定 Dataset Run 上 Resume；只有用户明确选择“从头重试”才创建新 Job/Run。
 
 #### 第 11 步：完成 PresentBench media spike（首次/媒体或 Judge 配置变更时）
 
@@ -512,15 +517,19 @@ nanobot benchmark prepare --profile office-release \
 nanobot benchmark estimate \
   --profile office-release \
   --model-preset gpt-5-6-luna \
+  --ocb-sample 255 \
+  --officebench-sample 24 \
   --presentbench-sample 60
 
 nanobot benchmark run \
   --profile office-release \
   --model-preset gpt-5-6-luna \
+  --ocb-sample 255 \
+  --officebench-sample 24 \
   --presentbench-sample 60
 ```
 
-PresentBench 只允许 `60`（25%）、`119`（50%）或 `238`（full），estimate 与 run 必须使用同一档。release 每个 Queue 至少完成 CLI 固定的稳定 5% 样本，并手工补审高风险、Judge 异常、官方/Judge 分歧和视觉 `unscored`；全部必需 Score/审核齐全后才逐 Run export、检查 diff、提交和推送结果快照。
+评测中心当前提供 OCB 的 `255`（25%）、`509`（50%）或 `1018`（full），OfficeBench 的 `24`、`47` 或 `93`，以及 PresentBench 的 `60`、`119` 或 `238` 三档；estimate 与 run 必须使用同一组选择。release 每个 Queue 至少完成 CLI 固定的稳定 5% 样本，并手工补审高风险、Judge 异常、官方/Judge 分歧和视觉 `unscored`；全部必需 Score/审核齐全后才逐 Run export、检查 diff、提交和推送结果快照。
 
 #### 停止条件
 

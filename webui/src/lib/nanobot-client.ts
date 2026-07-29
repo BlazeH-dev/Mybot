@@ -8,6 +8,8 @@ import type {
   OutboundMedia,
   ExecutionMode,
   GoalStateWsPayload,
+  EvaluationRequestPayload,
+  EvaluationSocketEvent,
   WorkspaceScopePayload,
 } from "./types";
 import { createHostWebSocket } from "./runtime";
@@ -74,6 +76,7 @@ type SessionUpdateHandler = (
   workspaceScope?: WorkspaceScopePayload,
 ) => void;
 type RunStatusHandler = (chatId: string, startedAt: number | null) => void;
+type EvaluationHandler = (event: EvaluationSocketEvent) => void;
 
 /** Structured errors surfaced to the UI.
  *
@@ -126,6 +129,7 @@ export class NanobotClient {
   private runtimeModelHandlers = new Set<RuntimeModelHandler>();
   private sessionUpdateHandlers = new Set<SessionUpdateHandler>();
   private runStatusHandlers = new Set<RunStatusHandler>();
+  private evaluationHandlers = new Set<EvaluationHandler>();
   private errorHandlers = new Set<ErrorHandler>();
   // chat_id -> handlers listening on it
   private chatHandlers = new Map<string, Set<EventHandler>>();
@@ -206,6 +210,13 @@ export class NanobotClient {
     }
     return () => {
       this.runStatusHandlers.delete(handler);
+    };
+  }
+
+  onEvaluation(handler: EvaluationHandler): Unsubscribe {
+    this.evaluationHandlers.add(handler);
+    return () => {
+      this.evaluationHandlers.delete(handler);
     };
   }
 
@@ -439,6 +450,30 @@ export class NanobotClient {
     });
   }
 
+  startEvaluation(request: EvaluationRequestPayload): string {
+    const requestId = crypto.randomUUID();
+    this.queueSend({ type: "evaluation_start", request_id: requestId, ...request });
+    return requestId;
+  }
+
+  cancelEvaluation(jobId: string): string {
+    const requestId = crypto.randomUUID();
+    this.queueSend({ type: "evaluation_cancel", request_id: requestId, job_id: jobId });
+    return requestId;
+  }
+
+  retryEvaluation(jobId: string): string {
+    const requestId = crypto.randomUUID();
+    this.queueSend({ type: "evaluation_retry", request_id: requestId, job_id: jobId });
+    return requestId;
+  }
+
+  resumeEvaluation(jobId: string): string {
+    const requestId = crypto.randomUUID();
+    this.queueSend({ type: "evaluation_resume", request_id: requestId, job_id: jobId });
+    return requestId;
+  }
+
   // -- internals ---------------------------------------------------------
 
   private setStatus(status: ConnectionStatus): void {
@@ -512,6 +547,17 @@ export class NanobotClient {
 
     if (parsed.event === "session_updated") {
       this.emitSessionUpdate(parsed.chat_id, parsed.scope, parsed.workspace_scope);
+      return;
+    }
+
+    if (
+      parsed.event === "evaluation_started"
+      || parsed.event === "evaluation_cancelled"
+      || parsed.event === "evaluation_resumed"
+      || parsed.event === "evaluation_job_updated"
+      || parsed.event === "validation_failed"
+    ) {
+      for (const handler of this.evaluationHandlers) handler(parsed);
       return;
     }
 

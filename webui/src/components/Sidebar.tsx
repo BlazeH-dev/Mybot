@@ -7,6 +7,7 @@ import {
   Settings,
   SquarePen,
   Blocks,
+  ChartNoAxesCombined,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -36,8 +37,9 @@ interface SidebarProps {
   onOpenSettings: () => void;
   onOpenApps: () => void;
   onOpenSkills: () => void;
+  onOpenEvaluations: () => void;
   onOpenSearch: () => void;
-  activeUtility?: "apps" | "skills" | null;
+  activeUtility?: "apps" | "skills" | "evaluations" | null;
   onToggleArchived: () => void;
   onCollapse: () => void;
   onExpand?: () => void;
@@ -165,6 +167,13 @@ export function Sidebar(props: SidebarProps) {
           onClick={props.onOpenSkills}
           active={props.activeUtility === "skills"}
           icon={<Brain className="h-4 w-4" />}
+        />
+        <SidebarActionButton
+          collapsed={collapsed}
+          label={t("sidebar.evaluations", { defaultValue: "Evaluations" })}
+          onClick={props.onOpenEvaluations}
+          active={props.activeUtility === "evaluations"}
+          icon={<ChartNoAxesCombined className="h-4 w-4" />}
         />
         {props.archivedCount ? (
           <SidebarActionButton

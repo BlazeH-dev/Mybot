@@ -2,6 +2,11 @@ import type {
   ChatSummary,
   CliAppsPayload,
   FilePreviewPayload,
+  EvaluationCatalogPayload,
+  EvaluationCase,
+  EvaluationReadiness,
+  EvaluationRequestPayload,
+  EvaluationRunsPayload,
   ImageGenerationSettingsUpdate,
   McpPresetsPayload,
   ModelConfigurationCreate,
@@ -26,6 +31,7 @@ import type {
 import { fetchWithTimeout } from "./http";
 
 const API_READ_TIMEOUT_MS = 20_000;
+const EVALUATION_READ_TIMEOUT_MS = 60_000;
 
 export class ApiError extends Error {
   status: number;
@@ -179,6 +185,67 @@ export async function fetchSkills(
     undefined,
     API_READ_TIMEOUT_MS,
   );
+}
+
+export async function fetchEvaluationCatalog(
+  token: string,
+  base: string = "",
+): Promise<EvaluationCatalogPayload> {
+  return request<EvaluationCatalogPayload>(
+    `${base}/api/evaluations/catalog`,
+    token,
+    undefined,
+    EVALUATION_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchEvaluationReadiness(
+  token: string,
+  evaluation: EvaluationRequestPayload,
+  base: string = "",
+): Promise<EvaluationReadiness> {
+  const query = new URLSearchParams();
+  query.set("suite_id", evaluation.suite_id);
+  query.set("profile", evaluation.profile);
+  query.set("action", evaluation.action);
+  query.set("benchmarks", evaluation.benchmarks.join(","));
+  query.set("skills", evaluation.skills.join(","));
+  query.set("model_presets", evaluation.model_presets.join(","));
+  query.set("runtime_profiles", evaluation.runtime_profiles.join(","));
+  query.set("benchmark_samples", JSON.stringify(evaluation.benchmark_samples));
+  query.set("allow_licensed_content", String(evaluation.allow_licensed_content));
+  return request<EvaluationReadiness>(
+    `${base}/api/evaluations/readiness?${query}`,
+    token,
+    undefined,
+    EVALUATION_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchEvaluationRuns(
+  token: string,
+  base: string = "",
+): Promise<EvaluationRunsPayload> {
+  return request<EvaluationRunsPayload>(
+    `${base}/api/evaluations/runs`,
+    token,
+    undefined,
+    EVALUATION_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchEvaluationCases(
+  token: string,
+  runId: string,
+  base: string = "",
+): Promise<EvaluationCase[]> {
+  const payload = await request<{ cases: EvaluationCase[] }>(
+    `${base}/api/evaluations/runs/${encodeURIComponent(runId)}/cases`,
+    token,
+    undefined,
+    EVALUATION_READ_TIMEOUT_MS,
+  );
+  return payload.cases;
 }
 
 export async function fetchSkillDetail(

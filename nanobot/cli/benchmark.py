@@ -13,7 +13,9 @@ import sys
 import threading
 import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -29,17 +31,43 @@ _ROOT = Path(__file__).resolve().parents[2]
 _PROFILE_PATH = _ROOT / "benchmarks" / "office" / "profiles.json"
 _CONSTRAINTS_PATH = _ROOT / "benchmarks" / "office" / "constraints.txt"
 _PROFILES = frozenset({"ci", "office-smoke", "office-release"})
-_BENCHMARKS = ("ocb", "officebench", "presentbench")
-_SKILLS = ("officecli", "office-python")
-_PRESENTBENCH_SAMPLES = frozenset({60, 119, 238})
+_BENCHMARK_SAMPLES = {
+    "ocb": (255, 509, 1018),
+    "officebench": (24, 47, 93),
+    "presentbench": (60, 119, 238),
+}
+_DEFAULT_BENCHMARK_SAMPLES = {
+    benchmark: samples[-1] for benchmark, samples in _BENCHMARK_SAMPLES.items()
+}
+_RELEASE_SAMPLE_SEED = "mybot-office-release-v1"
+_RELEASE_SAMPLE_STRATEGY = "deterministic-stratified-v1"
+_RELEASE_SAMPLE_DATASET_TAG = "strat-v1"
 _CLOUD_READBACK_ATTEMPTS = 30
 _CLOUD_READBACK_INTERVAL_SEC = 2
 _WORKSPACES: dict[str, Path] = {}
 _WORKSPACES_LOCK = threading.Lock()
+_PROGRESS_LOCK = threading.Lock()
 
 
 class BenchmarkError(RuntimeError):
     pass
+
+
+def _emit_evaluation_progress(event: str, **fields: Any) -> None:
+    """Append redacted execution metadata for the WebUI evaluation worker."""
+    raw_path = os.environ.get("NANOBOT_EVALUATION_PROGRESS_LOG", "").strip()
+    if not raw_path:
+        return
+    payload = {"event": event, "at": datetime.now(timezone.utc).isoformat(), **fields}
+    path = Path(raw_path).expanduser().resolve()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _PROGRESS_LOCK:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        # Progress is best-effort and must never change benchmark results.
+        return
 
 
 def _manifest() -> dict[str, Any]:
@@ -292,11 +320,61 @@ def _case_id(item: Any) -> str:
     raise BenchmarkError("Langfuse Dataset item is missing metadata.case_id")
 
 
+def _sample_stratum(benchmark: str, row: dict[str, Any]) -> str:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    raw_input = row.get("input") if isinstance(row.get("input"), dict) else {}
+    if benchmark == "ocb":
+        return "|".join((
+            str(raw_input.get("format") or "unknown"),
+            str(metadata.get("track") or "unknown"),
+        ))
+    if benchmark == "officebench":
+        return str(metadata.get("case_id") or raw_input.get("case_id") or "unknown").split("/", 1)[0]
+    if benchmark == "presentbench":
+        return str(metadata.get("domain") or "unknown")
+    raise BenchmarkError(f"unsupported release sampling benchmark: {benchmark}")
+
+
+def _sample_hash(benchmark: str, row: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        f"{_RELEASE_SAMPLE_SEED}\0{benchmark}\0{_case_id(row)}".encode("utf-8")
+    ).hexdigest()
+
+
+def _deterministic_stratified_rows(
+    benchmark: str,
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build one reproducible, proportionally interleaved order for nested samples."""
+    strata: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        strata[_sample_stratum(benchmark, row)].append(row)
+
+    ranked: list[tuple[Fraction, str, str, dict[str, Any]]] = []
+    for stratum, values in strata.items():
+        ordered = sorted(values, key=lambda row: (_sample_hash(benchmark, row), _case_id(row)))
+        size = len(ordered)
+        for index, row in enumerate(ordered):
+            # Midpoints proportionally interleave large and small strata. Taking
+            # any prefix therefore approximates the full stratum distribution.
+            position = Fraction((2 * index) + 1, 2 * size)
+            ranked.append((position, _sample_hash(benchmark, row), stratum, row))
+    ranked.sort(key=lambda item: item[:3])
+    return [item[3] for item in ranked]
+
+
+def _release_dataset_name(base_name: str, benchmark: str, sample: int) -> str:
+    if sample == _DEFAULT_BENCHMARK_SAMPLES[benchmark]:
+        return base_name
+    return f"{base_name}-{_RELEASE_SAMPLE_DATASET_TAG}-n{sample}"
+
+
 def _case_manifest_map(
     prepared: dict[str, Any],
     profile: str,
     *,
-    presentbench_sample: int,
+    benchmark_samples: dict[str, int] | None = None,
+    presentbench_sample: int = 238,
 ) -> dict[str, list[dict[str, Any]]]:
     case_root = Path(prepared.get("case_manifest_root") or "")
     items = {
@@ -311,17 +389,25 @@ def _case_manifest_map(
                     f"{benchmark} smoke manifest has {len(rows)} items; expected {expected[benchmark]}"
                 )
     elif profile == "office-release":
-        expected = {"ocb": 1018, "officebench": 93}
-        for benchmark, count in expected.items():
-            if len(items[benchmark]) != count:
+        samples = dict(_DEFAULT_BENCHMARK_SAMPLES)
+        if benchmark_samples is not None:
+            samples.update(benchmark_samples)
+        else:
+            samples["presentbench"] = presentbench_sample
+        for benchmark, count in _DEFAULT_BENCHMARK_SAMPLES.items():
+            if len(items[benchmark]) < count:
                 raise BenchmarkError(
-                    f"{benchmark} release manifest has {len(items[benchmark])} items; expected {count}"
+                    f"{benchmark} release manifest has {len(items[benchmark])} items; expected at least {count}"
                 )
-        if len(items["presentbench"]) < presentbench_sample:
-            raise BenchmarkError(
-                f"PresentBench manifest has {len(items['presentbench'])} items; need {presentbench_sample}"
-            )
-        items["presentbench"] = items["presentbench"][:presentbench_sample]
+        for benchmark, sample in samples.items():
+            if len(items[benchmark]) < sample:
+                raise BenchmarkError(
+                    f"{benchmark} manifest has {len(items[benchmark])} items; need {sample}"
+                )
+            items[benchmark] = _deterministic_stratified_rows(
+                benchmark,
+                items[benchmark],
+            )[:sample]
     return items
 
 
@@ -703,11 +789,20 @@ def prepare(
         raise typer.Exit(1)
 
 
-def estimate_payload(profile: str, presentbench_sample: int, manifest: dict[str, Any]) -> dict[str, Any]:
+def estimate_payload(
+    profile: str,
+    presentbench_sample: int,
+    manifest: dict[str, Any],
+    benchmark_samples: dict[str, int] | None = None,
+) -> dict[str, Any]:
     if profile == "office-smoke":
         counts = {name: len(items) for name, items in manifest["smoke_cases"].items()}
     else:
-        counts = {"ocb": 1018, "officebench": 93, "presentbench": presentbench_sample}
+        counts = dict(_DEFAULT_BENCHMARK_SAMPLES)
+        if benchmark_samples is not None:
+            counts.update(benchmark_samples)
+        else:
+            counts["presentbench"] = presentbench_sample
     runs = sum(counts.values()) * len(manifest["skills"])
     token_estimate = manifest["estimate_tokens_per_case"]
     judged = (counts["ocb"] + counts["presentbench"]) * len(manifest["skills"])
@@ -727,17 +822,22 @@ def estimate_payload(profile: str, presentbench_sample: int, manifest: dict[str,
     }
 
 
-def _validate_presentbench_sample(profile: str, sample: int) -> None:
-    if profile == "office-release" and sample not in _PRESENTBENCH_SAMPLES:
-        raise BenchmarkError(
-            "office-release PresentBench sample must be one of 60 (25%), 119 (50%), or 238 (full)"
-        )
+def _validate_benchmark_samples(profile: str, samples: dict[str, int]) -> None:
+    if profile != "office-release":
+        return
+    for benchmark, allowed in _BENCHMARK_SAMPLES.items():
+        sample = samples[benchmark]
+        if sample not in allowed:
+            formatted = ", ".join(str(value) for value in allowed)
+            raise BenchmarkError(f"office-release {benchmark} sample must be one of {formatted}")
 
 
 @benchmark_app.command("estimate")
 def estimate(
     profile: str = typer.Option(..., "--profile"),
     model_preset: str = typer.Option("gpt-5-6-luna", "--model-preset"),
+    ocb_sample: int = typer.Option(1018, "--ocb-sample", min=1, max=1018),
+    officebench_sample: int = typer.Option(93, "--officebench-sample", min=1, max=93),
     presentbench_sample: int = typer.Option(238, "--presentbench-sample", min=1, max=238),
 ) -> None:
     """Print a pre-run token estimate without calling any model."""
@@ -746,11 +846,16 @@ def estimate(
         if profile == "ci":
             console.print(json.dumps({"profile": "ci", "estimated_tokens": {"total": 0}}, indent=2))
             return
-        _validate_presentbench_sample(profile, presentbench_sample)
+        benchmark_samples = {
+            "ocb": ocb_sample,
+            "officebench": officebench_sample,
+            "presentbench": presentbench_sample,
+        }
+        _validate_benchmark_samples(profile, benchmark_samples)
         manifest = _manifest()
         if model_preset != manifest["models"]["agent"]:
             raise BenchmarkError(f"Office comparison is fixed to {manifest['models']['agent']}")
-        payload = estimate_payload(profile, presentbench_sample, manifest)
+        payload = estimate_payload(profile, presentbench_sample, manifest, benchmark_samples)
         console.print_json(data=payload)
     except BenchmarkError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -761,12 +866,14 @@ def _load_case_items(
     prepared: dict[str, Any],
     profile: str,
     *,
-    presentbench_sample: int,
+    benchmark_samples: dict[str, int] | None = None,
+    presentbench_sample: int = 238,
 ) -> dict[str, list[dict[str, Any]]]:
     """Load already-prepared case manifests without downloading during run."""
     return _case_manifest_map(
         prepared,
         profile,
+        benchmark_samples=benchmark_samples,
         presentbench_sample=presentbench_sample,
     )
 
@@ -800,34 +907,166 @@ async def _run_agent_item(
 
     prompt = str(source["input"]["prompt"])
     case_id = str(source["metadata"]["case_id"])
-    workspace = _stage_case_workspace(
+    _emit_evaluation_progress(
+        "case_started",
         benchmark=benchmark,
-        source=source,
-        run_root=run_root,
         skill=skill,
+        case_id=case_id,
+        variant=f"{benchmark}/{skill}",
     )
-    async with Nanobot.from_config(workspace=workspace) as bot:
-        bot._loop.set_model_preset(model_preset, publish_update=False)
-        result = await bot.run(
-            prompt,
-            session_key=f"benchmark:{skill}:{case_id}",
-            metadata={
-                "selected_skills": [skill],
-                "benchmark_model_preset": model_preset,
-                "benchmark": benchmark,
-                "benchmark_case_id": case_id,
-            },
+    status = "failed"
+    cached: dict[str, Any] | None = None
+    try:
+        cached = _load_case_result(
+            run_root=run_root,
+            benchmark=benchmark,
+            skill=skill,
+            case_id=case_id,
+            model_preset=model_preset,
+            source=source,
         )
-    workspace_token = uuid.uuid4().hex
-    with _WORKSPACES_LOCK:
-        _WORKSPACES[workspace_token] = workspace
-    return {
-        "content": result.content,
-        "tools_used": result.tools_used,
-        "case_id": case_id,
+        if cached is not None:
+            workspace = Path(str(cached["workspace"])).expanduser().resolve()
+            workspace_token = uuid.uuid4().hex
+            with _WORKSPACES_LOCK:
+                _WORKSPACES[workspace_token] = workspace
+            status = "completed"
+            return {
+                "content": cached.get("content", ""),
+                "tools_used": cached.get("tools_used", []),
+                "case_id": case_id,
+                "skill": skill,
+                "workspace_token": workspace_token,
+                "checkpoint_reused": True,
+            }
+        workspace = _stage_case_workspace(
+            benchmark=benchmark,
+            source=source,
+            run_root=run_root,
+            skill=skill,
+        )
+        async with Nanobot.from_config(workspace=workspace) as bot:
+            bot._loop.set_model_preset(model_preset, publish_update=False)
+            result = await bot.run(
+                prompt,
+                session_key=f"benchmark:{skill}:{case_id}",
+                metadata={
+                    "selected_skills": [skill],
+                    "benchmark_model_preset": model_preset,
+                    "benchmark": benchmark,
+                    "benchmark_case_id": case_id,
+                },
+            )
+        workspace_token = uuid.uuid4().hex
+        with _WORKSPACES_LOCK:
+            _WORKSPACES[workspace_token] = workspace
+        _write_case_result(
+            run_root=run_root,
+            benchmark=benchmark,
+            skill=skill,
+            case_id=case_id,
+            model_preset=model_preset,
+            source=source,
+            workspace=workspace,
+            content=result.content,
+            tools_used=result.tools_used,
+        )
+        status = "completed"
+        return {
+            "content": result.content,
+            "tools_used": result.tools_used,
+            "case_id": case_id,
+            "skill": skill,
+            "workspace_token": workspace_token,
+        }
+    finally:
+        _emit_evaluation_progress(
+            "case_completed",
+            benchmark=benchmark,
+            skill=skill,
+            case_id=case_id,
+            variant=f"{benchmark}/{skill}",
+            status=status,
+            source="local" if cached is not None else None,
+        )
+
+
+def _case_result_path(run_root: Path, benchmark: str, skill: str, case_id: str) -> Path:
+    digest = hashlib.sha256(f"{benchmark}\0{skill}\0{case_id}".encode()).hexdigest()
+    return run_root / "case-results" / benchmark / skill / f"{digest}.json"
+
+
+def _case_source_sha256(source: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        source,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _load_case_result(
+    *,
+    run_root: Path,
+    benchmark: str,
+    skill: str,
+    case_id: str,
+    model_preset: str,
+    source: dict[str, Any],
+) -> dict[str, Any] | None:
+    path = _case_result_path(run_root, benchmark, skill, case_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+        return None
+    expected = {
+        "benchmark": benchmark,
         "skill": skill,
-        "workspace_token": workspace_token,
+        "case_id": case_id,
+        "model_preset": model_preset,
+        "source_sha256": _case_source_sha256(source),
     }
+    if any(payload.get(name) != value for name, value in expected.items()):
+        return None
+    workspace = Path(str(payload.get("workspace") or "")).expanduser()
+    if not workspace.is_dir():
+        return None
+    return payload
+
+
+def _write_case_result(
+    *,
+    run_root: Path,
+    benchmark: str,
+    skill: str,
+    case_id: str,
+    model_preset: str,
+    source: dict[str, Any],
+    workspace: Path,
+    content: str,
+    tools_used: list[str],
+) -> None:
+    path = _case_result_path(run_root, benchmark, skill, case_id)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    payload = {
+        "schema_version": 2,
+        "benchmark": benchmark,
+        "skill": skill,
+        "case_id": case_id,
+        "model_preset": model_preset,
+        "source_sha256": _case_source_sha256(source),
+        "workspace": str(workspace),
+        "content": content,
+        "tools_used": tools_used,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+    temp.chmod(0o600)
+    os.replace(temp, path)
 
 
 def _presence_evaluator(*, output: Any, **kwargs: Any):
@@ -937,10 +1176,79 @@ def _get_annotation_queue(client: Any, name: str) -> Any:
     )
 
 
+def _resume_run_name(profile: str, benchmark: str, skill: str, resume_token: str | None) -> str | None:
+    if resume_token is None:
+        return None
+    return f"mybot-{profile}-{benchmark}-{skill}-job-{resume_token}"
+
+
+def _remote_variant_state(
+    runtime: LangfuseRuntime,
+    *,
+    dataset_name: str,
+    run_name: str | None,
+) -> dict[str, Any]:
+    if run_name is None:
+        return {"run_id": None, "run_url": None, "items": {}}
+    try:
+        run = runtime.client.get_dataset_run(dataset_name=dataset_name, run_name=run_name)
+    except Exception as exc:
+        if getattr(exc, "status_code", None) == 404:
+            return {"run_id": None, "run_url": None, "items": {}}
+        raise
+    experiments = runtime.client.api.experiments.list(
+        from_start_time=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        id=str(run.id),
+        limit=2,
+    ).data
+    states: dict[str, dict[str, Any]] = {}
+    if experiments:
+        cursor: str | None = None
+        while True:
+            page = runtime.client.api.experiments.list_items(
+                from_start_time=experiments[0].start_time,
+                experiment_id=str(run.id),
+                limit=100,
+                score_limit=1,
+                cursor=cursor,
+            )
+            for item in page.data:
+                if item.end_time is None:
+                    continue
+                item_id = str(item.experiment_item_id)
+                level = str(item.level).upper()
+                end_time = item.end_time
+                previous = states.get(item_id)
+                if previous is not None and previous["end_time"] >= end_time:
+                    continue
+                states[item_id] = {
+                    "status": "failed" if level.endswith("ERROR") else "completed",
+                    "trace_id": str(item.trace_id),
+                    "end_time": end_time,
+                }
+            cursor = page.meta.cursor
+            if not cursor:
+                break
+    project_id = runtime.client._get_project_id()
+    dataset_id = getattr(run, "dataset_id", None) or getattr(run, "datasetId", None)
+    run_url = (
+        f"{runtime.base_url}/project/{project_id}/datasets/{dataset_id}/runs/{run.id}"
+        if project_id and dataset_id else None
+    )
+    for state in states.values():
+        state.pop("end_time", None)
+        trace_id = state.get("trace_id")
+        state["trace_url"] = (
+            f"{runtime.base_url}/project/{project_id}/traces/{trace_id}"
+            if project_id and trace_id else None
+        )
+    return {"run_id": str(run.id), "run_url": run_url, "items": states}
+
+
 def _enqueue_review_items(
     runtime: LangfuseRuntime,
     *,
-    result: Any,
+    trace_ids: list[str],
     profile: str,
     benchmark: str,
     skill: str,
@@ -953,7 +1261,7 @@ def _enqueue_review_items(
         runtime.client,
         f"mybot-{profile}-{benchmark}-{skill}-review",
     )
-    trace_ids = [item.trace_id for item in result.item_results if item.trace_id]
+    trace_ids = list(dict.fromkeys(trace_id for trace_id in trace_ids if trace_id))
     if profile == "office-smoke":
         selected = trace_ids
     else:
@@ -987,10 +1295,14 @@ def run(
     profile: str = typer.Option(..., "--profile"),
     model_preset: str = typer.Option("gpt-5-6-luna", "--model-preset"),
     cache_dir: Path | None = typer.Option(None, "--cache-dir"),
+    ocb_sample: int = typer.Option(1018, "--ocb-sample", min=1, max=1018),
+    officebench_sample: int = typer.Option(93, "--officebench-sample", min=1, max=93),
     presentbench_sample: int = typer.Option(238, "--presentbench-sample", min=1, max=238),
     benchmarks: list[str] | None = typer.Option(None, "--benchmark"),
     skills: list[str] | None = typer.Option(None, "--skill"),
     parent_run_id: str | None = typer.Option(None, "--parent-run-id"),
+    resume_state: Path | None = typer.Option(None, "--resume-state", hidden=True),
+    resume_token: str | None = typer.Option(None, "--resume-token", hidden=True),
 ) -> None:
     """Run offline CI gates or thinly invoke Langfuse Experiment Runner."""
     try:
@@ -1010,13 +1322,35 @@ def run(
             console.print(_run(command, cwd=_ROOT))
             return
         manifest = _manifest()
-        _validate_presentbench_sample(profile, presentbench_sample)
-        selected_benchmarks = _select_values(benchmarks, _BENCHMARKS, "benchmark")
-        selected_skills = _select_values(skills, _SKILLS, "Skill")
+        benchmark_samples = {
+            "ocb": ocb_sample,
+            "officebench": officebench_sample,
+            "presentbench": presentbench_sample,
+        }
+        _validate_benchmark_samples(profile, benchmark_samples)
+        selected_benchmarks = _select_values(
+            benchmarks,
+            tuple(manifest["repositories"]),
+            "benchmark",
+        )
+        selected_skills = _select_values(skills, tuple(manifest["skills"]), "Skill")
         if parent_run_id and (len(selected_benchmarks) != 1 or len(selected_skills) != 1):
             raise BenchmarkError(
                 "--parent-run-id requires exactly one --benchmark and one --skill"
             )
+        if (resume_state is None) != (resume_token is None):
+            raise BenchmarkError("--resume-state and --resume-token must be provided together")
+        resume_payload: dict[str, Any] = {}
+        if resume_state is not None and resume_token is not None:
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", resume_token):
+                raise BenchmarkError("invalid --resume-token")
+            try:
+                resume_payload = json.loads(resume_state.expanduser().read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise BenchmarkError(f"resume checkpoint is unavailable: {exc}") from exc
+            checkpoint_token = str(resume_payload.get("resume_token") or resume_payload.get("job_id") or "")
+            if checkpoint_token != resume_token:
+                raise BenchmarkError("resume checkpoint token does not match --resume-token")
         if model_preset != manifest["models"]["agent"]:
             raise BenchmarkError(f"Office comparison is fixed to {manifest['models']['agent']}")
         root = _cache_root(cache_dir)
@@ -1029,6 +1363,7 @@ def run(
         items = _load_case_items(
             prepared,
             profile,
+            benchmark_samples=benchmark_samples,
             presentbench_sample=presentbench_sample,
         )
         selected_items = {
@@ -1050,20 +1385,38 @@ def run(
             "model_preset": model_preset,
             "prepared_fingerprint": prepared["fingerprint"],
             "presentbench_sample": str(presentbench_sample),
+            "benchmark_samples": json.dumps(benchmark_samples, sort_keys=True),
+            "sample_strategy": (
+                _RELEASE_SAMPLE_STRATEGY if profile == "office-release" else "fixed-smoke-cases"
+            ),
+            "sample_seed": _RELEASE_SAMPLE_SEED if profile == "office-release" else None,
             "annotation_review_policy": "smoke=100%; release=stable 5% sample",
             "benchmark_filter": list(selected_benchmarks),
             "skill_filter": list(selected_skills),
+            "resume_token": resume_token,
+            "resume_count": str(resume_payload.get("resume_count") or 0),
         }
+        _emit_evaluation_progress(
+            "run_started",
+            profile=profile,
+            total_cases=sum(len(values) for values in selected_items.values()) * len(selected_skills),
+            total_variants=len(selected_items) * len(selected_skills),
+        )
         if parent_run_id:
             metadata["parent_run_id"] = parent_run_id
-        run_root = root / "runs" / profile / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+        run_root = (
+            root / "runs" / profile / "jobs" / resume_token
+            if resume_token
+            else root / "runs" / profile / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+        )
         try:
             for benchmark, benchmark_items in items.items():
                 if benchmark not in selected_benchmarks:
                     continue
                 dataset_name = prepared["datasets"][benchmark]
-                if benchmark == "presentbench" and profile == "office-release" and presentbench_sample != 238:
-                    dataset_name = f"{dataset_name}-n{presentbench_sample}"
+                sample = benchmark_samples[benchmark]
+                if profile == "office-release" and sample != _DEFAULT_BENCHMARK_SAMPLES[benchmark]:
+                    dataset_name = _release_dataset_name(dataset_name, benchmark, sample)
                     _upload_rows_to_dataset(
                         runtime,
                         name=dataset_name,
@@ -1076,7 +1429,82 @@ def run(
                     str(source["metadata"]["case_id"]): source
                     for source in benchmark_items
                 }
+                dataset_item_by_case = {_case_id(item): item for item in dataset.items}
+                missing_dataset_items = sorted(set(source_by_case) - set(dataset_item_by_case))
+                if missing_dataset_items:
+                    raise BenchmarkError(
+                        f"Dataset {dataset_name} is missing prepared cases: "
+                        + ", ".join(missing_dataset_items)
+                    )
                 for skill in selected_skills:
+                    stable_run_name = _resume_run_name(
+                        profile,
+                        benchmark,
+                        skill,
+                        resume_token,
+                    )
+                    remote = _remote_variant_state(
+                        runtime,
+                        dataset_name=dataset_name,
+                        run_name=stable_run_name,
+                    )
+                    remote_items = dict(remote["items"])
+                    case_by_item_id = {
+                        str(item.id): case_id
+                        for case_id, item in dataset_item_by_case.items()
+                        if case_id in source_by_case
+                    }
+                    for item_id, state in remote_items.items():
+                        case_id = case_by_item_id.get(item_id)
+                        if case_id is None:
+                            continue
+                        _emit_evaluation_progress(
+                            "case_reconciled",
+                            profile=profile,
+                            benchmark=benchmark,
+                            skill=skill,
+                            case_id=case_id,
+                            variant=f"{benchmark}/{skill}",
+                            status=state["status"],
+                            source="langfuse",
+                            score_status="remote",
+                            trace_url=state.get("trace_url"),
+                            dataset_run_url=remote.get("run_url"),
+                        )
+                    completed_remote_item_ids = {
+                        item_id
+                        for item_id, state in remote_items.items()
+                        if state.get("status") == "completed"
+                    }
+                    pending_items = [
+                        dataset_item_by_case[case_id]
+                        for case_id in source_by_case
+                        if str(dataset_item_by_case[case_id].id) not in completed_remote_item_ids
+                    ]
+                    cached_cases = sum(
+                        _load_case_result(
+                            run_root=run_root,
+                            benchmark=benchmark,
+                            skill=skill,
+                            case_id=_case_id(item),
+                            model_preset=model_preset,
+                            source=source_by_case[_case_id(item)],
+                        ) is not None
+                        for item in pending_items
+                    )
+                    _emit_evaluation_progress(
+                        "variant_started",
+                        profile=profile,
+                        benchmark=benchmark,
+                        skill=skill,
+                        variant=f"{benchmark}/{skill}",
+                        case_count=len(benchmark_items),
+                        checkpoint_cases=len(completed_remote_item_ids) + cached_cases,
+                        pending_cases=len(pending_items),
+                        model_pending_cases=len(pending_items) - cached_cases,
+                        run_name=stable_run_name,
+                    )
+
                     def task(*, item, _skill=skill, _benchmark=benchmark):
                         case_id = _case_id(item)
                         try:
@@ -1102,47 +1530,81 @@ def run(
                                 source_root=Path(prepared["sources"]["officebench"]),
                             )
                         )
-                    result = dataset.run_experiment(
-                        name=f"mybot-{profile}-{benchmark}-{skill}",
-                        description=(
-                            "Mybot public Office comparison; OfficeBench official evaluator and "
-                            "Langfuse Terra Judge scores are the evaluation source"
+                    experiment_metadata = {
+                        **metadata,
+                        "benchmark": benchmark,
+                        "skill": skill,
+                        "dataset_name": dataset_name,
+                        "evaluation_source": (
+                            "officebench_official"
+                            if benchmark == "officebench"
+                            else "langfuse_terra"
                         ),
-                        task=task,
-                        evaluators=evaluators,
-                        max_concurrency=2,
-                        metadata={
-                            **metadata,
-                            "benchmark": benchmark,
-                            "skill": skill,
-                            "dataset_name": dataset_name,
-                            "evaluation_source": (
-                                "officebench_official"
-                                if benchmark == "officebench"
-                                else "langfuse_terra"
+                        "required_remote_score": (
+                            "official_score"
+                            if benchmark == "officebench"
+                            else "mybot_score"
+                        ),
+                        "annotation_queue_name": f"mybot-{profile}-{benchmark}-{skill}-review",
+                    }
+                    result = None
+                    if pending_items:
+                        result = runtime.client.run_experiment(
+                            name=f"mybot-{profile}-{benchmark}-{skill}",
+                            run_name=stable_run_name,
+                            description=(
+                                "Mybot public Office comparison; OfficeBench official evaluator and "
+                                "Langfuse Terra Judge scores are the evaluation source"
                             ),
-                            "required_remote_score": (
-                                "official_score"
-                                if benchmark == "officebench"
-                                else "mybot_score"
-                            ),
-                            "annotation_queue_name": f"mybot-{profile}-{benchmark}-{skill}-review",
-                        },
+                            data=pending_items,
+                            task=task,
+                            evaluators=evaluators,
+                            max_concurrency=2,
+                            metadata=experiment_metadata,
+                            _dataset_version=dataset.version,
+                        )
+                    dataset_run_id = (
+                        result.dataset_run_id if result is not None else remote.get("run_id")
                     )
+                    dataset_run_url = (
+                        result.dataset_run_url if result is not None else remote.get("run_url")
+                    )
+                    trace_ids = [
+                        str(state["trace_id"])
+                        for state in remote_items.values()
+                        if state.get("trace_id")
+                    ]
+                    if result is not None:
+                        trace_ids.extend(
+                            str(item.trace_id)
+                            for item in result.item_results
+                            if item.trace_id
+                        )
                     queue_id, added = _enqueue_review_items(
                         runtime,
-                        result=result,
+                        trace_ids=trace_ids,
                         profile=profile,
                         benchmark=benchmark,
                         skill=skill,
                     )
                     console.print(
-                        f"[green]{result.run_name}[/green] "
-                        f"dataset_run={result.dataset_run_id} "
+                        f"[green]{stable_run_name or (result.run_name if result else 'resumed')}[/green] "
+                        f"dataset_run={dataset_run_id} "
                         f"review_queue={queue_id} (+{added}) "
-                        f"{result.dataset_run_url or ''}"
+                        f"{dataset_run_url or ''}"
+                    )
+                    _emit_evaluation_progress(
+                        "variant_completed",
+                        profile=profile,
+                        benchmark=benchmark,
+                        skill=skill,
+                        dataset_run_id=dataset_run_id,
+                        dataset_run_url=dataset_run_url,
+                        checkpoint_cases=len(completed_remote_item_ids) + cached_cases,
+                        executed_cases=len(pending_items),
                     )
             runtime.flush(strict=True)
+            _emit_evaluation_progress("run_completed", profile=profile)
         finally:
             runtime.shutdown()
     except BenchmarkError as exc:

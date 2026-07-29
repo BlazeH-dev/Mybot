@@ -28,6 +28,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.paths import get_media_dir
 from nanobot.config.schema import Base
+from nanobot.evaluations.catalog import EvaluationRequest
 from nanobot.runtime.interactions import InteractionError
 from nanobot.security.workspace_access import (
     WORKSPACE_SCOPE_METADATA_KEY,
@@ -358,6 +359,9 @@ class WebSocketChannel(BaseChannel):
         self._transcripts = gateway.transcripts
         self._workspaces = gateway.workspaces
         self._interactions = gateway.interactions
+        self._evaluations = gateway.evaluations
+        self._evaluation_loop: asyncio.AbstractEventLoop | None = None
+        self._evaluations.on_update = self._schedule_evaluation_update
 
         self._stream_text_buffers: dict[tuple[str, str], list[str]] = {}
 
@@ -437,6 +441,21 @@ class WebSocketChannel(BaseChannel):
         except Exception as e:
             self.logger.warning("failed to send {} event: {}", event, e)
 
+    def _schedule_evaluation_update(self, job: dict[str, Any]) -> None:
+        loop = self._evaluation_loop
+        if loop is None or loop.is_closed():
+            return
+        asyncio.run_coroutine_threadsafe(self._broadcast_evaluation_update(job), loop)
+
+    async def _broadcast_evaluation_update(self, job: dict[str, Any]) -> None:
+        connections = list(self._conn_chats)
+        if not connections:
+            return
+        await asyncio.gather(
+            *(self._send_event(connection, "evaluation_job_updated", job=job) for connection in connections),
+            return_exceptions=True,
+        )
+
     @classmethod
     def default_config(cls) -> dict[str, Any]:
         return WebSocketConfig().model_dump(by_alias=True)
@@ -506,6 +525,7 @@ class WebSocketChannel(BaseChannel):
         ws_logger = websockets_server_logger()
 
         self._running = True
+        self._evaluation_loop = asyncio.get_running_loop()
         self._stop_event = asyncio.Event()
 
         ssl_context = self._build_ssl_context()
@@ -739,6 +759,65 @@ class WebSocketChannel(BaseChannel):
     ) -> None:
         """Route one typed inbound envelope (``new_chat`` / ``attach`` / ``message``)."""
         t = envelope.get("type")
+        if t == "evaluation_start":
+            request_id = envelope.get("request_id")
+            try:
+                evaluation_request = EvaluationRequest.from_payload(envelope)
+                job = self._evaluations.submit(evaluation_request)
+            except ValueError as exc:
+                await self._send_event(
+                    connection,
+                    "validation_failed",
+                    request_id=request_id,
+                    errors=[str(exc)],
+                )
+                return
+            await self._send_event(
+                connection,
+                "evaluation_started",
+                request_id=request_id,
+                job=job,
+            )
+            return
+        if t in {"evaluation_cancel", "evaluation_retry", "evaluation_resume"}:
+            request_id = envelope.get("request_id")
+            job_id = envelope.get("job_id")
+            if not isinstance(job_id, str):
+                await self._send_event(
+                    connection,
+                    "validation_failed",
+                    request_id=request_id,
+                    errors=["job_id is required"],
+                )
+                return
+            try:
+                if t == "evaluation_cancel":
+                    job = self._evaluations.cancel(job_id)
+                elif t == "evaluation_resume":
+                    job = self._evaluations.resume(job_id)
+                else:
+                    job = self._evaluations.retry(job_id)
+            except (KeyError, ValueError) as exc:
+                await self._send_event(
+                    connection,
+                    "validation_failed",
+                    request_id=request_id,
+                    errors=[str(exc)],
+                )
+                return
+            await self._send_event(
+                connection,
+                (
+                    "evaluation_cancelled"
+                    if t == "evaluation_cancel"
+                    else "evaluation_resumed"
+                    if t == "evaluation_resume"
+                    else "evaluation_started"
+                ),
+                request_id=request_id,
+                job=job,
+            )
+            return
         if t == "new_chat":
             new_id = str(uuid.uuid4())
             scope = await self._workspace_scope_or_error(

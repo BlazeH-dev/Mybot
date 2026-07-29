@@ -341,6 +341,40 @@ async def test_webui_message_rejects_invalid_execution_mode(bus: MagicMock) -> N
 
 
 @pytest.mark.asyncio
+async def test_evaluation_resume_control_requeues_same_job(bus: MagicMock) -> None:
+    channel = _ch(bus)
+    channel._evaluations = MagicMock()
+    channel._evaluations.resume.return_value = {
+        "job_id": "job-resume-1",
+        "status": "queued",
+        "resume_count": 1,
+    }
+    conn = AsyncMock()
+
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {
+            "type": "evaluation_resume",
+            "request_id": "request-1",
+            "job_id": "job-resume-1",
+        },
+    )
+
+    channel._evaluations.resume.assert_called_once_with("job-resume-1")
+    payload = json.loads(conn.send.await_args.args[0])
+    assert payload == {
+        "event": "evaluation_resumed",
+        "request_id": "request-1",
+        "job": {
+            "job_id": "job-resume-1",
+            "status": "queued",
+            "resume_count": 1,
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_webui_message_envelope_persists_user_transcript_for_refresh(
     bus: MagicMock,
     tmp_path,

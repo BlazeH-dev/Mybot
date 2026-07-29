@@ -9,6 +9,7 @@ Also houses shared HTTP utility functions used by both this module and
 
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import re
@@ -21,6 +22,9 @@ from websockets.http11 import Request as WsRequest
 from websockets.http11 import Response
 
 from nanobot.command.builtin import builtin_command_palette
+from nanobot.evaluations.catalog import EvaluationCatalog, EvaluationRequest
+from nanobot.evaluations.jobs import EvaluationJobService
+from nanobot.evaluations.results import LangfuseEvaluationReader
 from nanobot.utils.subagent_channel_display import scrub_subagent_messages_for_channel
 from nanobot.webui.file_preview import WebUIFilePreviewError, file_preview_payload
 from nanobot.webui.gateway_tokens import GatewayTokenStore, token_response_payload
@@ -145,6 +149,9 @@ class GatewayHTTPHandler:
         skills_workspace_path: Path,
         disabled_skills: set[str] | None = None,
         cron_service: CronService | None = None,
+        evaluation_catalog: EvaluationCatalog,
+        evaluations: EvaluationJobService,
+        evaluation_results: LangfuseEvaluationReader,
         log: Any = logger,
     ) -> None:
         self.config = config
@@ -158,6 +165,9 @@ class GatewayHTTPHandler:
         self.skills_workspace_path = skills_workspace_path
         self.disabled_skills = disabled_skills or set()
         self.cron_service = cron_service
+        self.evaluation_catalog = evaluation_catalog
+        self.evaluations = evaluations
+        self.evaluation_results = evaluation_results
         self._log = log
         self._runtime_surface = runtime_surface
 
@@ -215,6 +225,11 @@ class GatewayHTTPHandler:
         if response is not None:
             return response
 
+        # Evaluation routes can query Langfuse and therefore run off-loop.
+        response = await self._dispatch_evaluation_routes(request, got)
+        if response is not None:
+            return response
+
         # Misc routes
         response = self._dispatch_misc_routes(connection, request, got)
         if response is not None:
@@ -231,6 +246,125 @@ class GatewayHTTPHandler:
                 return response
 
         return connection.respond(404, "Not Found")
+
+    async def _dispatch_evaluation_routes(
+        self,
+        request: WsRequest,
+        got: str,
+    ) -> Response | None:
+        if not got.startswith("/api/evaluations"):
+            return None
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        if got == "/api/evaluations/catalog":
+            from nanobot.config.loader import load_config
+
+            skills = webui_skills_payload(
+                self.skills_workspace_path,
+                disabled_skills=set(load_config().agents.defaults.disabled_skills),
+            ).get("skills", [])
+            return _http_json_response(self.evaluation_catalog.payload(skills))
+        if got == "/api/evaluations/readiness":
+            try:
+                evaluation_request = self._evaluation_request_from_query(request.path)
+                payload = await asyncio.to_thread(
+                    self.evaluation_catalog.preflight,
+                    evaluation_request,
+                )
+            except ValueError as exc:
+                return _http_json_response(
+                    {"ready": False, "blockers": [str(exc)], "warnings": [], "checks": {}, "estimate": {}},
+                    status=400,
+                )
+            return _http_json_response(payload.payload())
+        if got == "/api/evaluations/runs":
+            remote = await asyncio.to_thread(self.evaluation_results.list_runs)
+            remote_by_id = {
+                str(row.get("dataset_run_id")): row
+                for row in remote.get("runs", [])
+                if row.get("dataset_run_id")
+            }
+            local = []
+            for job in self.evaluations.list():
+                linked = next(
+                    (
+                        remote_by_id[str(run_id)]
+                        for run_id in job.get("dataset_run_ids", [])
+                        if str(run_id) in remote_by_id
+                    ),
+                    None,
+                )
+                enriched = {**job, "source": "mybot"}
+                if linked is not None:
+                    for field in ("usage", "metrics"):
+                        if linked.get(field) is not None:
+                            enriched[field] = linked[field]
+                    if not enriched.get("aggregate_scores") and linked.get("aggregate_scores"):
+                        enriched["aggregate_scores"] = linked["aggregate_scores"]
+                local.append(enriched)
+            return _http_json_response({"jobs": local, "langfuse": remote})
+        match = re.match(r"^/api/evaluations/runs/([A-Za-z0-9_-]+)(/cases)?$", got)
+        if match:
+            run_id = match.group(1)
+            local = self.evaluations.get(run_id)
+            if local is not None:
+                return _http_json_response(
+                    {"cases": self.evaluations.cases(run_id)}
+                    if match.group(2)
+                    else local
+                )
+            remote = await asyncio.to_thread(self.evaluation_results.list_runs)
+            row = next(
+                (
+                    item
+                    for item in remote.get("runs", [])
+                    if item.get("dataset_run_id") == run_id
+                ),
+                None,
+            )
+            if row is None:
+                return _http_error(404, "evaluation run not found")
+            if match.group(2):
+                return _http_json_response({"cases": row.get("cases", [])})
+            return _http_json_response(row)
+        return _http_error(404, "evaluation route not found")
+
+    @staticmethod
+    def _evaluation_request_from_query(path: str) -> EvaluationRequest:
+        query = _parse_query(path)
+
+        def csv(name: str) -> list[str] | None:
+            raw = _query_first(query, name)
+            return raw.split(",") if raw else None
+
+        raw_samples = _query_first(query, "benchmark_samples")
+        sample = _query_first(query, "presentbench_sample")
+        payload: dict[str, Any] = {
+            "suite_id": _query_first(query, "suite_id") or "office",
+            "profile": _query_first(query, "profile") or "office-smoke",
+            "action": _query_first(query, "action") or "run",
+            "allow_licensed_content": _query_first(query, "allow_licensed_content") == "true",
+        }
+        for query_name, payload_name in (
+            ("benchmarks", "benchmarks"),
+            ("skills", "skills"),
+            ("model_presets", "model_presets"),
+            ("runtime_profiles", "runtime_profiles"),
+        ):
+            values = csv(query_name)
+            if values is not None:
+                payload[payload_name] = values
+        if raw_samples:
+            try:
+                payload["benchmark_samples"] = json.loads(raw_samples)
+            except json.JSONDecodeError as exc:
+                raise ValueError("benchmark_samples must be valid JSON") from exc
+        elif sample:
+            try:
+                payload["presentbench_sample"] = int(sample)
+            except ValueError as exc:
+                raise ValueError("presentbench_sample must be an integer") from exc
+        return EvaluationRequest.from_payload(payload)
 
     # -- Token issue --------------------------------------------------------
 

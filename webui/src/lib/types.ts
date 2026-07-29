@@ -808,6 +808,183 @@ export interface SlashCommand {
   argHint?: string;
 }
 
+export type EvaluationJobStatus =
+  | "queued"
+  | "preflight"
+  | "preparing"
+  | "estimating"
+  | "running"
+  | "remote_scoring"
+  | "awaiting_review"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export interface EvaluationOption {
+  id: string;
+  label: string;
+  available?: boolean;
+  compatible?: boolean;
+  reason?: string | null;
+  score?: string;
+  evaluator?: string;
+  requires_cloud?: boolean;
+  requires_licensed_content?: boolean;
+  requires_review?: boolean;
+}
+
+export interface EvaluationSuite {
+  id: string;
+  version: string;
+  label: string;
+  description: string;
+  profiles: EvaluationOption[];
+  benchmarks: EvaluationOption[];
+  skills: EvaluationOption[];
+  model_presets: EvaluationOption[];
+  runtime_profiles: EvaluationOption[];
+  benchmark_samples: Record<string, number[]>;
+  presentbench_samples: number[];
+}
+
+export interface EvaluationCatalogPayload {
+  schema_version: number;
+  suites: EvaluationSuite[];
+}
+
+export interface EvaluationRequestPayload {
+  suite_id: string;
+  profile: string;
+  action: "run" | "prepare";
+  benchmarks: string[];
+  skills: string[];
+  model_presets: string[];
+  runtime_profiles: string[];
+  benchmark_samples: Record<string, number>;
+  /** @deprecated Kept for compatibility with older gateway payloads. */
+  presentbench_sample: number;
+  allow_licensed_content: boolean;
+}
+
+export interface EvaluationEstimate {
+  profile?: string;
+  case_counts?: Record<string, number>;
+  skill_runs?: number;
+  judge_runs?: number;
+  estimated_tokens?: Record<string, number>;
+}
+
+export interface EvaluationReadiness {
+  ready: boolean;
+  blockers: string[];
+  warnings: string[];
+  checks: Record<string, unknown>;
+  estimate: EvaluationEstimate;
+}
+
+export interface EvaluationUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cached_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
+export interface EvaluationMetrics {
+  generation_count?: number;
+  cases_with_usage?: number;
+  latency_seconds?: number;
+  ttft_seconds?: number;
+}
+
+export interface EvaluationCase {
+  case_id: string;
+  benchmark?: string;
+  skill?: string;
+  status: string;
+  score_status?: string;
+  scores?: Record<string, number | boolean | string | null>;
+  usage?: EvaluationUsage | null;
+  metrics?: EvaluationMetrics | null;
+  langfuse_url?: string | null;
+  trace_url?: string | null;
+}
+
+export interface EvaluationJob {
+  source?: "mybot" | "langfuse";
+  job_id: string;
+  suite_id: string;
+  profile: string;
+  action?: "run" | "prepare";
+  status: EvaluationJobStatus;
+  phase: string;
+  request?: EvaluationRequestPayload;
+  estimated_tokens?: Record<string, number>;
+  total_cases?: number;
+  completed_cases?: number;
+  remaining_cases?: number;
+  resumed_cases?: number;
+  checkpoint_cases?: number;
+  pending_cases?: number;
+  current_case?: string | null;
+  current_variant?: string | null;
+  dataset_run_ids?: string[];
+  langfuse_links?: string[];
+  aggregate_scores?: Record<string, number | boolean | string | null>;
+  usage?: EvaluationUsage | null;
+  metrics?: EvaluationMetrics | null;
+  review_status?: string;
+  cancel_requested?: boolean;
+  resumable?: boolean;
+  resume_count?: number;
+  error?: string | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface EvaluationRemoteRun {
+  source: "langfuse";
+  job_id: null;
+  dataset_run_id: string;
+  dataset_name: string;
+  name: string;
+  status: string;
+  profile?: string | null;
+  benchmark?: string | null;
+  skill?: string | null;
+  model_preset?: string | null;
+  item_count: number;
+  completed_items: number;
+  failed_items: number;
+  aggregate_scores: Record<string, number | boolean | string | null>;
+  usage?: EvaluationUsage | null;
+  metrics?: EvaluationMetrics | null;
+  review_status: string;
+  langfuse_url?: string | null;
+  created_at?: string | null;
+}
+
+export interface EvaluationRunsPayload {
+  jobs: EvaluationJob[];
+  langfuse: {
+    available: boolean;
+    error?: string | null;
+    refreshing?: boolean;
+    stale?: boolean;
+    refresh_error?: string | null;
+    runs: EvaluationRemoteRun[];
+  };
+}
+
+export type EvaluationSocketEvent =
+  | { event: "evaluation_started"; request_id?: string; job: EvaluationJob }
+  | { event: "evaluation_cancelled"; request_id?: string; job: EvaluationJob }
+  | { event: "evaluation_resumed"; request_id?: string; job: EvaluationJob }
+  | { event: "evaluation_job_updated"; job: EvaluationJob }
+  | { event: "validation_failed"; request_id?: string; errors: string[] };
+
 export type ConnectionStatus =
   | "idle"
   | "connecting"
@@ -911,7 +1088,8 @@ export type InboundEvent =
       detail?: string;
       provider?: string;
     }
-  | { event: "error"; chat_id?: string; detail?: string; reason?: string };
+  | { event: "error"; chat_id?: string; detail?: string; reason?: string }
+  | EvaluationSocketEvent;
 
 /** Base64-encoded file attached to an outbound ``message`` envelope.
  *
@@ -975,6 +1153,10 @@ export type Outbound =
   | { type: "attach"; chat_id: string }
   | { type: "set_workspace_scope"; chat_id: string; workspace_scope: WorkspaceScopePayload }
   | { type: "transcribe_audio"; request_id: string; data_url: string; duration_ms?: number }
+  | ({ type: "evaluation_start"; request_id: string } & EvaluationRequestPayload)
+  | { type: "evaluation_cancel"; request_id: string; job_id: string }
+  | { type: "evaluation_retry"; request_id: string; job_id: string }
+  | { type: "evaluation_resume"; request_id: string; job_id: string }
   | {
       type: "interaction_response";
       chat_id: string;

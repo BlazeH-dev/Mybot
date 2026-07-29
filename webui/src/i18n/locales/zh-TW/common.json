@@ -55,10 +55,12 @@
       "ariaLabel": "切換語言"
     },
     "apps": "應用",
+    "evaluations": "評測",
     "skills": {
       "title": "技能"
     }
   },
+  "evaluations": {"title": "評測中心", "subtitle": "Benchmark 執行、評分進度與 Langfuse 跳轉", "refresh": "重新整理", "suite": "評測套件", "profile": "Profile", "action": "操作", "benchmarks": "Benchmark", "skills": "技能", "models": "模型 preset", "runtimeProfiles": "Runtime profile", "licensedPrepare": "準備已授權內容", "estimate": "估算與硬門", "start": "啟動評測", "startPrepare": "開始準備", "current": "目前佇列", "noCurrent": "沒有執行中或排隊中的評測。", "history": "歷史結果", "noHistory": "還沒有評測記錄。", "confirmTitle": "確認啟動評測", "confirmRisk": "我已核對 token 估算和資料上傳範圍。"},
   "settings": {
     "backToChat": "返回聊天",
     "sidebar": {
@@ -703,6 +705,7 @@
         "drag": "拖曳排序"
       },
       "attachImage": "附加圖片",
+      "attachFile": "附加檔案",
       "imageMode": {
         "label": "圖片生成",
         "toggle": "切換圖片生成模式",
@@ -812,6 +815,7 @@
       "imageRejected": {
         "unsupported_type": "不支援的檔案類型",
         "too_many_images": "每則訊息最多 {{max}} 張圖片",
+        "too_many_files": "每則訊息最多 {{max}} 個檔案",
         "magic_mismatch": "檔案看起來不像真正的圖片",
         "decode_failed": "無法解碼這張圖片",
         "too_large": "圖片太大，請換一張小一點的",
@@ -824,8 +828,10 @@
         "mcpGroup": "MCP 服務",
         "cliBadge": "CLI",
         "mcpBadge": "MCP",
+        "skillBadge": "Skill",
         "cliDescription": "使用 @{{name}} 呼叫本機 CLI",
-        "mcpDescription": "使用 @{{name}} 呼叫 MCP 服務"
+        "mcpDescription": "使用 @{{name}} 呼叫 MCP 服務",
+        "skillDescription": "使用 Skill {{name}} 路由此回合"
       },
       "workspace": {
         "accessAria": "工作區存取權限",

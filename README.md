@@ -90,7 +90,7 @@ pytest tests/runtime/ tests/skills/ -q
 }
 ```
 
-公开 benchmark 需要在 Langfuse Project 中配置 Terra Custom LLM Connection：model `gpt-5.6-terra`、OpenAI-compatible base URL 和 key；这些凭据只保存在 Langfuse，不写入 Mybot 或前端。上传 OCB/PresentBench 正文前必须完成许可证审查，并显式使用 `prepare --allow-licensed-content`。`prepare` 还要求外部 LibreOffice 的绝对路径和精确 `soffice --version`；`estimate` 只统计 Luna Agent 与 Terra Judge 的预计 token。
+公开 benchmark 需要在 Langfuse Project 中配置 Terra Custom LLM Connection：model `gpt-5.6-terra`、OpenAI-compatible base URL 和 key；这些凭据只保存在 Langfuse，不写入 Mybot 或前端。上传 OCB/PresentBench 正文前必须完成许可证审查，并显式使用 `prepare --allow-licensed-content`。`prepare` 还要求外部 LibreOffice 的绝对路径和精确 `soffice --version`；`estimate` 只统计 Luna Agent 与 Terra Judge 的预计 token。Office release 的 25%/50% 档使用固定 seed 分层抽样，同一 prepared manifest 可复现且 25% 是 50% 的子集，不按原始顺序直接取前 N。
 
 普通任务建议保持 `captureContent=false`；公开 benchmark 在许可证审查通过且需要把 prompt/material 交给 Terra Judge 时，必须将其改为 `true`。敏感数据不得通过该开关上传。
 
@@ -101,6 +101,8 @@ nanobot benchmark prepare --profile office-smoke \
   --allow-licensed-content
 nanobot benchmark estimate --profile office-smoke --model-preset gpt-5-6-luna
 nanobot benchmark run --profile office-smoke --model-preset gpt-5-6-luna
+nanobot benchmark estimate --profile office-release --ocb-sample 255 --officebench-sample 24 --presentbench-sample 60
+nanobot benchmark run --profile office-release --ocb-sample 255 --officebench-sample 24 --presentbench-sample 60
 nanobot benchmark export --dataset-run <langfuse-dataset-run-id>
 ```
 

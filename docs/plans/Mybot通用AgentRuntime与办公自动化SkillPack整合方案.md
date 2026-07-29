@@ -260,7 +260,7 @@ P5.1/P7 的 benchmark 固定使用三个 profile：`ci` 完全离线；`office-s
 
 release 固定执行 `prepare office-release -> estimate office-release -> run office-release`：prepare 先缓存并校验 OCB/OfficeBench release 数据和 PresentBench 三档候选资产，estimate 只读已准备数据和价格配置，run 只冻结并消费选定 manifest。smoke prepare 只覆盖固定 12 case，不能替代 release prepare。
 
-benchmark 不再由 Mybot 维护 active run、case checkpoint、Score 或趋势状态；Langfuse Experiment/Dataset Run 负责运行记录、错误隔离和比较。运行前由 Mybot 做成本估算和确认，失败 item 首版通过带 `parent_run_id` 的 retry Dataset Run 处理。`export --dataset-run` 只有在 Langfuse Score、Annotation Queue 和运行完整性满足要求时才生成 README 快照。smoke/release 必须完成日本区 Langfuse Cloud 真实写入、flush、回读、Annotation Queue 和 deep link smoke；普通任务和 CI 默认关闭 Cloud 且不承诺离线 Trace 补传。
+Mybot 只维护 benchmark 编排状态和本机恢复 checkpoint，不维护 Score 或趋势真相源；Langfuse Experiment/Dataset Run 负责运行记录、评分、审核和比较。Job 采用全局单运行、持久队列和手动 Resume：同一 `resume_token` 生成稳定 Dataset Run 名，远端成功 item 跳过，本地已完成 Case 复用权限 `0600` 的输入指纹/模型输出 checkpoint，只重跑缺失 evaluator/Trace，避免重复模型 token；Retry 才创建新 Job。checkpoint 不进入 HTTP/UI，Langfuse 仍是 Trace/Score/审核唯一真相源。`export --dataset-run` 只有在 Langfuse Score、Annotation Queue 和运行完整性满足要求时才生成 README 快照。smoke/release 必须完成日本区 Langfuse Cloud 真实写入、flush、回读、Annotation Queue 和 deep link smoke；普通任务和 CI 默认关闭 Cloud 且不承诺离线 Trace 补传。
 
 ## 8. 最终结果展示
 
@@ -286,7 +286,7 @@ benchmark 不再由 Mybot 维护 active run、case checkpoint、Score 或趋势�
 - Office 任务能形成可追踪产物和确定性报告。
 - OfficePython 与 OfficeCLI 能在相同条件下完成 coverage/共同任务比较；OCB、OfficeBench Office subset、PresentBench 的结果口径可复现且不混成总分。
 - 日本区 Langfuse Cloud 未启用或不可用时，普通 Runtime、本地 deterministic/cassette、Policy/OCC/HITL/OpenXML 硬门仍正常，但明确没有持久 Trace/Experiment；启用时可查询 Agent/LLM/tool/Policy/Interaction/artifact/checkpoint/child observation，比较 Dataset Run 和 Score 并处理 Annotation Queue。
-- WebUI 不新增 benchmark 进度面板、实验状态机或人工评分入口；用户直接使用 Langfuse UI/API 查看 Experiment、Score、成本和 Annotation Queue，Runtime UI 只展示本地 plan/approval/artifact/checkpoint。
+- WebUI 新增独立 `#/evaluations` 评测中心，但不复制 Langfuse 真相源：通过共享 suite catalog/adapter 与 Job Service 展示 readiness、估算、队列、进度、Case 状态、断点续测计数、分数摘要和 CLI/WebUI 历史，并提供 Resume 同 Job、Retry 新 Job 及 Dataset Run、Trace、Annotation Queue deep link；人工评分、Trace 详情和 Judge reasoning 仍只在 Langfuse 完成。未来新增评测维度只需提交受信任的 `benchmarks/suites/<suite-id>/manifest.yaml`、`adapter.py` 和测试，不需重复开发页面。
 - Subagent 权限、上下文、产物、usage、取消和循环熔断均可核对。
 
 P6 和 P3.1 不属于以上项目完成条件；若后续单独启动，其验收以对应阶段计划为准。

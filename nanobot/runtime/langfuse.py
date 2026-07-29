@@ -8,10 +8,12 @@ import json
 import os
 import re
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Iterator
+from types import MethodType
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 from loguru import logger
 
@@ -37,6 +39,125 @@ _SUMMARY_KEY_RE = re.compile(
     r"(?:content|prompt|completion|message|arguments|params|result|output|input|reason|path|detail)",
     re.IGNORECASE,
 )
+_DEFAULT_FLUSH_TIMEOUT_SECONDS = 30.0
+
+
+class LangfuseFlushTimeoutError(TimeoutError):
+    """Raised when Langfuse cannot drain one of its local queues in time."""
+
+
+def _run_bounded(callback: Callable[[], Any], *, label: str, timeout: float) -> None:
+    completed = threading.Event()
+    errors: list[BaseException] = []
+
+    def invoke() -> None:
+        try:
+            callback()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            completed.set()
+
+    thread = threading.Thread(target=invoke, name=f"mybot-langfuse-{label}", daemon=True)
+    thread.start()
+    if not completed.wait(timeout):
+        raise LangfuseFlushTimeoutError(
+            f"Langfuse {label} did not finish within {timeout:g} seconds"
+        )
+    if errors:
+        raise errors[0]
+
+
+def _wait_for_queue(queue: Any, *, label: str, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    with queue.all_tasks_done:
+        while queue.unfinished_tasks:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not queue.all_tasks_done.wait(remaining):
+                raise LangfuseFlushTimeoutError(
+                    f"Langfuse {label} queue did not drain within {timeout:g} seconds "
+                    f"({queue.unfinished_tasks} unfinished)"
+                )
+
+
+def _repair_consumer_threads(resources: Any) -> None:
+    if getattr(resources, "_shutdown", False):
+        return
+
+    ingestion_consumers = [
+        consumer
+        for consumer in getattr(resources, "_ingestion_consumers", [])
+        if consumer.is_alive()
+    ]
+    if not ingestion_consumers:
+        from langfuse._task_manager.score_ingestion_consumer import ScoreIngestionConsumer
+
+        consumer = ScoreIngestionConsumer(
+            ingestion_queue=resources._score_ingestion_queue,
+            identifier=0,
+            client=resources._score_ingestion_client,
+            public_key=resources.public_key,
+            flush_at=resources.flush_at,
+            flush_interval=resources.flush_interval,
+            max_retries=3,
+        )
+        consumer.start()
+        ingestion_consumers.append(consumer)
+        logger.warning("Restarted a stopped Langfuse score ingestion consumer")
+    resources._ingestion_consumers = ingestion_consumers
+
+    media_consumers = [
+        consumer
+        for consumer in getattr(resources, "_media_upload_consumers", [])
+        if consumer.is_alive()
+    ]
+    if getattr(resources, "_media_upload_enabled", False) and not media_consumers:
+        from langfuse._task_manager.media_upload_consumer import MediaUploadConsumer
+
+        for identifier in range(resources._media_upload_thread_count):
+            consumer = MediaUploadConsumer(
+                identifier=identifier,
+                media_manager=resources._media_manager,
+            )
+            consumer.start()
+            media_consumers.append(consumer)
+        logger.warning("Restarted stopped Langfuse media upload consumers")
+    resources._media_upload_consumers = media_consumers
+
+
+def _bounded_resource_flush(resources: Any, *, timeout: float) -> None:
+    _repair_consumer_threads(resources)
+    tracer_provider = getattr(resources, "tracer_provider", None)
+    if tracer_provider is not None:
+        from opentelemetry import trace as otel_trace_api
+
+        if not isinstance(tracer_provider, otel_trace_api.ProxyTracerProvider):
+            _run_bounded(
+                tracer_provider.force_flush,
+                label="OTEL flush",
+                timeout=timeout,
+            )
+    _wait_for_queue(
+        resources._score_ingestion_queue,
+        label="score ingestion",
+        timeout=timeout,
+    )
+    _wait_for_queue(
+        resources._media_upload_queue,
+        label="media upload",
+        timeout=timeout,
+    )
+
+
+def _install_bounded_flush(client: Any, *, timeout: float) -> None:
+    resources = getattr(client, "_resources", None)
+    if resources is None:
+        return
+
+    def flush(bound_resources: Any) -> None:
+        _bounded_resource_flush(bound_resources, timeout=timeout)
+
+    resources.flush = MethodType(flush, resources)
 
 
 def value_summary(value: Any) -> dict[str, Any]:
@@ -183,6 +304,10 @@ class LangfuseRuntime:
             base_url=self.base_url,
             mask_otel_spans=build_span_mask(config.capture_content),
             span_exporter=span_exporter,
+        )
+        _install_bounded_flush(
+            self.client,
+            timeout=_DEFAULT_FLUSH_TIMEOUT_SECONDS,
         )
 
     @classmethod

@@ -20,11 +20,15 @@ from nanobot.benchmark_adapters import (
 from nanobot.cli.benchmark import (
     BenchmarkError,
     _case_manifest_digests,
+    _case_manifest_map,
     _cloud_smoke,
     _dataset_row_payload,
+    _deterministic_stratified_rows,
     _manifest,
     _missing_ocb_references,
     _officebench_evaluator,
+    _release_dataset_name,
+    _sample_stratum,
     _select_values,
     _stage_case_workspace,
     _update_readme_benchmark_block,
@@ -167,6 +171,89 @@ def test_run_filters_are_validated_and_deduplicated() -> None:
     assert _select_values(["ocb", "ocb"], ("ocb", "officebench"), "benchmark") == ("ocb",)
     with pytest.raises(BenchmarkError, match="unknown benchmark"):
         _select_values(["presentbench"], ("ocb", "officebench"), "benchmark")
+
+
+def test_release_case_manifests_are_sampled_per_benchmark(tmp_path: Path) -> None:
+    full_counts = {"ocb": 1018, "officebench": 93, "presentbench": 238}
+    for benchmark, count in full_counts.items():
+        rows = "".join(
+            json.dumps({"metadata": {"case_id": f"{benchmark}-{index}"}}) + "\n"
+            for index in range(count)
+        )
+        (tmp_path / f"office-release-{benchmark}.jsonl").write_text(rows, encoding="utf-8")
+
+    sampled = _case_manifest_map(
+        {"case_manifest_root": str(tmp_path)},
+        "office-release",
+        benchmark_samples={"ocb": 255, "officebench": 24, "presentbench": 60},
+    )
+
+    assert {benchmark: len(rows) for benchmark, rows in sampled.items()} == {
+        "ocb": 255,
+        "officebench": 24,
+        "presentbench": 60,
+    }
+
+
+def test_release_sampling_is_reproducible_proportional_and_nested() -> None:
+    rows = [
+        {
+            "input": {"case_id": f"docx-{index}", "format": "docx"},
+            "metadata": {"case_id": f"docx-{index}", "track": "qa"},
+        }
+        for index in range(80)
+    ] + [
+        {
+            "input": {"case_id": f"pptx-{index}", "format": "pptx"},
+            "metadata": {"case_id": f"pptx-{index}", "track": "qa"},
+        }
+        for index in range(20)
+    ]
+
+    ordered = _deterministic_stratified_rows("ocb", rows)
+    reordered_input = _deterministic_stratified_rows("ocb", list(reversed(rows)))
+    ordered_ids = [row["metadata"]["case_id"] for row in ordered]
+    reordered_ids = [row["metadata"]["case_id"] for row in reordered_input]
+    quarter = ordered_ids[:25]
+    half = ordered_ids[:50]
+
+    assert ordered_ids == reordered_ids
+    assert ordered_ids != [row["metadata"]["case_id"] for row in rows]
+    assert set(quarter) < set(half) < set(ordered_ids)
+    assert sum(case_id.startswith("pptx-") for case_id in quarter) == 5
+    assert sum(case_id.startswith("pptx-") for case_id in half) == 10
+    assert _release_dataset_name("office-release-ocb", "ocb", 255) == (
+        "office-release-ocb-strat-v1-n255"
+    )
+    assert _release_dataset_name("office-release-ocb", "ocb", 1018) == "office-release-ocb"
+
+
+@pytest.mark.parametrize(
+    ("benchmark", "row", "expected"),
+    [
+        (
+            "ocb",
+            {"input": {"format": "xlsx"}, "metadata": {"track": "edit"}},
+            "xlsx|edit",
+        ),
+        (
+            "officebench",
+            {"input": {}, "metadata": {"case_id": "1-10/2"}},
+            "1-10",
+        ),
+        (
+            "presentbench",
+            {"input": {}, "metadata": {"domain": "education"}},
+            "education",
+        ),
+    ],
+)
+def test_release_sampling_strata(
+    benchmark: str,
+    row: dict[str, object],
+    expected: str,
+) -> None:
+    assert _sample_stratum(benchmark, row) == expected
 
 
 def test_officebench_staging_and_pinned_evaluator_contract(tmp_path: Path) -> None:
@@ -388,6 +475,9 @@ def test_run_has_no_price_confirmation_option() -> None:
     assert "--parent-run-id" in result.stdout
     assert "--benchmark" in result.stdout
     assert "--skill" in result.stdout
+    assert "--ocb-sample" in result.stdout
+    assert "--officebench-sample" in result.stdout
+    assert "--presentbench-sample" in result.stdout
 
 
 def test_export_readme_block_is_controlled(tmp_path: Path) -> None:
