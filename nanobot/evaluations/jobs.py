@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -21,12 +22,68 @@ from nanobot.evaluations.catalog import (
     EvaluationRequest,
     benchmark_cache_root,
 )
+from nanobot.evaluations.failures import classify_evaluation_failure
 
 RESUMABLE_JOB_STATUSES = frozenset({"failed", "cancelled", "interrupted"})
 
 
+def _completed_job_only_waited_for_scores(job: dict[str, Any]) -> bool:
+    if job.get("status") != "failed":
+        return False
+    cases = job.get("cases")
+    if not isinstance(cases, list) or not cases:
+        return False
+    total_cases = int(job.get("total_cases") or 0)
+    if total_cases <= 0 or len(cases) < total_cases:
+        return False
+    if any(not isinstance(case, dict) or case.get("status") != "completed" for case in cases):
+        return False
+    failure = job.get("failure")
+    if isinstance(failure, dict) and failure.get("category") == "langfuse_score_missing":
+        return True
+    detail = f"{job.get('error') or ''}\n" + "\n".join(
+        str(line) for line in job.get("output_tail") or []
+    )
+    lowered = detail.lower()
+    return (
+        "langfuse score readback failed" in lowered
+        or "langfuse score ingestion queue did not drain" in lowered
+    )
+
+
+def _with_failure_details(job: dict[str, Any]) -> dict[str, Any]:
+    if _completed_job_only_waited_for_scores(job):
+        reconciled = dict(job)
+        reconciled.update(
+            status="awaiting_review",
+            phase="awaiting_review",
+            review_status="pending",
+            error=None,
+            failure=None,
+            resumable=False,
+        )
+        return reconciled
+    if job.get("status") not in {"failed", "interrupted"} or isinstance(job.get("failure"), dict):
+        return job
+    enriched = dict(job)
+    enriched["failure"] = classify_evaluation_failure(
+        job.get("output_tail") if isinstance(job.get("output_tail"), list) else [],
+        str(job.get("error") or ""),
+    )
+    return enriched
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _case_identity(case: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(case.get("benchmark") or ""),
+        str(case.get("skill") or ""),
+        str(case.get("model_preset") or ""),
+        str(case.get("case_id") or ""),
+    )
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -87,6 +144,15 @@ class EvaluationJobStore:
             if isinstance(payload, dict) and payload.get("job_id"):
                 jobs.append(payload)
         return sorted(jobs, key=lambda row: str(row.get("created_at") or ""), reverse=True)
+
+    def delete(self, job_id: str) -> bool:
+        path = self.path(job_id)
+        with self._lock:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                return False
+        return True
 
 
 class EvaluationJobService:
@@ -231,10 +297,106 @@ class EvaluationJobService:
                 current_case=None,
                 current_variant=None,
                 error=None,
+                failure=None,
                 finished_at=None,
                 resume_count=int(job.get("resume_count") or 0) + 1,
                 resume_history=history,
                 resume_requested_at=resumed_at,
+            )
+            self._notify(updated)
+            self._start_next()
+            return self.store.read(job_id) or updated
+
+    def rerun_case(
+        self,
+        job_id: str,
+        *,
+        benchmark: str,
+        skill: str,
+        case_id: str,
+        model_preset: str = "",
+    ) -> dict[str, Any]:
+        """Queue exactly one known Case again, including a completed Case."""
+        with self._lock:
+            job = self.store.read(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            status = str(job.get("status") or "")
+            if status not in TERMINAL_JOB_STATUSES:
+                raise ValueError(f"evaluation job in status {status!r} cannot rerun a Case")
+            if job.get("action") != "run" or job.get("profile") == "ci":
+                raise ValueError("only terminal model evaluation jobs can rerun a Case")
+            selector = {
+                "benchmark": benchmark.strip(),
+                "skill": skill.strip(),
+                "model_preset": model_preset.strip(),
+                "case_id": case_id.strip(),
+            }
+            if not selector["benchmark"] or not selector["skill"] or not selector["case_id"]:
+                raise ValueError("benchmark, skill, and case_id are required")
+            cases = list(job.get("cases") or [])
+            selected = next(
+                (
+                    case
+                    for case in cases
+                    if _case_identity(case) == _case_identity(selector)
+                    or (
+                        not selector["model_preset"]
+                        and str(case.get("benchmark")) == selector["benchmark"]
+                        and str(case.get("skill")) == selector["skill"]
+                        and str(case.get("case_id")) == selector["case_id"]
+                    )
+                ),
+                None,
+            )
+            if selected is None:
+                raise ValueError("the requested Case does not belong to this evaluation job")
+            if selected.get("status") not in {"failed", "completed"}:
+                raise ValueError("only failed or completed Cases can be rerun")
+
+            request = EvaluationRequest.from_payload(dict(job.get("request") or {}))
+            selector["model_preset"] = str(
+                selected.get("model_preset") or request.model_presets[0]
+            )
+            preflight = self.catalog.preflight(request)
+            if not preflight.ready:
+                raise ValueError("; ".join(preflight.blockers))
+
+            requested_at = _now()
+            count = int(job.get("case_rerun_count") or 0) + 1
+            history = list(job.get("case_rerun_history") or [])
+            history.append({
+                "attempt": count,
+                "from_status": status,
+                "requested_at": requested_at,
+                **selector,
+                "previous_case_status": selected.get("status"),
+            })
+            selected.update(
+                status="queued",
+                score_status="pending",
+                scores=None,
+                usage=None,
+                metrics=None,
+                trace_url=None,
+                rerun_attempt=count,
+            )
+            updated = self.store.update(
+                job_id,
+                status="queued",
+                phase="queued",
+                cancel_requested=False,
+                worker_pid=None,
+                current_case=selector["case_id"],
+                current_variant=f'{selector["benchmark"]}/{selector["skill"]}/{selector["model_preset"]}',
+                error=None,
+                failure=None,
+                finished_at=None,
+                cases=cases,
+                case_rerun=selector,
+                case_rerun_count=count,
+                case_rerun_history=history,
+                case_rerun_requested_at=requested_at,
             )
             self._notify(updated)
             self._start_next()
@@ -264,11 +426,43 @@ class EvaluationJobService:
             self._notify(updated)
             return updated
 
+    def delete(self, job_id: str) -> bool:
+        """Delete one terminal local Job and its private resumable artifacts.
+
+        Langfuse Dataset Runs are deliberately not deleted: they remain the
+        score/audit source of truth and can still appear as remote history rows.
+        """
+        with self._lock:
+            job = self.store.read(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            status = str(job.get("status") or "")
+            if status not in TERMINAL_JOB_STATUSES:
+                raise ValueError("only terminal evaluation jobs can be deleted")
+
+            job_path = self.store.path(job_id)
+            for artifact in (job_path.with_suffix(".progress.jsonl"), job_path.with_suffix(".log")):
+                artifact.unlink(missing_ok=True)
+
+            profile = str(job.get("profile") or "")
+            resume_token = str(job.get("resume_token") or job_id)
+            safe_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            if profile and all(ch in safe_chars for ch in profile) and all(ch in safe_chars for ch in resume_token):
+                checkpoint_root = (
+                    benchmark_cache_root() / "runs" / profile / "jobs" / resume_token
+                ).resolve()
+                jobs_root = (benchmark_cache_root() / "runs" / profile / "jobs").resolve()
+                if checkpoint_root.parent == jobs_root and checkpoint_root.exists():
+                    shutil.rmtree(checkpoint_root, ignore_errors=False)
+
+            return self.store.delete(job_id)
+
     def list(self) -> list[dict[str, Any]]:
-        return self.store.list()
+        return [_with_failure_details(job) for job in self.store.list()]
 
     def get(self, job_id: str) -> dict[str, Any] | None:
-        return self.store.read(job_id)
+        job = self.store.read(job_id)
+        return _with_failure_details(job) if job is not None else None
 
     def cases(self, job_id: str) -> list[dict[str, Any]]:
         job = self.store.read(job_id)

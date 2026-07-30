@@ -81,7 +81,7 @@
           "issues": [],
           "details": {
             "validated_files": [
-              "../office_python/sample.xlsx"
+              "office_baseline.xlsx"
             ]
           },
           "hard_gate": true

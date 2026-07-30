@@ -1,11 +1,11 @@
 # P2 Skill Pack Manifest 与运行时开关代码说明
 
 > 对应计划：`docs/plans/runtime-steps/P2-skillpack-manifest.md`
-> 当前状态：已完成（2026-07-16）。
+> 当前状态：已完成。
 
 ## 这一阶段解决什么问题
 
-P1 当前有 `office-python` 和 `officecli` 两个 Skill，但只有 `SKILL.md` 还不够解决工程治理问题：
+P1 当前只保留 `officecli` Skill，但只有 `SKILL.md` 还不够解决工程治理问题：
 
 - 程序怎样知道 Skill 的版本、入口、输入输出和 provider 依赖？
 - Skill 写坏了，是拖垮整个网关，还是只隔离自己？
@@ -152,16 +152,13 @@ WebUI 则需要看到完整 catalog，才能帮助用户修复问题：
 
 这个设计体现了“执行面最小化、管理面可解释”。
 
-### 6. 为两个 Office Skill 添加 manifest
+### 6. 为 OfficeCLI 添加 manifest
 
 新增：
 
 ```text
-nanobot/skills/office-python/skill.yaml
 nanobot/skills/officecli/skill.yaml
 ```
-
-Python Skill 声明自己的脚本入口、xlsx/会议纪要输入、facts/docx/pptx/quality report 输出，以及文件读写和进程执行需求。
 
 OfficeCLI Skill 声明 Office 文档输入、成品/validation/run/preview 输出，并引用唯一的 `references/officecli-runtime.json`。
 
@@ -246,9 +243,9 @@ manifest 描述 Skill 依赖哪个 provider；contract 描述 provider 的具体
 - WebUI catalog 保留诊断但隐藏本地敏感路径。
 - 即时开关同步主 Agent 与 Subagent。
 - `selected_skills` 的名称归一化和运行时复核。
-- wheel 中包含两个 `skill.yaml`、contract 和 launcher。
+- wheel 中包含 `skill.yaml`、provider contract 和 launcher。
 
-历史阶段验收记录为：后端定向回归 `101 passed`，WebUI 当时全量 `401 tests passed`，production build 通过。它们是当次快照，当前结果应以重新运行测试为准。
+测试数量随代码变化，当前结果以重新运行定向测试为准，不在文档中固定历史快照数字。
 
 ## 边界与未做内容
 

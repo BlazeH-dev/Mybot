@@ -9,10 +9,9 @@
     "replayability"
   ],
   "expected_artifacts": [
-    "../office_python/sample.xlsx",
-    "../office_python/create_xlsx.json"
+    "office_baseline.xlsx"
   ],
-  "files": ["../office_python/sample.xlsx"],
+  "files": ["office_baseline.xlsx"],
   "screenshots": ["../../../webui/public/brand/nanobot_logo.png"],
   "page_count": 1,
   "expected_facts": {

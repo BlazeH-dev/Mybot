@@ -1,6 +1,6 @@
 # P3 OS Sandbox、Policy、三档 HITL 与最小文件 OCC
 
-> 状态：已完成（2026-07-22）。Exec one-shot/session、CLI Apps 与兼容入口已统一到 `SandboxLauncher`/`LaunchSpec`，受批直接 curl 已完成 Runner → Exec → pinned argv 闭环。文件租约和 Git worktree 不属于本阶段安全出口。
+> 状态：已完成。Exec one-shot/session、CLI Apps 与兼容入口已统一到 `SandboxLauncher`/`LaunchSpec`，受批直接 curl 已完成 Runner → Exec → pinned argv 闭环。文件租约和 Git worktree 不属于本阶段安全出口。
 > 出口：Default Permission 下 Agent 触发的子进程由 Seatbelt/Bubblewrap 强制；restricted 默认断网、受批直接 curl 最小放宽、持久 session 永久断网、Policy/HITL/OCC 与 fail-closed 均有自动化证据。
 
 ## 0. 现有能力与复用边界
@@ -288,13 +288,6 @@ OfficeCLI 基线：只读 help/view/get/query/validate 通常 allow；任务目�
 - CLI Apps/OfficeCLI helper 保持 `prepare_argv()` 路径，并与当前 `WorkspaceScope.project_path` 对齐；Subagent 通过同类工具自动继承该边界。
 - settings/status/trace 展示真实 provider、enforced、network mode 和 uncovered processes，不再把 application guard 与 OS sandbox 混为同一状态。
 - 增加真实读隔离验证：`~/.nanobot/config.json`、`.ssh`、linked-worktree Git metadata 不可读/写；补充 wrapper 启动失败、后台子进程和 session 路径的 fail-closed 回归。
-
-2026-07-22 完成证据：Exec/session 直接执行不可变 `LaunchSpec.argv/cwd/env`；旧
-`agent/tools/sandbox.py` 仅作为委托统一 launcher 的字符串兼容适配器；restricted Shell 固定
-non-login 和 workspace-local `HOME`；Runner 的一次性 `NetworkGrant` 只由 one-shot Exec 消费，
-CLI Apps 与持久 session 不继承；restricted provider 启动期故障统一返回 `sandbox_start_failed`。扩大回归为
-`255 passed, 1 skipped`，skip 是 macOS 主机无法运行
-Linux Bubblewrap real smoke；Linux CI 安装 Bubblewrap 并保留该真实 provider 门。
 
 ## 测试与出口
 

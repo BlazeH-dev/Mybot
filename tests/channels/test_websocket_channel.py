@@ -375,6 +375,38 @@ async def test_evaluation_resume_control_requeues_same_job(bus: MagicMock) -> No
 
 
 @pytest.mark.asyncio
+async def test_evaluation_case_rerun_control_targets_case(bus: MagicMock) -> None:
+    channel = _ch(bus)
+    channel._evaluations = MagicMock()
+    channel._evaluations.rerun_case.return_value = {
+        "job_id": "job-1",
+        "status": "queued",
+        "case_rerun": {"benchmark": "ocb", "skill": "officecli", "case_id": "602"},
+    }
+    conn = AsyncMock()
+
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {
+            "type": "evaluation_case_rerun",
+            "request_id": "request-1",
+            "job_id": "job-1",
+            "benchmark": "ocb",
+            "skill": "officecli",
+            "case_id": "602",
+        },
+    )
+
+    channel._evaluations.rerun_case.assert_called_once_with(
+        "job-1", benchmark="ocb", skill="officecli", case_id="602"
+    )
+    payload = json.loads(conn.send.await_args.args[0])
+    assert payload["event"] == "evaluation_case_rerun"
+    assert payload["job"]["case_rerun"]["case_id"] == "602"
+
+
+@pytest.mark.asyncio
 async def test_webui_message_envelope_persists_user_transcript_for_refresh(
     bus: MagicMock,
     tmp_path,
@@ -2790,6 +2822,143 @@ def test_sessions_list_includes_active_run_started_at() -> None:
             "preview": "work",
             "run_started_at": 1_700_000_000.0,
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_evaluation_delete_returns_before_background_cleanup() -> None:
+    from websockets.datastructures import Headers
+    from websockets.http11 import Request
+
+    gateway = _basic_handler(MagicMock())
+    gateway.tokens.api_tokens["tok"] = time.monotonic() + 300.0
+    evaluations = MagicMock()
+    evaluations.get.return_value = {
+        "job_id": "job-delete",
+        "status": "failed",
+        "dataset_run_ids": ["run-1"],
+    }
+    evaluations.delete.return_value = True
+    gateway.http.evaluations = evaluations
+    results = MagicMock()
+    results.list_runs.side_effect = RuntimeError("Langfuse unavailable")
+    gateway.http.evaluation_results = results
+
+    request = Request(
+        "/api/evaluations/runs/job-delete/delete",
+        Headers([("Authorization", "Bearer tok")]),
+    )
+    response = await gateway.http._dispatch_evaluation_routes(
+        request,
+        "/api/evaluations/runs/job-delete/delete",
+    )
+
+    assert response is not None
+    assert response.status_code == 200
+    payload = json.loads(response.body.decode())
+    assert payload == {"deleted": True, "scheduled": True}
+    tasks = list(gateway.http._evaluation_delete_tasks)
+    assert len(tasks) == 1
+    evaluations.delete.assert_not_called()
+    results.list_runs.assert_not_called()
+
+    await asyncio.gather(*tasks)
+
+    evaluations.delete.assert_called_once_with("job-delete")
+    results.list_runs.assert_called_once_with()
+    results.delete_runs.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_evaluation_job_cases_match_remote_results_by_model() -> None:
+    from websockets.datastructures import Headers
+    from websockets.http11 import Request
+
+    gateway = _basic_handler(MagicMock())
+    gateway.tokens.api_tokens["tok"] = time.monotonic() + 300.0
+    evaluations = MagicMock()
+    evaluations.get.return_value = {
+        "job_id": "job-models",
+        "status": "awaiting_review",
+        "dataset_run_ids": ["run-luna", "run-deepseek"],
+    }
+    evaluations.cases.return_value = [
+        {
+            "benchmark": "ocb",
+            "skill": "officecli",
+            "model_preset": "gpt-5-6-luna",
+            "case_id": "255",
+            "status": "completed",
+        },
+        {
+            "benchmark": "ocb",
+            "skill": "officecli",
+            "model_preset": "deepseek-v4-flash",
+            "case_id": "255",
+            "status": "completed",
+        },
+    ]
+    gateway.http.evaluations = evaluations
+    results = MagicMock()
+    results.list_runs.return_value = {
+        "available": True,
+        "runs": [
+            {
+                "dataset_run_id": "run-luna",
+                "benchmark": "ocb",
+                "skill": "officecli",
+                "model_preset": "gpt-5-6-luna",
+                "cases": [{
+                    "case_id": "255",
+                    "scores": {"mybot_score": 0.75},
+                    "trace_url": "https://langfuse.test/luna",
+                }],
+            },
+            {
+                "dataset_run_id": "run-deepseek",
+                "benchmark": "ocb",
+                "skill": "officecli",
+                "model_preset": "deepseek-v4-flash",
+                "cases": [{
+                    "case_id": "255",
+                    "scores": {"mybot_score": 0.5},
+                    "trace_url": "https://langfuse.test/deepseek",
+                }],
+            },
+        ],
+    }
+    gateway.http.evaluation_results = results
+
+    request = Request(
+        "/api/evaluations/runs/job-models/cases",
+        Headers([("Authorization", "Bearer tok")]),
+    )
+    response = await gateway.http._dispatch_evaluation_routes(
+        request,
+        "/api/evaluations/runs/job-models/cases",
+    )
+
+    assert response is not None
+    assert response.status_code == 200
+    assert json.loads(response.body.decode())["cases"] == [
+        {
+            "benchmark": "ocb",
+            "skill": "officecli",
+            "model_preset": "gpt-5-6-luna",
+            "case_id": "255",
+            "status": "completed",
+            "scores": {"mybot_score": 0.75},
+            "trace_url": "https://langfuse.test/luna",
+        },
+        {
+            "benchmark": "ocb",
+            "skill": "officecli",
+            "model_preset": "deepseek-v4-flash",
+            "case_id": "255",
+            "status": "completed",
+            "scores": {"mybot_score": 0.5},
+            "trace_url": "https://langfuse.test/deepseek",
+        },
     ]
 
 

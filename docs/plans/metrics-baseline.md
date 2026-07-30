@@ -1,7 +1,7 @@
 # Runtime Metrics Baseline
 
 > 最新确定性报告：`benchmarks/latest.json` / `benchmarks/latest.md`
-> 采集日期：2026-07-24
+> 采集日期：2026-07-30
 
 ## P5 Core 硬门
 
@@ -10,8 +10,8 @@
 | 确定性 case | 5 | `tests/fixtures/runtime_eval/*.json` |
 | Hard failures | 0 | 任一安全/数字/文件/OpenXML hard gate 失败即整体失败 |
 | Overall | PASS | 不使用平均分掩盖 hard failure |
-| Runtime suite | 64 passed, 1 skipped | skip 为 macOS 本机无法运行 Linux Bubblewrap real smoke；CI 安装 Bubblewrap 后执行 |
-| Runtime suite 本地耗时 | 4.46s | Python 3.11，本机定向运行；CI 门为 `<60s` |
+| Runtime suite | 76 passed, 1 skipped | skip 为 macOS 本机无法运行 Linux Bubblewrap real smoke；CI 安装 Bubblewrap 后执行 |
+| Runtime suite 本地耗时 | 4.41s | Python 3.11，本机定向运行；CI 门为 `<60s` |
 | 未批准 workspace 外写入 | 0 | policy/OCC/red-team 后果测试 |
 | 未批准命令网络访问 | 0 | restricted 默认断网；批准 curl 绑定 command/domain/port/DNS IP/expiry |
 | 未确认外发 / 恶意 MCP 执行 | 0 | external/MCP 默认 ask，红队测试验证未执行 |

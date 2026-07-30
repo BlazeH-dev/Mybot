@@ -474,6 +474,20 @@ export class NanobotClient {
     return requestId;
   }
 
+  rerunEvaluationCase(jobId: string, benchmark: string, skill: string, caseId: string, modelPreset?: string): string {
+    const requestId = crypto.randomUUID();
+    this.queueSend({
+      type: "evaluation_case_rerun",
+      request_id: requestId,
+      job_id: jobId,
+      benchmark,
+      skill,
+      model_preset: modelPreset,
+      case_id: caseId,
+    });
+    return requestId;
+  }
+
   // -- internals ---------------------------------------------------------
 
   private setStatus(status: ConnectionStatus): void {
@@ -554,6 +568,7 @@ export class NanobotClient {
       parsed.event === "evaluation_started"
       || parsed.event === "evaluation_cancelled"
       || parsed.event === "evaluation_resumed"
+      || parsed.event === "evaluation_case_rerun"
       || parsed.event === "evaluation_job_updated"
       || parsed.event === "validation_failed"
     ) {

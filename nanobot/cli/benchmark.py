@@ -23,7 +23,8 @@ import typer
 from rich.console import Console
 
 from nanobot.config.loader import load_config, resolve_config_env_vars
-from nanobot.runtime.langfuse import LangfuseRuntime
+from nanobot.evaluations.credentials import adobe_pdf_services_env
+from nanobot.runtime.langfuse import LangfuseFlushTimeoutError, LangfuseRuntime
 
 benchmark_app = typer.Typer(help="Prepare, estimate, run, and export Office benchmarks")
 console = Console()
@@ -33,8 +34,6 @@ _CONSTRAINTS_PATH = _ROOT / "benchmarks" / "office" / "constraints.txt"
 _PROFILES = frozenset({"ci", "office-smoke", "office-release"})
 _BENCHMARK_SAMPLES = {
     "ocb": (255, 509, 1018),
-    "officebench": (24, 47, 93),
-    "presentbench": (60, 119, 238),
 }
 _DEFAULT_BENCHMARK_SAMPLES = {
     benchmark: samples[-1] for benchmark, samples in _BENCHMARK_SAMPLES.items()
@@ -44,8 +43,10 @@ _RELEASE_SAMPLE_STRATEGY = "deterministic-stratified-v1"
 _RELEASE_SAMPLE_DATASET_TAG = "strat-v1"
 _CLOUD_READBACK_ATTEMPTS = 30
 _CLOUD_READBACK_INTERVAL_SEC = 2
-_WORKSPACES: dict[str, Path] = {}
-_WORKSPACES_LOCK = threading.Lock()
+_SCORE_READBACK_ATTEMPTS = 30
+_SCORE_READBACK_INTERVAL_SEC = 1
+_HF_DOWNLOAD_ATTEMPTS = 8
+_HF_DOWNLOAD_RETRY_INTERVAL_SEC = 2
 _PROGRESS_LOCK = threading.Lock()
 
 
@@ -158,17 +159,39 @@ def _download_hf_snapshot(
     script = (
         "import sys; from huggingface_hub import snapshot_download; "
         "print(snapshot_download(repo_id=sys.argv[1], repo_type='dataset', "
-        "revision=sys.argv[2], local_dir=sys.argv[3], allow_patterns=sys.argv[4:]))"
+        "revision=sys.argv[2], local_dir=sys.argv[3], allow_patterns=sys.argv[4:], "
+        "max_workers=1))"
     )
     target.mkdir(parents=True, exist_ok=True)
     dataset_id = spec.get("dataset_id")
     if not dataset_id:
         raise BenchmarkError("benchmark profile is missing a pinned HuggingFace dataset_id")
-    output = _run(
-        [str(python), "-c", script, dataset_id, spec["dataset_revision"], str(target), *allow_patterns],
-        env=_benchmark_python_env(),
-    )
-    return Path(output.splitlines()[-1]).resolve()
+    env = _benchmark_python_env()
+    # Xet responses are intermittently truncated on this machine; the regular
+    # Hugging Face HTTP path is slower but resumable and content-equivalent.
+    env["HF_HUB_DISABLE_XET"] = "1"
+    patterns = list(dict.fromkeys(allow_patterns))
+    command = [
+        str(python),
+        "-c",
+        script,
+        dataset_id,
+        spec["dataset_revision"],
+        str(target),
+        *patterns,
+    ]
+    last_error: BenchmarkError | None = None
+    for attempt in range(1, _HF_DOWNLOAD_ATTEMPTS + 1):
+        try:
+            output = _run(command, env=env)
+            return Path(output.splitlines()[-1]).resolve()
+        except BenchmarkError as exc:
+            last_error = exc
+            if attempt < _HF_DOWNLOAD_ATTEMPTS:
+                time.sleep(_HF_DOWNLOAD_RETRY_INTERVAL_SEC)
+    raise BenchmarkError(
+        f"Hugging Face dataset download failed after {_HF_DOWNLOAD_ATTEMPTS} resumable attempts"
+    ) from last_error
 
 
 def _materialize_manifest(
@@ -178,18 +201,12 @@ def _materialize_manifest(
     target: Path,
     *,
     case_ids: list[int] | None = None,
-    cases: list[str] | None = None,
 ) -> None:
     function = {
         "ocb": "materialize_ocb",
-        "officebench": "materialize_officebench",
-        "presentbench": "materialize_presentbench",
     }[adapter]
     kwargs: dict[str, Any] = {}
-    if adapter == "ocb":
-        kwargs["case_ids"] = case_ids
-    else:
-        kwargs["cases"] = cases
+    kwargs["case_ids"] = case_ids
     script = (
         "import json, sys; from nanobot.benchmark_adapters import "
         + function
@@ -231,7 +248,7 @@ def _prepared_path(root: Path, profile: str) -> Path:
 def _case_manifest_digests(root: Path, profile: str) -> dict[str, str]:
     return {
         benchmark: hashlib.sha256((root / f"{profile}-{benchmark}.jsonl").read_bytes()).hexdigest()
-        for benchmark in ("ocb", "officebench", "presentbench")
+        for benchmark in ("ocb",)
     }
 
 
@@ -261,11 +278,8 @@ def _load_prepared(root: Path, profile: str) -> dict[str, Any]:
 def _read_rows(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         raise BenchmarkError(f"missing materialized case manifest: {path}")
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    with path.open(encoding="utf-8") as stream:
+        return [json.loads(line) for line in stream if line.strip()]
 
 
 def _missing_ocb_references(rows: list[dict[str, Any]]) -> list[str]:
@@ -290,18 +304,21 @@ def _download_ocb_references(
     missing = _missing_ocb_references(rows)
     if not missing:
         return
-    _run([
-        str(python),
-        str(source_root / "download_and_convert_files.py"),
-        "--manifest",
-        str(data_root / "data" / "ocb_source_urls.parquet"),
-        "--output-dir",
-        str(data_root / "reference_files"),
-        "--filename",
-        ",".join(missing),
-        "--delay",
-        "0",
-    ])
+    _run(
+        [
+            str(python),
+            str(source_root / "download_and_convert_files.py"),
+            "--manifest",
+            str(data_root / "data" / "ocb_source_urls.parquet"),
+            "--output-dir",
+            str(data_root / "reference_files"),
+            "--filename",
+            ",".join(missing),
+            "--delay",
+            "0",
+        ],
+        env=adobe_pdf_services_env(),
+    )
 
 
 def _item_field(item: Any, name: str, default: Any = None) -> Any:
@@ -328,10 +345,6 @@ def _sample_stratum(benchmark: str, row: dict[str, Any]) -> str:
             str(raw_input.get("format") or "unknown"),
             str(metadata.get("track") or "unknown"),
         ))
-    if benchmark == "officebench":
-        return str(metadata.get("case_id") or raw_input.get("case_id") or "unknown").split("/", 1)[0]
-    if benchmark == "presentbench":
-        return str(metadata.get("domain") or "unknown")
     raise BenchmarkError(f"unsupported release sampling benchmark: {benchmark}")
 
 
@@ -374,12 +387,11 @@ def _case_manifest_map(
     profile: str,
     *,
     benchmark_samples: dict[str, int] | None = None,
-    presentbench_sample: int = 238,
 ) -> dict[str, list[dict[str, Any]]]:
     case_root = Path(prepared.get("case_manifest_root") or "")
     items = {
         benchmark: _read_rows(case_root / f"{profile}-{benchmark}.jsonl")
-        for benchmark in ("ocb", "officebench", "presentbench")
+        for benchmark in ("ocb",)
     }
     if profile == "office-smoke":
         expected = {name: len(cases) for name, cases in _manifest()["smoke_cases"].items()}
@@ -392,8 +404,6 @@ def _case_manifest_map(
         samples = dict(_DEFAULT_BENCHMARK_SAMPLES)
         if benchmark_samples is not None:
             samples.update(benchmark_samples)
-        else:
-            samples["presentbench"] = presentbench_sample
         for benchmark, count in _DEFAULT_BENCHMARK_SAMPLES.items():
             if len(items[benchmark]) < count:
                 raise BenchmarkError(
@@ -411,15 +421,71 @@ def _case_manifest_map(
     return items
 
 
-def _copy_tree(source: Path, target: Path) -> None:
-    if not source.is_dir():
-        raise BenchmarkError(f"benchmark fixture directory is unavailable: {source}")
-    shutil.copytree(source, target)
+def _ensure_experiment_complete(
+    result: Any,
+    pending_items: list[Any],
+    *,
+    case_by_item_id: dict[str, str],
+    task_failures: list[tuple[str, str]],
+) -> None:
+    """Turn Langfuse's exception-isolating runner contract into a Job failure.
+
+    The SDK intentionally filters exceptions out of ``item_results``. That is
+    useful for interactive experiments, but a benchmark Job must fail closed
+    when even one requested Case did not produce a result.
+    """
+    returned_ids = {
+        str(getattr(getattr(item_result, "item", None), "id", ""))
+        for item_result in getattr(result, "item_results", [])
+    }
+    expected_ids = [str(getattr(item, "id", "")) for item in pending_items]
+    missing_case_ids = [
+        case_by_item_id.get(item_id, item_id)
+        for item_id in expected_ids
+        if item_id not in returned_ids
+    ]
+    if not task_failures and not missing_case_ids and len(returned_ids) == len(expected_ids):
+        return
+    details = [f"{case_id}: {error}" for case_id, error in task_failures]
+    if missing_case_ids:
+        details.append("missing results: " + ", ".join(missing_case_ids))
+    raise BenchmarkError(
+        "Langfuse experiment did not complete all requested Cases "
+        f"({len(returned_ids)}/{len(expected_ids)}): "
+        + "; ".join(details)
+    )
 
 
 def _safe_component(value: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9_.-]+", "__", value).strip("._")
     return normalized or "case"
+
+
+def _benchmark_skill_guidance(skill: str, workspace: Path) -> str:
+    """Give benchmark Agents authoritative paths for the selected Skill.
+
+    Case workspaces intentionally contain only immutable benchmark inputs.  The
+    selected builtin Skill is loaded from the source checkout, so a model must
+    not infer that ``scripts/...`` exists relative to the isolated workspace.
+    """
+    skill_root = (_ROOT / "nanobot" / "skills" / skill).resolve()
+    scripts_dir_name = "Scripts" if os.name == "nt" else "bin"
+    lines = [
+        "Benchmark runtime paths are authoritative for this isolated Case:",
+        f"- Case workspace (inputs/artifacts only): {workspace.resolve()}",
+        f"- Selected Skill root: {skill_root}",
+        "- Do not search /Users, $HOME, /, or parent directories for these paths.",
+        "- Do not use recursive find commands to rediscover a path listed here.",
+    ]
+    if skill == "officecli":
+        launcher = (Path(sys.prefix) / scripts_dir_name / "officecli").resolve()
+        lines.extend([
+            f"- OfficeCLI launcher: {launcher}",
+            f"- OfficeCLI Skill backend: {skill_root / 'scripts' / 'officecli_backend.py'}",
+            f"- OfficeCLI runtime contract: {skill_root / 'references' / 'officecli-runtime.json'}",
+            "- Invoke the launcher directly; do not search for or install another officecli binary.",
+        ])
+    return "\n".join(lines)
 
 
 def _stage_case_workspace(
@@ -428,23 +494,19 @@ def _stage_case_workspace(
     source: dict[str, Any],
     run_root: Path,
     skill: str,
+    model_preset: str,
 ) -> Path:
     case_id = str(source["metadata"]["case_id"])
-    workspace = run_root / benchmark / skill / _safe_component(case_id)
+    workspace = run_root / benchmark / skill / _safe_component(model_preset) / _safe_component(case_id)
     workspace.parent.mkdir(parents=True, exist_ok=True)
-    if benchmark == "officebench":
-        config_path = Path(source["input"]["source_config"]).resolve()
-        task_root = config_path.parents[1]
-        task_id, subtask = case_id.split("/", 1)
-        mirror_task = workspace / "tasks" / task_id
-        _copy_tree(task_root / "testbed", mirror_task / "outputs" / subtask / "mybot" / "testbed")
-        reference = task_root / "reference"
-        if reference.is_dir():
-            _copy_tree(reference, mirror_task / "reference")
-        return mirror_task / "outputs" / subtask / "mybot" / "testbed"
+    # A resumed item may have staged files from an earlier model/evaluator
+    # failure.  Start the retry from the immutable benchmark fixture instead
+    # of letting copytree fail on (or reuse) the old output directory.
+    if workspace.exists():
+        shutil.rmtree(workspace)
     workspace.mkdir(parents=True, exist_ok=True)
     paths = source["input"].get("reference_paths") or source["input"].get("material_paths") or []
-    destination = workspace / ("reference_files" if benchmark == "ocb" else "materials")
+    destination = workspace / "reference_files"
     for raw_path in paths:
         path = Path(raw_path).resolve()
         if not path.is_file():
@@ -568,7 +630,7 @@ def _upload_prepared_datasets(
     """Create immutable Dataset items; Langfuse remains the Dataset truth source."""
     manifest = _manifest()
     dataset_names: dict[str, str] = {}
-    for benchmark in ("ocb", "officebench", "presentbench"):
+    for benchmark in ("ocb",):
         revision = prepared["repositories"][benchmark]["revision"]
         visibility = "licensed" if allow_licensed_content else "redacted"
         name = f"mybot-{benchmark}-{revision[:12]}-{profile}-{visibility}-v1"
@@ -578,9 +640,7 @@ def _upload_prepared_datasets(
             "benchmark": benchmark,
             "code_revision": revision,
             "dataset_revision": prepared["repositories"][benchmark].get("dataset_revision", "code-pinned"),
-            "evaluation_source": (
-                "officebench_official" if benchmark == "officebench" else "langfuse_terra"
-            ),
+            "evaluation_source": "langfuse_terra",
             "agent_model": manifest["models"]["agent"],
             "judge_model": manifest["models"]["judge"],
             "license_reviewed": str(allow_licensed_content).lower(),
@@ -657,7 +717,6 @@ def prepare(
         libreoffice = _probe_soffice(soffice, soffice_version)
         dataset_sources: dict[str, str] = {}
         ocb_spec = manifest["repositories"]["ocb"]
-        present_spec = manifest["repositories"]["presentbench"]
         ocb_data = _download_hf_snapshot(
             python,
             ocb_spec,
@@ -669,18 +728,7 @@ def prepare(
                 "NOTICES.md",
             ],
         )
-        present_data = _download_hf_snapshot(
-            python,
-            present_spec,
-            root / "datasets" / "presentbench",
-            [
-                "README.md",
-                *[f"{case}/**" for case in manifest["smoke_cases"]["presentbench"]],
-            ],
-        )
-        if profile == "office-release":
-            present_data = _download_hf_snapshot(python, present_spec, root / "datasets" / "presentbench", ["**"])
-        dataset_sources.update({"ocb": str(ocb_data), "presentbench": str(present_data)})
+        dataset_sources["ocb"] = str(ocb_data)
         case_manifest_root = root / "cases"
         ocb_case_ids = (
             [int(case_id) for case_id in manifest["smoke_cases"]["ocb"]]
@@ -729,28 +777,6 @@ def prepare(
                     + ". Configure the upstream conversion credentials or place the official converted "
                     "files in the external OCB reference_files cache, then rerun prepare."
                 )
-        _materialize_manifest(
-            python,
-            "officebench",
-            Path(sources["officebench"]),
-            case_manifest_root / f"{profile}-officebench.jsonl",
-            cases=(
-                manifest["smoke_cases"]["officebench"]
-                if profile == "office-smoke"
-                else None
-            ),
-        )
-        _materialize_manifest(
-            python,
-            "presentbench",
-            present_data,
-            case_manifest_root / f"{profile}-presentbench.jsonl",
-            cases=(
-                manifest["smoke_cases"]["presentbench"]
-                if profile == "office-smoke"
-                else None
-            ),
-        )
         prepared = {
             "schema_version": 2,
             "profile": profile,
@@ -760,7 +786,6 @@ def prepare(
             "case_manifest_root": str(case_manifest_root),
             "datasets": {},
             "licensed_content_uploaded": allow_licensed_content,
-            "benchmark_python": str(python),
             "constraints_sha256": hashlib.sha256(_CONSTRAINTS_PATH.read_bytes()).hexdigest(),
             "libreoffice": libreoffice,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -791,7 +816,6 @@ def prepare(
 
 def estimate_payload(
     profile: str,
-    presentbench_sample: int,
     manifest: dict[str, Any],
     benchmark_samples: dict[str, int] | None = None,
 ) -> dict[str, Any]:
@@ -801,11 +825,9 @@ def estimate_payload(
         counts = dict(_DEFAULT_BENCHMARK_SAMPLES)
         if benchmark_samples is not None:
             counts.update(benchmark_samples)
-        else:
-            counts["presentbench"] = presentbench_sample
     runs = sum(counts.values()) * len(manifest["skills"])
     token_estimate = manifest["estimate_tokens_per_case"]
-    judged = (counts["ocb"] + counts["presentbench"]) * len(manifest["skills"])
+    judged = counts["ocb"] * len(manifest["skills"])
     estimated_tokens = {
         "agent_input": runs * token_estimate["agent_input"],
         "agent_output": runs * token_estimate["agent_output"],
@@ -835,10 +857,8 @@ def _validate_benchmark_samples(profile: str, samples: dict[str, int]) -> None:
 @benchmark_app.command("estimate")
 def estimate(
     profile: str = typer.Option(..., "--profile"),
-    model_preset: str = typer.Option("gpt-5-6-luna", "--model-preset"),
+    model_presets: list[str] | None = typer.Option(None, "--model-preset"),
     ocb_sample: int = typer.Option(1018, "--ocb-sample", min=1, max=1018),
-    officebench_sample: int = typer.Option(93, "--officebench-sample", min=1, max=93),
-    presentbench_sample: int = typer.Option(238, "--presentbench-sample", min=1, max=238),
 ) -> None:
     """Print a pre-run token estimate without calling any model."""
     try:
@@ -848,14 +868,23 @@ def estimate(
             return
         benchmark_samples = {
             "ocb": ocb_sample,
-            "officebench": officebench_sample,
-            "presentbench": presentbench_sample,
         }
         _validate_benchmark_samples(profile, benchmark_samples)
         manifest = _manifest()
-        if model_preset != manifest["models"]["agent"]:
-            raise BenchmarkError(f"Office comparison is fixed to {manifest['models']['agent']}")
-        payload = estimate_payload(profile, presentbench_sample, manifest, benchmark_samples)
+        configured_models = manifest["models"]["agent"]
+        if isinstance(configured_models, str):
+            configured_models = [configured_models]
+        selected_models = tuple(model_presets or configured_models)
+        invalid_models = sorted(set(selected_models) - set(configured_models))
+        if invalid_models:
+            raise BenchmarkError(f"unsupported Office model presets: {invalid_models}")
+        payload = estimate_payload(profile, manifest, benchmark_samples)
+        model_count = len(selected_models)
+        payload["skill_runs"] *= model_count
+        payload["model_runs"] = payload["skill_runs"]
+        payload["judge_runs"] *= model_count
+        for name in ("agent_input", "agent_output", "judge_input", "judge_output", "total"):
+            payload["estimated_tokens"][name] *= model_count
         console.print_json(data=payload)
     except BenchmarkError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -867,14 +896,12 @@ def _load_case_items(
     profile: str,
     *,
     benchmark_samples: dict[str, int] | None = None,
-    presentbench_sample: int = 238,
 ) -> dict[str, list[dict[str, Any]]]:
     """Load already-prepared case manifests without downloading during run."""
     return _case_manifest_map(
         prepared,
         profile,
         benchmark_samples=benchmark_samples,
-        presentbench_sample=presentbench_sample,
     )
 
 
@@ -883,7 +910,7 @@ def _validate_case_assets(items: dict[str, list[dict[str, Any]]]) -> None:
         Path(path).name
         for rows in items.values()
         for row in rows
-        for field in ("reference_paths", "material_paths")
+        for field in ("reference_paths",)
         for path in row["input"].get(field, [])
         if not Path(path).is_file()
     })
@@ -902,6 +929,7 @@ async def _run_agent_item(
     skill: str,
     model_preset: str,
     run_root: Path,
+    force_rerun: bool = False,
 ) -> dict[str, Any]:
     from nanobot.nanobot import Nanobot
 
@@ -911,32 +939,31 @@ async def _run_agent_item(
         "case_started",
         benchmark=benchmark,
         skill=skill,
+        model_preset=model_preset,
         case_id=case_id,
-        variant=f"{benchmark}/{skill}",
+        variant=f"{benchmark}/{skill}/{model_preset}",
     )
     status = "failed"
     cached: dict[str, Any] | None = None
     try:
-        cached = _load_case_result(
-            run_root=run_root,
-            benchmark=benchmark,
-            skill=skill,
-            case_id=case_id,
-            model_preset=model_preset,
-            source=source,
-        )
+        if not force_rerun:
+            cached = _load_case_result(
+                run_root=run_root,
+                benchmark=benchmark,
+                skill=skill,
+                case_id=case_id,
+                model_preset=model_preset,
+                source=source,
+            )
         if cached is not None:
             workspace = Path(str(cached["workspace"])).expanduser().resolve()
-            workspace_token = uuid.uuid4().hex
-            with _WORKSPACES_LOCK:
-                _WORKSPACES[workspace_token] = workspace
             status = "completed"
             return {
                 "content": cached.get("content", ""),
                 "tools_used": cached.get("tools_used", []),
                 "case_id": case_id,
                 "skill": skill,
-                "workspace_token": workspace_token,
+                "workspace_ready": True,
                 "checkpoint_reused": True,
             }
         workspace = _stage_case_workspace(
@@ -944,12 +971,18 @@ async def _run_agent_item(
             source=source,
             run_root=run_root,
             skill=skill,
+            model_preset=model_preset,
+        )
+        guided_prompt = (
+            _benchmark_skill_guidance(skill, workspace)
+            + "\n\nCase request:\n"
+            + prompt
         )
         async with Nanobot.from_config(workspace=workspace) as bot:
             bot._loop.set_model_preset(model_preset, publish_update=False)
             result = await bot.run(
-                prompt,
-                session_key=f"benchmark:{skill}:{case_id}",
+                guided_prompt,
+                session_key=f"benchmark:{skill}:{model_preset}:{case_id}",
                 metadata={
                     "selected_skills": [skill],
                     "benchmark_model_preset": model_preset,
@@ -957,9 +990,11 @@ async def _run_agent_item(
                     "benchmark_case_id": case_id,
                 },
             )
-        workspace_token = uuid.uuid4().hex
-        with _WORKSPACES_LOCK:
-            _WORKSPACES[workspace_token] = workspace
+        if result.stop_reason == "error" or result.error:
+            detail = str(result.error or result.content or "unknown model error")[:500]
+            raise BenchmarkError(
+                f"model execution failed for {benchmark}/{skill}/{case_id}: {detail}"
+            )
         _write_case_result(
             run_root=run_root,
             benchmark=benchmark,
@@ -970,6 +1005,7 @@ async def _run_agent_item(
             workspace=workspace,
             content=result.content,
             tools_used=result.tools_used,
+            stop_reason=result.stop_reason,
         )
         status = "completed"
         return {
@@ -977,23 +1013,32 @@ async def _run_agent_item(
             "tools_used": result.tools_used,
             "case_id": case_id,
             "skill": skill,
-            "workspace_token": workspace_token,
+            "workspace_ready": True,
         }
     finally:
         _emit_evaluation_progress(
             "case_completed",
             benchmark=benchmark,
             skill=skill,
+            model_preset=model_preset,
             case_id=case_id,
-            variant=f"{benchmark}/{skill}",
+            variant=f"{benchmark}/{skill}/{model_preset}",
             status=status,
             source="local" if cached is not None else None,
         )
 
 
-def _case_result_path(run_root: Path, benchmark: str, skill: str, case_id: str) -> Path:
-    digest = hashlib.sha256(f"{benchmark}\0{skill}\0{case_id}".encode()).hexdigest()
-    return run_root / "case-results" / benchmark / skill / f"{digest}.json"
+def _case_result_path(
+    run_root: Path,
+    benchmark: str,
+    skill: str,
+    case_id: str,
+    model_preset: str,
+) -> Path:
+    digest = hashlib.sha256(
+        f"{benchmark}\0{skill}\0{model_preset}\0{case_id}".encode()
+    ).hexdigest()
+    return run_root / "case-results" / benchmark / skill / _safe_component(model_preset) / f"{digest}.json"
 
 
 def _case_source_sha256(source: dict[str, Any]) -> str:
@@ -1015,12 +1060,16 @@ def _load_case_result(
     model_preset: str,
     source: dict[str, Any],
 ) -> dict[str, Any] | None:
-    path = _case_result_path(run_root, benchmark, skill, case_id)
+    path = _case_result_path(run_root, benchmark, skill, case_id, model_preset)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+    if not isinstance(payload, dict) or payload.get("schema_version") not in {2, 3}:
+        return None
+    if payload.get("stop_reason") == "error" or (
+        payload.get("schema_version") == 2 and _legacy_checkpoint_has_model_error(payload)
+    ):
         return None
     expected = {
         "benchmark": benchmark,
@@ -1037,6 +1086,17 @@ def _load_case_result(
     return payload
 
 
+def _legacy_checkpoint_has_model_error(payload: dict[str, Any]) -> bool:
+    """Reject v2 checkpoints that persisted a provider error as model output."""
+    content = str(payload.get("content") or "").strip().lower()
+    if content.startswith("error calling llm:"):
+        return True
+    return content.startswith("error:") and any(
+        marker in content
+        for marker in ("api_error", "service temporarily unavailable", "request timed out")
+    )
+
+
 def _write_case_result(
     *,
     run_root: Path,
@@ -1048,11 +1108,12 @@ def _write_case_result(
     workspace: Path,
     content: str,
     tools_used: list[str],
+    stop_reason: str | None = "completed",
 ) -> None:
-    path = _case_result_path(run_root, benchmark, skill, case_id)
+    path = _case_result_path(run_root, benchmark, skill, case_id, model_preset)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "benchmark": benchmark,
         "skill": skill,
         "case_id": case_id,
@@ -1061,6 +1122,7 @@ def _write_case_result(
         "workspace": str(workspace),
         "content": content,
         "tools_used": tools_used,
+        "stop_reason": stop_reason,
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }
     temp = path.with_suffix(".tmp")
@@ -1074,77 +1136,10 @@ def _presence_evaluator(*, output: Any, **kwargs: Any):
 
     present = bool(
         isinstance(output, dict)
-        and output.get("workspace_token")
+        and output.get("workspace_ready")
         and output.get("case_id")
     )
     return Evaluation(name="output_present", value=present, data_type="BOOLEAN")
-
-
-def _officebench_evaluator(
-    *,
-    output: Any,
-    benchmark_python: Path,
-    source_root: Path,
-):
-    from langfuse.experiment import Evaluation
-
-    token = output.get("workspace_token") if isinstance(output, dict) else None
-    case_id = output.get("case_id") if isinstance(output, dict) else None
-    with _WORKSPACES_LOCK:
-        workspace = _WORKSPACES.get(str(token)) if token else None
-    if workspace is None or not case_id:
-        return [
-            Evaluation(
-                name="official_score",
-                value=0.0,
-                comment="official evaluator did not receive a staged workspace",
-                data_type="NUMERIC",
-            ),
-            Evaluation(
-                name="official_evaluator_ok",
-                value=False,
-                comment="missing workspace token",
-                data_type="BOOLEAN",
-            ),
-        ]
-    script = """
-import json
-import sys
-from nanobot.benchmark_adapters import evaluate_officebench
-
-try:
-    passed = evaluate_officebench(sys.argv[1], sys.argv[2], sys.argv[3])
-    print("__MYBOT_RESULT__" + json.dumps({"passed": bool(passed), "ok": True}))
-except Exception as exc:
-    print("__MYBOT_RESULT__" + json.dumps({"passed": False, "ok": False, "error": str(exc)}))
-"""
-    try:
-        raw = _run(
-            [str(benchmark_python), "-c", script, str(source_root), str(case_id), str(workspace)],
-            env=_benchmark_python_env(),
-        )
-        marker = next(
-            line[len("__MYBOT_RESULT__") :]
-            for line in raw.splitlines()
-            if line.startswith("__MYBOT_RESULT__")
-        )
-        result = json.loads(marker)
-    except Exception as exc:
-        result = {"passed": False, "ok": False, "error": str(exc)}
-    return [
-        Evaluation(
-            name="official_score",
-            value=1.0 if result.get("passed") else 0.0,
-            comment=("passed" if result.get("passed") else "failed"),
-            data_type="NUMERIC",
-        ),
-        Evaluation(
-            name="official_evaluator_ok",
-            value=bool(result.get("ok")),
-            comment=str(result.get("error") or "official evaluator completed")[:500],
-            data_type="BOOLEAN",
-        ),
-    ]
 
 
 def _get_score_config(client: Any, name: str) -> Any:
@@ -1169,17 +1164,48 @@ def _get_annotation_queue(client: Any, name: str) -> Any:
         if queue.name == name:
             return queue
     score_config = _get_score_config(client, "mybot-human-review")
-    return client.api.annotation_queues.create_queue(
-        name=name,
-        score_config_ids=[score_config.id],
-        description="Mybot benchmark audit queue; reviewer completes it in Langfuse Japan Cloud",
-    )
+    try:
+        return client.api.annotation_queues.create_queue(
+            name=name,
+            score_config_ids=[score_config.id],
+            description="Mybot benchmark audit queue; reviewer completes it in Langfuse Japan Cloud",
+        )
+    except Exception as exc:
+        detail = f"{getattr(exc, 'body', '')} {exc}".lower()
+        capacity_error = (
+            getattr(exc, "status_code", None) == 405
+            and "annotation queue" in detail
+            and ("maximum number" in detail or "limit" in detail)
+        )
+        fallback = sorted(
+            (
+                queue
+                for queue in response.data
+                if str(getattr(queue, "name", "")).startswith("mybot-")
+            ),
+            key=lambda queue: str(queue.name),
+        )
+        if not capacity_error or not fallback:
+            raise
+        return fallback[0]
 
 
-def _resume_run_name(profile: str, benchmark: str, skill: str, resume_token: str | None) -> str | None:
+def _annotation_queue_not_found(exc: Exception) -> bool:
+    detail = f"{getattr(exc, 'body', '')} {exc}".lower()
+    return getattr(exc, "status_code", None) == 404 and "annotation queue" in detail
+
+
+def _resume_run_name(
+    profile: str,
+    benchmark: str,
+    skill: str,
+    resume_token: str | None,
+    model_preset: str | None = None,
+) -> str | None:
     if resume_token is None:
         return None
-    return f"mybot-{profile}-{benchmark}-{skill}-job-{resume_token}"
+    model_suffix = f"-{_safe_component(model_preset)}" if model_preset else ""
+    return f"mybot-{profile}-{benchmark}-{skill}{model_suffix}-job-{resume_token}"
 
 
 def _remote_variant_state(
@@ -1238,6 +1264,12 @@ def _remote_variant_state(
     for state in states.values():
         state.pop("end_time", None)
         trace_id = state.get("trace_id")
+        trace_scores = _remote_trace_scores(runtime, str(trace_id))
+        state["score_names"] = sorted(trace_scores)
+        state["score_values"] = {
+            name: getattr(score, "value", None)
+            for name, score in trace_scores.items()
+        }
         state["trace_url"] = (
             f"{runtime.base_url}/project/{project_id}/traces/{trace_id}"
             if project_id and trace_id else None
@@ -1245,22 +1277,94 @@ def _remote_variant_state(
     return {"run_id": str(run.id), "run_url": run_url, "items": states}
 
 
+def _normalized_score_name(name: str) -> str:
+    if name == "mybot-ocb-judge-v1":
+        return "mybot_score"
+    return name
+
+
+def _remote_trace_scores(runtime: LangfuseRuntime, trace_id: str) -> dict[str, Any]:
+    scores: dict[str, Any] = {}
+    cursor: str | None = None
+    while True:
+        page = runtime.client.api.scores_v3.get_many_v3(
+            trace_id=trace_id,
+            fields="subject",
+            limit=100,
+            cursor=cursor,
+        )
+        for score in page.data:
+            scores[_normalized_score_name(str(score.name))] = score
+        cursor = page.meta.cursor
+        if not cursor:
+            return scores
+
+
+def _required_local_scores(benchmark: str) -> set[str]:
+    return {"output_present"}
+
+
+def _remote_item_has_required_scores(benchmark: str, state: dict[str, Any]) -> bool:
+    """Only reuse a remote item when its required local scores are valid."""
+    names = set(state.get("score_names") or [])
+    if not _required_local_scores(benchmark).issubset(names):
+        return False
+    values = state.get("score_values") or {}
+    if not bool(values.get("output_present")):
+        return False
+    return True
+
+
+def _wait_for_local_scores(
+    runtime: LangfuseRuntime,
+    *,
+    trace_id: str,
+    benchmark: str,
+) -> dict[str, Any]:
+    required = _required_local_scores(benchmark)
+    found: dict[str, Any] = {}
+    for attempt in range(_SCORE_READBACK_ATTEMPTS):
+        found = _remote_trace_scores(runtime, trace_id)
+        if required.issubset(found):
+            return found
+        if attempt + 1 < _SCORE_READBACK_ATTEMPTS:
+            time.sleep(_SCORE_READBACK_INTERVAL_SEC)
+    missing = sorted(required - set(found))
+    # The Experiment and its Case can already be complete while Langfuse's
+    # asynchronous score consumer is still catching up.  Keep the result
+    # readable and let the history reader observe the score on a later poll.
+    console.print(
+        f"[yellow]Langfuse score readback is still pending for trace {trace_id}: "
+        f"missing {', '.join(missing)}; continuing[/yellow]"
+    )
+    return found
+
+
+def _flush_benchmark_runtime(runtime: LangfuseRuntime) -> None:
+    """Flush benchmark telemetry without failing a completed run on score lag."""
+    try:
+        runtime.flush(strict=True)
+    except LangfuseFlushTimeoutError as exc:
+        detail = str(exc).lower()
+        if "score ingestion" not in detail:
+            raise
+        console.print(
+            "[yellow]Langfuse score ingestion is still draining; benchmark Cases are "
+            "complete and the score will appear after remote ingestion.[/yellow]"
+        )
+
+
 def _enqueue_review_items(
     runtime: LangfuseRuntime,
     *,
+    queue: Any,
     trace_ids: list[str],
     profile: str,
-    benchmark: str,
-    skill: str,
 ) -> tuple[str, int]:
     from langfuse.api.annotation_queues.types.annotation_queue_object_type import (
         AnnotationQueueObjectType,
     )
 
-    queue = _get_annotation_queue(
-        runtime.client,
-        f"mybot-{profile}-{benchmark}-{skill}-review",
-    )
     trace_ids = list(dict.fromkeys(trace_id for trace_id in trace_ids if trace_id))
     if profile == "office-smoke":
         selected = trace_ids
@@ -1269,40 +1373,50 @@ def _enqueue_review_items(
             trace_ids,
             key=lambda trace_id: hashlib.sha256(str(trace_id).encode()).hexdigest(),
         )[: max(1, math.ceil(len(trace_ids) * 0.05))]
-    existing = {
-        item.object_id
-        for item in runtime.client.api.annotation_queues.list_queue_items(
-            queue.id,
-            page=1,
-            limit=100,
-        ).data
-    }
-    added = 0
-    for trace_id in selected:
-        if trace_id in existing:
-            continue
-        runtime.client.api.annotation_queues.create_queue_item(
-            queue.id,
-            object_id=trace_id,
-            object_type=AnnotationQueueObjectType.TRACE,
-        )
-        added += 1
-    return queue.id, added
+    queue_name = str(getattr(queue, "name", "")).strip()
+    for attempt in range(2):
+        try:
+            existing = {
+                item.object_id
+                for item in runtime.client.api.annotation_queues.list_queue_items(
+                    queue.id,
+                    page=1,
+                    limit=100,
+                ).data
+            }
+            added = 0
+            for trace_id in selected:
+                if trace_id in existing:
+                    continue
+                runtime.client.api.annotation_queues.create_queue_item(
+                    queue.id,
+                    object_id=trace_id,
+                    object_type=AnnotationQueueObjectType.TRACE,
+                )
+                added += 1
+            return queue.id, added
+        except Exception as exc:
+            if attempt or not queue_name or not _annotation_queue_not_found(exc):
+                raise
+            queue = _get_annotation_queue(runtime.client, queue_name)
+    raise AssertionError("annotation queue retry loop exhausted")
 
 
 @benchmark_app.command("run")
 def run(
     profile: str = typer.Option(..., "--profile"),
-    model_preset: str = typer.Option("gpt-5-6-luna", "--model-preset"),
+    model_presets: list[str] | None = typer.Option(None, "--model-preset"),
     cache_dir: Path | None = typer.Option(None, "--cache-dir"),
     ocb_sample: int = typer.Option(1018, "--ocb-sample", min=1, max=1018),
-    officebench_sample: int = typer.Option(93, "--officebench-sample", min=1, max=93),
-    presentbench_sample: int = typer.Option(238, "--presentbench-sample", min=1, max=238),
     benchmarks: list[str] | None = typer.Option(None, "--benchmark"),
     skills: list[str] | None = typer.Option(None, "--skill"),
     parent_run_id: str | None = typer.Option(None, "--parent-run-id"),
     resume_state: Path | None = typer.Option(None, "--resume-state", hidden=True),
     resume_token: str | None = typer.Option(None, "--resume-token", hidden=True),
+    rerun_benchmark: str | None = typer.Option(None, "--rerun-benchmark", hidden=True),
+    rerun_skill: str | None = typer.Option(None, "--rerun-skill", hidden=True),
+    rerun_model_preset: str | None = typer.Option(None, "--rerun-model-preset", hidden=True),
+    rerun_case: str | None = typer.Option(None, "--rerun-case", hidden=True),
 ) -> None:
     """Run offline CI gates or thinly invoke Langfuse Experiment Runner."""
     try:
@@ -1314,7 +1428,6 @@ def run(
                 "pytest",
                 "tests/runtime/test_replay_trace_eval.py",
                 "tests/runtime/test_langfuse_observability.py",
-                "tests/skills/test_office_python.py",
                 "tests/skills/test_officecli_runtime.py",
                 "tests/cli/test_benchmark_contract.py",
                 "-q",
@@ -1324,8 +1437,6 @@ def run(
         manifest = _manifest()
         benchmark_samples = {
             "ocb": ocb_sample,
-            "officebench": officebench_sample,
-            "presentbench": presentbench_sample,
         }
         _validate_benchmark_samples(profile, benchmark_samples)
         selected_benchmarks = _select_values(
@@ -1334,6 +1445,14 @@ def run(
             "benchmark",
         )
         selected_skills = _select_values(skills, tuple(manifest["skills"]), "Skill")
+        configured_models = manifest["models"]["agent"]
+        if isinstance(configured_models, str):
+            configured_models = [configured_models]
+        selected_model_presets = _select_values(
+            model_presets,
+            tuple(configured_models),
+            "model preset",
+        )
         if parent_run_id and (len(selected_benchmarks) != 1 or len(selected_skills) != 1):
             raise BenchmarkError(
                 "--parent-run-id requires exactly one --benchmark and one --skill"
@@ -1351,8 +1470,36 @@ def run(
             checkpoint_token = str(resume_payload.get("resume_token") or resume_payload.get("job_id") or "")
             if checkpoint_token != resume_token:
                 raise BenchmarkError("resume checkpoint token does not match --resume-token")
-        if model_preset != manifest["models"]["agent"]:
-            raise BenchmarkError(f"Office comparison is fixed to {manifest['models']['agent']}")
+        rerun_values = (rerun_benchmark, rerun_skill, rerun_model_preset, rerun_case)
+        if any(rerun_values) and not all(rerun_values):
+            raise BenchmarkError(
+                "--rerun-benchmark, --rerun-skill, --rerun-model-preset, and --rerun-case must be provided together"
+            )
+        if all(rerun_values) and resume_state is None:
+            raise BenchmarkError("single-Case rerun requires a Job resume checkpoint")
+        if rerun_benchmark and rerun_benchmark not in selected_benchmarks:
+            raise BenchmarkError("rerun benchmark is not selected by this Job")
+        if rerun_skill and rerun_skill not in selected_skills:
+            raise BenchmarkError("rerun Skill is not selected by this Job")
+        if len(selected_model_presets) > 1:
+            for selected_model in selected_model_presets:
+                run(
+                    profile=profile,
+                    model_presets=[selected_model],
+                    cache_dir=cache_dir,
+                    ocb_sample=ocb_sample,
+                    benchmarks=benchmarks,
+                    skills=skills,
+                    parent_run_id=parent_run_id,
+                    resume_state=resume_state,
+                    resume_token=resume_token,
+                    rerun_benchmark=rerun_benchmark,
+                    rerun_skill=rerun_skill,
+                    rerun_model_preset=rerun_model_preset,
+                    rerun_case=rerun_case,
+                )
+            return
+        model_preset = selected_model_presets[0]
         root = _cache_root(cache_dir)
         prepared = _load_prepared(root, profile)
         if not prepared.get("licensed_content_uploaded"):
@@ -1364,13 +1511,27 @@ def run(
             prepared,
             profile,
             benchmark_samples=benchmark_samples,
-            presentbench_sample=presentbench_sample,
         )
         selected_items = {
             name: values
             for name, values in items.items()
             if name in selected_benchmarks
         }
+        if rerun_benchmark and rerun_case:
+            matching = [
+                item
+                for item in selected_items[rerun_benchmark]
+                if str(item["metadata"]["case_id"]) == rerun_case
+            ]
+            if not matching:
+                raise BenchmarkError(
+                    f"rerun Case {rerun_benchmark}/{rerun_skill}/{rerun_case} is unavailable"
+                )
+            selected_items = {rerun_benchmark: matching}
+            items = {rerun_benchmark: matching}
+            selected_benchmarks = (rerun_benchmark,)
+            selected_skills = (str(rerun_skill),)
+            selected_model_presets = (str(rerun_model_preset),)
         _validate_case_assets(selected_items)
         missing = [name for name, values in selected_items.items() if not values]
         if missing:
@@ -1384,7 +1545,6 @@ def run(
             "profile": profile,
             "model_preset": model_preset,
             "prepared_fingerprint": prepared["fingerprint"],
-            "presentbench_sample": str(presentbench_sample),
             "benchmark_samples": json.dumps(benchmark_samples, sort_keys=True),
             "sample_strategy": (
                 _RELEASE_SAMPLE_STRATEGY if profile == "office-release" else "fixed-smoke-cases"
@@ -1401,6 +1561,7 @@ def run(
             profile=profile,
             total_cases=sum(len(values) for values in selected_items.values()) * len(selected_skills),
             total_variants=len(selected_items) * len(selected_skills),
+            model_preset=model_preset,
         )
         if parent_run_id:
             metadata["parent_run_id"] = parent_run_id
@@ -1410,6 +1571,10 @@ def run(
             else root / "runs" / profile / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
         )
         try:
+            review_queue = _get_annotation_queue(
+                runtime.client,
+                f"mybot-{profile}-review",
+            )
             for benchmark, benchmark_items in items.items():
                 if benchmark not in selected_benchmarks:
                     continue
@@ -1442,6 +1607,7 @@ def run(
                         benchmark,
                         skill,
                         resume_token,
+                        model_preset,
                     )
                     remote = _remote_variant_state(
                         runtime,
@@ -1454,33 +1620,49 @@ def run(
                         for case_id, item in dataset_item_by_case.items()
                         if case_id in source_by_case
                     }
+                    completed_remote_item_ids = {
+                        item_id
+                        for item_id, state in remote_items.items()
+                        if state.get("status") == "completed"
+                        and _remote_item_has_required_scores(benchmark, state)
+                    }
+                    if rerun_case is not None:
+                        completed_remote_item_ids.discard(
+                            str(dataset_item_by_case[rerun_case].id)
+                        )
                     for item_id, state in remote_items.items():
                         case_id = case_by_item_id.get(item_id)
                         if case_id is None:
                             continue
+                        reusable = item_id in completed_remote_item_ids
                         _emit_evaluation_progress(
                             "case_reconciled",
                             profile=profile,
                             benchmark=benchmark,
                             skill=skill,
+                            model_preset=model_preset,
                             case_id=case_id,
-                            variant=f"{benchmark}/{skill}",
-                            status=state["status"],
+                            variant=f"{benchmark}/{skill}/{model_preset}",
+                            status="completed" if reusable else "pending",
                             source="langfuse",
-                            score_status="remote",
+                            score_status="remote" if reusable else "pending",
                             trace_url=state.get("trace_url"),
                             dataset_run_url=remote.get("run_url"),
                         )
-                    completed_remote_item_ids = {
-                        item_id
-                        for item_id, state in remote_items.items()
-                        if state.get("status") == "completed"
-                    }
                     pending_items = [
                         dataset_item_by_case[case_id]
                         for case_id in source_by_case
                         if str(dataset_item_by_case[case_id].id) not in completed_remote_item_ids
                     ]
+                    if rerun_case is not None:
+                        checkpoint_path = _case_result_path(
+                            run_root,
+                            benchmark,
+                            skill,
+                            rerun_case,
+                            model_preset,
+                        )
+                        checkpoint_path.unlink(missing_ok=True)
                     cached_cases = sum(
                         _load_case_result(
                             run_root=run_root,
@@ -1497,13 +1679,15 @@ def run(
                         profile=profile,
                         benchmark=benchmark,
                         skill=skill,
-                        variant=f"{benchmark}/{skill}",
+                        variant=f"{benchmark}/{skill}/{model_preset}",
                         case_count=len(benchmark_items),
                         checkpoint_cases=len(completed_remote_item_ids) + cached_cases,
                         pending_cases=len(pending_items),
                         model_pending_cases=len(pending_items) - cached_cases,
                         run_name=stable_run_name,
                     )
+
+                    task_failures: list[tuple[str, str]] = []
 
                     def task(*, item, _skill=skill, _benchmark=benchmark):
                         case_id = _case_id(item)
@@ -1513,79 +1697,142 @@ def run(
                             raise BenchmarkError(
                                 f"Dataset {dataset_name} item {case_id} is not in the prepared manifest"
                             ) from exc
-                        return _run_agent_item(
-                            source=source,
-                            benchmark=_benchmark,
-                            skill=_skill,
-                            model_preset=model_preset,
-                            run_root=run_root,
-                        )
+                        try:
+                            return _run_agent_item(
+                                source=source,
+                                benchmark=_benchmark,
+                                skill=_skill,
+                                model_preset=model_preset,
+                                run_root=run_root,
+                                force_rerun=rerun_case is not None,
+                            )
+                        except Exception as exc:
+                            task_failures.append((case_id, str(exc)[:500]))
+                            raise
 
                     evaluators = [_presence_evaluator]
-                    if benchmark == "officebench":
-                        evaluators.append(
-                            lambda **kwargs: _officebench_evaluator(
-                                **kwargs,
-                                benchmark_python=Path(prepared["benchmark_python"]),
-                                source_root=Path(prepared["sources"]["officebench"]),
-                            )
-                        )
                     experiment_metadata = {
                         **metadata,
                         "benchmark": benchmark,
                         "skill": skill,
+                        "model_preset": model_preset,
                         "dataset_name": dataset_name,
-                        "evaluation_source": (
-                            "officebench_official"
-                            if benchmark == "officebench"
-                            else "langfuse_terra"
-                        ),
-                        "required_remote_score": (
-                            "official_score"
-                            if benchmark == "officebench"
-                            else "mybot_score"
-                        ),
-                        "annotation_queue_name": f"mybot-{profile}-{benchmark}-{skill}-review",
+                        "evaluation_source": "langfuse_terra",
+                        "required_remote_score": "mybot_score",
+                        "annotation_queue_name": str(review_queue.name),
                     }
                     result = None
                     if pending_items:
-                        result = runtime.client.run_experiment(
-                            name=f"mybot-{profile}-{benchmark}-{skill}",
-                            run_name=stable_run_name,
-                            description=(
-                                "Mybot public Office comparison; OfficeBench official evaluator and "
-                                "Langfuse Terra Judge scores are the evaluation source"
-                            ),
-                            data=pending_items,
-                            task=task,
-                            evaluators=evaluators,
-                            max_concurrency=2,
-                            metadata=experiment_metadata,
-                            _dataset_version=dataset.version,
-                        )
+                        score_ingestion = runtime.synchronous_score_ingestion()
+                        try:
+                            with score_ingestion:
+                                result = runtime.client.run_experiment(
+                                    name=f"mybot-{profile}-{benchmark}-{skill}-{_safe_component(model_preset)}",
+                                    run_name=stable_run_name,
+                                    description=(
+                                        "Mybot public Office comparison; Langfuse Terra Judge scores "
+                                        "are the evaluation source"
+                                    ),
+                                    data=pending_items,
+                                    task=task,
+                                    evaluators=evaluators,
+                                    max_concurrency=2,
+                                    metadata=experiment_metadata,
+                                    _dataset_version=dataset.version,
+                                )
+                            _ensure_experiment_complete(
+                                result,
+                                pending_items,
+                                case_by_item_id=case_by_item_id,
+                                task_failures=task_failures,
+                            )
+                            score_ingestion.raise_for_errors()
+                        except Exception:
+                            recovered = _remote_variant_state(
+                                runtime,
+                                dataset_name=dataset_name,
+                                run_name=stable_run_name,
+                            )
+                            if recovered.get("run_id"):
+                                _emit_evaluation_progress(
+                                    "variant_run_discovered",
+                                    profile=profile,
+                                    benchmark=benchmark,
+                                    skill=skill,
+                                    model_preset=model_preset,
+                                    dataset_run_id=recovered["run_id"],
+                                    dataset_run_url=recovered.get("run_url"),
+                                )
+                            raise
                     dataset_run_id = (
                         result.dataset_run_id if result is not None else remote.get("run_id")
                     )
                     dataset_run_url = (
                         result.dataset_run_url if result is not None else remote.get("run_url")
                     )
+                    _emit_evaluation_progress(
+                        "variant_run_discovered",
+                        profile=profile,
+                        benchmark=benchmark,
+                        skill=skill,
+                        model_preset=model_preset,
+                        dataset_run_id=dataset_run_id,
+                        dataset_run_url=dataset_run_url,
+                    )
                     trace_ids = [
                         str(state["trace_id"])
                         for state in remote_items.values()
                         if state.get("trace_id")
                     ]
+                    pending_score_case_ids: set[str] = set()
                     if result is not None:
+                        for item in result.item_results:
+                            if item.trace_id:
+                                score_values = _wait_for_local_scores(
+                                    runtime,
+                                    trace_id=str(item.trace_id),
+                                    benchmark=benchmark,
+                                )
+                                case_id = case_by_item_id.get(str(item.item.id))
+                                if case_id is not None and not _required_local_scores(benchmark).issubset(
+                                    score_values
+                                ):
+                                    pending_score_case_ids.add(case_id)
                         trace_ids.extend(
                             str(item.trace_id)
                             for item in result.item_results
                             if item.trace_id
                         )
+                        for item in result.item_results:
+                            case_id = case_by_item_id.get(str(item.item.id))
+                            if case_id is None:
+                                continue
+                            trace_id = str(item.trace_id) if item.trace_id else None
+                            project_id = runtime.client._get_project_id()
+                            _emit_evaluation_progress(
+                                "case_reconciled",
+                                profile=profile,
+                                benchmark=benchmark,
+                                skill=skill,
+                                model_preset=model_preset,
+                                case_id=case_id,
+                                variant=f"{benchmark}/{skill}/{model_preset}",
+                                status="completed",
+                                source="langfuse",
+                                score_status=(
+                                    "pending" if case_id in pending_score_case_ids else "remote"
+                                ),
+                                trace_url=(
+                                    f"{runtime.base_url}/project/{project_id}/traces/{trace_id}"
+                                    if project_id and trace_id else None
+                                ),
+                                dataset_run_url=dataset_run_url,
+                            )
                     queue_id, added = _enqueue_review_items(
                         runtime,
+                        queue=review_queue,
                         trace_ids=trace_ids,
                         profile=profile,
-                        benchmark=benchmark,
-                        skill=skill,
                     )
                     console.print(
                         f"[green]{stable_run_name or (result.run_name if result else 'resumed')}[/green] "
@@ -1598,12 +1845,13 @@ def run(
                         profile=profile,
                         benchmark=benchmark,
                         skill=skill,
+                        model_preset=model_preset,
                         dataset_run_id=dataset_run_id,
                         dataset_run_url=dataset_run_url,
                         checkpoint_cases=len(completed_remote_item_ids) + cached_cases,
                         executed_cases=len(pending_items),
                     )
-            runtime.flush(strict=True)
+            _flush_benchmark_runtime(runtime)
             _emit_evaluation_progress("run_completed", profile=profile)
         finally:
             runtime.shutdown()
@@ -1671,8 +1919,27 @@ def _annotation_queue_items(client: Any, queue_id: str) -> list[Any]:
         page += 1
 
 
-def _score_map(item: Any) -> dict[str, Any]:
-    return {str(score.name): score for score in (item.scores or [])}
+def _score_map(item: Any, client: Any | None = None) -> dict[str, Any]:
+    scores = {
+        _normalized_score_name(str(score.name)): score
+        for score in (item.scores or [])
+    }
+    trace_id = getattr(item, "trace_id", None)
+    if client is None or not trace_id:
+        return scores
+    cursor: str | None = None
+    while True:
+        page = client.api.scores_v3.get_many_v3(
+            trace_id=str(trace_id),
+            fields="subject",
+            limit=100,
+            cursor=cursor,
+        )
+        for score in page.data:
+            scores[_normalized_score_name(str(score.name))] = score
+        cursor = page.meta.cursor
+        if not cursor:
+            return scores
 
 
 def export_run(client: Any, dataset_run: str) -> dict[str, Any]:
@@ -1695,24 +1962,35 @@ def export_run(client: Any, dataset_run: str) -> dict[str, Any]:
     profile = str(metadata.get("profile") or "")
     benchmark = str(metadata.get("benchmark") or "")
     required_score = str(
-        metadata.get("required_remote_score")
-        or ("official_score" if benchmark == "officebench" else "mybot_score")
+        metadata.get("required_remote_score") or "mybot_score"
     )
     for item in items:
-        scores = _score_map(item)
+        scores = _score_map(item, client)
         if "output_present" not in scores or not bool(scores["output_present"].value):
             raise BenchmarkError("every run item must pass output_present before export")
         if required_score not in scores:
             raise BenchmarkError(
                 f"every {benchmark} item needs {required_score}; Langfuse evaluator may still be pending"
             )
-        if benchmark == "officebench" and (
-            "official_evaluator_ok" not in scores
-            or not bool(scores["official_evaluator_ok"].value)
-        ):
-            raise BenchmarkError("OfficeBench official evaluator had an infrastructure error")
     queue_name = str(metadata.get("annotation_queue_name") or "")
-    queue = next((item for item in _annotation_queues(client) if item.name == queue_name), None)
+    queues = _annotation_queues(client)
+    queue = next((item for item in queues if item.name == queue_name), None)
+    required = len(items) if profile == "office-smoke" else max(1, math.ceil(len(items) * 0.05))
+    if queue is None:
+        trace_ids = {str(item.trace_id) for item in items if item.trace_id}
+        candidates: list[tuple[int, Any]] = []
+        for candidate in queues:
+            if not str(getattr(candidate, "name", "")).startswith("mybot-"):
+                continue
+            candidate_ids = {
+                str(queue_item.object_id)
+                for queue_item in _annotation_queue_items(client, candidate.id)
+            }
+            overlap = len(trace_ids & candidate_ids)
+            if overlap >= required:
+                candidates.append((overlap, candidate))
+        if candidates:
+            queue = max(candidates, key=lambda value: (value[0], str(value[1].name)))[1]
     if queue is None:
         raise BenchmarkError(f"Annotation Queue not found: {queue_name or '(missing metadata)'}")
     reviewed_object_ids = {
@@ -1720,12 +1998,11 @@ def export_run(client: Any, dataset_run: str) -> dict[str, Any]:
         for queue_item in _annotation_queue_items(client, queue.id)
         if str(queue_item.status).upper().endswith("COMPLETED")
     }
-    required = len(items) if profile == "office-smoke" else max(1, math.ceil(len(items) * 0.05))
     reviewed_items = [item for item in items if item.trace_id in reviewed_object_ids]
     reviewed = len(reviewed_items)
     if reviewed < required:
         raise BenchmarkError(f"Annotation Queue review incomplete: {reviewed}/{required}")
-    if any("mybot-human-review" not in _score_map(item) for item in reviewed_items):
+    if any("mybot-human-review" not in _score_map(item, client) for item in reviewed_items):
         raise BenchmarkError("completed Annotation Queue items must include mybot-human-review scores")
     project_id = client._get_project_id()
     base_url = str(getattr(client, "_base_url", "")).rstrip("/")
@@ -1746,7 +2023,7 @@ def export_run(client: Any, dataset_run: str) -> dict[str, Any]:
         "required_score": required_score,
         "metadata": metadata,
         "scores": _to_plain(experiment.scores or []),
-        "score_names": sorted({name for item in items for name in _score_map(item)}),
+        "score_names": sorted({name for item in items for name in _score_map(item, client)}),
         "reviewed_items": reviewed,
         "required_reviewed_items": required,
         "annotation_queue_id": queue.id,

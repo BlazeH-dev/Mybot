@@ -1,7 +1,7 @@
 # P4 Input Snapshot、Artifact Lineage 与 Durable Checkpoint 代码说明
 
 > 对应计划：`docs/plans/runtime-steps/P4-artifact-checkpoint.md`
-> 当前状态：Core 已完成（2026-07-18）。artifact delta/staging、白盒记忆治理和通用 exactly-once 未实现。
+> 当前状态：Core 已完成。artifact delta/staging、白盒记忆治理和通用 exactly-once 未实现。
 
 ## 这一阶段解决什么问题
 

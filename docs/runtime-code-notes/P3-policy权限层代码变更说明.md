@@ -1,7 +1,7 @@
 # P3 Sandbox、Policy、HITL 与文件 OCC 代码说明
 
 > 对应计划：`docs/plans/runtime-steps/P3-policy权限层.md`
-> 当前状态：已完成（2026-07-22）。Policy/HITL/Approval/OCC、Seatbelt/Bubblewrap、Exec one-shot/session 与 CLI Apps 的统一 `LaunchSpec`、受批直接 curl 闭环均已落地。`auto_review`、通用网络代理和跨进程文件租约仍未实现。
+> 当前状态：已完成。Policy/HITL/Approval/OCC、Seatbelt/Bubblewrap、Exec one-shot/session 与 CLI Apps 的统一 `LaunchSpec`、受批直接 curl 闭环均已落地。`auto_review`、通用网络代理和跨进程文件租约仍未实现。
 
 ## 这一阶段解决什么问题
 
@@ -389,9 +389,7 @@ Full Access 只取消本地进程的 workspace OS wrapper。它不应自动批�
 - `tests/runtime/test_redteam.py`
   - workspace、凭据、恶意 MCP 和 child 绕过的攻击后果为零。
 
-2026-07-20 还修复过工具 schema 序列化问题和 plan confirmation UI 桥接问题，说明这套协议不仅测试安全规则，也测试“工具定义能否发给模型”“挂起成功结果能否被前端正确恢复”。
-
-2026-07-22 扩大回归为 `255 passed, 1 skipped`；跳过项是 macOS 主机不能运行 Linux Bubblewrap real smoke。macOS Seatbelt 真机 smoke 已验证 workspace 内写入、后台子进程越界写失败和 `.git/config` 不可读；Bubblewrap profile 还验证 read-only workspace 挂载、首次启动即建立并遮蔽 Runtime control mount point，以及 protected symlink fail closed。Linux CI 安装 Bubblewrap 并保留对应真实 provider 门。
+工具 schema、plan confirmation UI 和真实 Seatbelt/Bubblewrap provider 都有对应回归；macOS 本机不能运行 Linux Bubblewrap real smoke，该项由 Linux CI 覆盖。
 
 ## 未实现和不能夸大的部分
 

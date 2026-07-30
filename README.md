@@ -51,7 +51,7 @@ flowchart LR
     Loop --> Runner[AgentRunner]
     Runner --> Provider[LLM Provider]
     Runner --> Policy[Policy / Sandbox / HITL]
-    Policy --> Skills[OfficeCLI / OfficePython]
+    Policy --> Skills[OfficeCLI]
     Skills --> Artifacts[Artifact / OpenXML / Checkpoint]
     Runner --> Obs[Langfuse SDK observations]
     Obs --> Cloud[Langfuse Japan Cloud]
@@ -61,9 +61,9 @@ flowchart LR
 
 Runtime 状态、Policy、文件和 artifact 仍由 Mybot 管理；启用 Cloud 后 Langfuse 是 Trace、Experiment、Score 和人工审核的唯一持久记录。默认 `observability.langfuse.enabled=false`，普通任务不会因为 Cloud 不可用而阻塞，也不承诺离线补传。
 
-## Office Skills
+## Office Skill
 
-`officecli` 和 `office-python` 可以独立选择，使用相同输入、模型、Policy 和 evaluator 做比较。OfficePython 通过单一 `scripts/office.py` JSON request/result 入口提供 DOCX/XLSX/PPTX 的 `inspect/query/create/apply/validate/render`；OfficeCLI 提供固定版本的跨格式 CLI。两者都受 workspace、OCC、artifact 和 OpenXML hard gate 约束。
+Office benchmark 固定使用 `officecli`，在相同输入、Policy 和 evaluator 下分别运行 `gpt-5-6-luna` 与 `deepseek-v4-flash`。两种模型共享 workspace、OCC、artifact 和 OpenXML hard gate 约束。
 
 无 Key 的确定性回归：
 
@@ -90,7 +90,7 @@ pytest tests/runtime/ tests/skills/ -q
 }
 ```
 
-公开 benchmark 需要在 Langfuse Project 中配置 Terra Custom LLM Connection：model `gpt-5.6-terra`、OpenAI-compatible base URL 和 key；这些凭据只保存在 Langfuse，不写入 Mybot 或前端。上传 OCB/PresentBench 正文前必须完成许可证审查，并显式使用 `prepare --allow-licensed-content`。`prepare` 还要求外部 LibreOffice 的绝对路径和精确 `soffice --version`；`estimate` 只统计 Luna Agent 与 Terra Judge 的预计 token。Office release 的 25%/50% 档使用固定 seed 分层抽样，同一 prepared manifest 可复现且 25% 是 50% 的子集，不按原始顺序直接取前 N。
+公开 benchmark 需要在 Langfuse Project 中配置 Terra Custom LLM Connection：model `gpt-5.6-terra`、OpenAI-compatible base URL 和 key；这些凭据只保存在 Langfuse，不写入 Mybot 或前端。上传 OCB 正文前必须完成许可证审查，并显式使用 `prepare --allow-licensed-content`。`prepare` 还要求外部 LibreOffice 的绝对路径和精确 `soffice --version`；`estimate` 统计 Luna、DeepSeek V4 Flash Agent 与 Terra Judge 的预计 token。Office release 的 25%/50% 档使用固定 seed 分层抽样，同一 prepared manifest 可复现且 25% 是 50% 的子集，不按原始顺序直接取前 N。
 
 普通任务建议保持 `captureContent=false`；公开 benchmark 在许可证审查通过且需要把 prompt/material 交给 Terra Judge 时，必须将其改为 `true`。敏感数据不得通过该开关上传。
 
@@ -99,14 +99,14 @@ nanobot benchmark prepare --profile office-smoke \
   --soffice /absolute/path/to/soffice \
   --soffice-version 'LibreOffice ...' \
   --allow-licensed-content
-nanobot benchmark estimate --profile office-smoke --model-preset gpt-5-6-luna
-nanobot benchmark run --profile office-smoke --model-preset gpt-5-6-luna
-nanobot benchmark estimate --profile office-release --ocb-sample 255 --officebench-sample 24 --presentbench-sample 60
-nanobot benchmark run --profile office-release --ocb-sample 255 --officebench-sample 24 --presentbench-sample 60
+nanobot benchmark estimate --profile office-smoke --model-preset gpt-5-6-luna --model-preset deepseek-v4-flash
+nanobot benchmark run --profile office-smoke --model-preset gpt-5-6-luna --model-preset deepseek-v4-flash
+nanobot benchmark estimate --profile office-release --ocb-sample 255
+nanobot benchmark run --profile office-release --ocb-sample 255
 nanobot benchmark export --dataset-run <langfuse-dataset-run-id>
 ```
 
-OfficeBench 的 `official_score` 是固定 revision 官方 evaluator 的结果；OCB 和 PresentBench 的 `mybot_score` 是通过 Terra LLM-as-a-Judge 的 Mybot evaluation，不能当作官方榜单分数或 `official-comparable`。三个 benchmark 分别展示，不合成 Office 总分。原始 Office 文件、完整 trace 和未获许可的媒体留在外部 cache。
+OCB 的 `mybot_score` 是通过 Terra LLM-as-a-Judge 得到的 Mybot evaluation，不能当作官方榜单分数或 `official-comparable`。原始 Office 文件、完整 trace 和未获许可的媒体留在外部 cache。
 
 <!-- benchmark-results:begin -->
 ### Benchmark 结果
@@ -117,7 +117,7 @@ OfficeBench 的 `official_score` 是固定 revision 官方 evaluator 的结果�
 ## 已知边界
 
 - Langfuse Cloud 属于跨境数据传输；公司、客户、个人或敏感内容在合规审查前保持关闭。
-- PresentBench 的视觉媒体到 Terra Judge 的真实支持、Annotation Queue 人工分数和 release 全量质量尚未在本仓库声称完成。
+- Annotation Queue 人工分数和 release 全量质量尚未在本仓库声称完成。
 - 确定性 fixture、cassette 和 fake-provider 报告证明 Runtime hard gate，不代表真实模型 Office 质量。
 
 ## 模型切换

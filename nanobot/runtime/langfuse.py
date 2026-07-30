@@ -12,6 +12,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from queue import Queue
 from types import MethodType
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 
@@ -44,6 +45,10 @@ _DEFAULT_FLUSH_TIMEOUT_SECONDS = 30.0
 
 class LangfuseFlushTimeoutError(TimeoutError):
     """Raised when Langfuse cannot drain one of its local queues in time."""
+
+
+class LangfuseScoreUploadError(RuntimeError):
+    """Raised when a synchronous benchmark score upload fails."""
 
 
 def _run_bounded(callback: Callable[[], Any], *, label: str, timeout: float) -> None:
@@ -125,7 +130,12 @@ def _repair_consumer_threads(resources: Any) -> None:
     resources._media_upload_consumers = media_consumers
 
 
-def _bounded_resource_flush(resources: Any, *, timeout: float) -> None:
+def _bounded_resource_flush(
+    resources: Any,
+    *,
+    timeout: float,
+    wait_for_score_queue: bool = True,
+) -> None:
     _repair_consumer_threads(resources)
     tracer_provider = getattr(resources, "tracer_provider", None)
     if tracer_provider is not None:
@@ -137,11 +147,12 @@ def _bounded_resource_flush(resources: Any, *, timeout: float) -> None:
                 label="OTEL flush",
                 timeout=timeout,
             )
-    _wait_for_queue(
-        resources._score_ingestion_queue,
-        label="score ingestion",
-        timeout=timeout,
-    )
+    if wait_for_score_queue:
+        _wait_for_queue(
+            resources._score_ingestion_queue,
+            label="score ingestion",
+            timeout=timeout,
+        )
     _wait_for_queue(
         resources._media_upload_queue,
         label="media upload",
@@ -158,6 +169,89 @@ def _install_bounded_flush(client: Any, *, timeout: float) -> None:
         _bounded_resource_flush(bound_resources, timeout=timeout)
 
     resources.flush = MethodType(flush, resources)
+
+
+class _SynchronousScoreIngestion:
+    """Upload benchmark scores without Langfuse's stuck background consumer.
+
+    Langfuse 4.14.1 acknowledges a queue item only after its batch request
+    returns, but a consumer can remain alive while that request is stalled.
+    Benchmark runs need a bounded, observable upload path, so this adapter
+    reuses the SDK consumer's serializer/retry implementation synchronously.
+    """
+
+    def __init__(self, runtime: LangfuseRuntime) -> None:
+        self.runtime = runtime
+        self.errors: list[BaseException] = []
+        self._resources: Any | None = None
+        self._original_add_score_task: Any | None = None
+        self._original_flush: Any | None = None
+        self._consumer: Any | None = None
+        self._upload_lock = threading.Lock()
+
+    def __enter__(self) -> _SynchronousScoreIngestion:
+        from langfuse._task_manager.score_ingestion_consumer import ScoreIngestionConsumer
+
+        resources = getattr(self.runtime.client, "_resources", None)
+        if resources is None:
+            return self
+        self._resources = resources
+        self._original_add_score_task = resources.add_score_task
+        self._original_flush = getattr(resources, "flush", None)
+        self._consumer = ScoreIngestionConsumer(
+            ingestion_queue=Queue(),
+            identifier=0,
+            client=resources._score_ingestion_client,
+            public_key=resources.public_key,
+            flush_at=resources.flush_at,
+            flush_interval=min(float(resources.flush_interval or 1), 0.05),
+            max_retries=3,
+        )
+
+        def upload(bound_resources: Any, event: dict[str, Any], *, force_sample: bool = False) -> None:
+            del bound_resources, force_sample
+            with self._upload_lock:
+                queue = self._consumer._ingestion_queue
+                queue.put(event)
+                batch: list[dict[str, Any]] = []
+                try:
+                    batch = self._consumer._next()
+                    if batch:
+                        self._consumer._upload_batch(batch)
+                except BaseException as exc:
+                    self.errors.append(exc)
+                finally:
+                    for _ in batch:
+                        queue.task_done()
+
+        resources.add_score_task = MethodType(upload, resources)
+
+        def flush_without_background_scores(bound_resources: Any) -> None:
+            # Scores created in this context are uploaded synchronously above,
+            # so an older unfinished background task must not prevent
+            # run_experiment() from returning its otherwise complete result.
+            _bounded_resource_flush(
+                bound_resources,
+                timeout=_DEFAULT_FLUSH_TIMEOUT_SECONDS,
+                wait_for_score_queue=False,
+            )
+
+        if self._original_flush is not None:
+            resources.flush = MethodType(flush_without_background_scores, resources)
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        if self._resources is not None and self._original_add_score_task is not None:
+            self._resources.add_score_task = self._original_add_score_task
+        if self._resources is not None and self._original_flush is not None:
+            self._resources.flush = self._original_flush
+
+    def raise_for_errors(self) -> None:
+        if self.errors:
+            raise LangfuseScoreUploadError(
+                f"Langfuse benchmark score upload failed ({len(self.errors)} event(s)): "
+                f"{self.errors[0]}"
+            ) from self.errors[0]
 
 
 def value_summary(value: Any) -> dict[str, Any]:
@@ -393,6 +487,10 @@ class LangfuseRuntime:
             logger.exception("Langfuse flush failed")
             if strict:
                 raise
+
+    def synchronous_score_ingestion(self) -> _SynchronousScoreIngestion:
+        """Return a bounded score uploader for benchmark Experiment runs."""
+        return _SynchronousScoreIngestion(self)
 
     def shutdown(self) -> None:
         try:

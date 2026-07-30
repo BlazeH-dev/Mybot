@@ -176,6 +176,8 @@ class SDKCaptureHook(AgentHook):
         super().__init__()
         self.tools_used: list[str] = []
         self.messages: list[dict[str, Any]] = []
+        self.stop_reason: str | None = None
+        self.error: str | None = None
 
     async def after_iteration(self, context: AgentHookContext) -> None:
         for call in context.tool_calls:
@@ -185,3 +187,5 @@ class SDKCaptureHook(AgentHook):
     async def after_run(self, context: AgentRunHookContext) -> None:
         self.tools_used = list(context.tools_used)
         self.messages = list(context.messages)
+        self.stop_reason = context.stop_reason
+        self.error = context.error

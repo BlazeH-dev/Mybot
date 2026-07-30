@@ -1,6 +1,6 @@
 # P4 Input Snapshot、Artifact Lineage 与 Durable Checkpoint
 
-> 状态：已完成（2026-07-18）。白盒记忆、artifact delta/staging 为选做。
+> 状态：已完成。白盒记忆、artifact delta/staging 为选做。
 > 出口：输入和产物可追踪；已激活且 hash 绑定的计划可安全 kill→resume；uncertain 副作用不自动重试。
 
 ## 1. 不可变输入
@@ -38,7 +38,7 @@
 ```
 
 - plan、输入、facts、Skill 中间产物、验证报告和成品都是一等 artifact。
-- 两个 Office Skill 可以有不同中间表示，但都回溯到输入和 facts。
+- OfficeCLI 的中间表示、验证报告和成品都回溯到输入和 facts。
 - 经 P3 approval 修改用户已有文件后登记新版本，不能把覆盖后的路径伪装成不可变产物。
 
 ## 3. Checkpoint 范围
@@ -80,7 +80,7 @@ checkpoint 保存 task/plan/step、assistant tool call、completed/pending/uncer
 ## 测试与出口
 
 - snapshot 后修改源文件不影响任务输入；reference_only 诚实标注不可重放。
-- 两个 Office Skill 的成品都可回溯到输入和 facts。
+- OfficeCLI 的成品可回溯到输入和 facts。
 - 普通聊天不写完整 checkpoint；已激活且 hash 绑定的计划任务写必要阶段状态。
 - completed 跳过、pending 安全恢复、uncertain 转 required。
 - 三档 InteractionRequest 跨刷新/重启恢复，回答/deadline 只消费一次，等待期不调用 provider。

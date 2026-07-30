@@ -122,7 +122,7 @@ async def test_chat_with_retry_emits_terminal_progress_when_standard_retries_exh
     )
 
     assert response.content == "503 final server error"
-    assert progress[-1] == "Model request failed after 4 retries, giving up."
+    assert progress[-1] == "Model request failed after 3 retries, giving up."
 
 
 @pytest.mark.asyncio
@@ -562,6 +562,71 @@ async def test_persistent_retry_emits_terminal_progress_on_identical_error_limit
 
     assert response.finish_reason == "error"
     assert progress[-1] == "Persistent retry stopped after 10 identical errors."
+
+
+@pytest.mark.asyncio
+async def test_persistent_retry_bounds_http_errors_to_three_retries(monkeypatch) -> None:
+    provider = ScriptedProvider([
+        *[
+            LLMResponse(
+                content="relay unavailable",
+                finish_reason="error",
+                error_status_code=503,
+                error_should_retry=True,
+                error_retry_after_s=120,
+            )
+            for _ in range(4)
+        ],
+        # This response proves that a fifth call is never made.
+        LLMResponse(content="ok"),
+    ])
+    delays: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("nanobot.providers.base.asyncio.sleep", _fake_sleep)
+
+    response = await provider.chat_with_retry(
+        messages=[{"role": "user", "content": "hello"}],
+        retry_mode="persistent",
+    )
+
+    assert response.finish_reason == "error"
+    assert response.error_status_code == 503
+    assert provider.calls == 4
+    assert delays == [4, 4, 4]
+
+
+@pytest.mark.asyncio
+async def test_http_retry_terminal_progress_reports_three_retries(monkeypatch) -> None:
+    provider = ScriptedProvider([
+        *[
+            LLMResponse(
+                content="relay unavailable",
+                finish_reason="error",
+                error_status_code=502,
+                error_should_retry=True,
+            )
+            for _ in range(4)
+        ],
+    ])
+    progress: list[str] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        return None
+
+    async def _progress(message: str) -> None:
+        progress.append(message)
+
+    monkeypatch.setattr("nanobot.providers.base.asyncio.sleep", _fake_sleep)
+
+    await provider.chat_with_retry(
+        messages=[{"role": "user", "content": "hello"}],
+        on_retry_wait=_progress,
+    )
+
+    assert progress[-1] == "Model request failed after 3 retries, giving up."
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ from nanobot.providers.openai_compat_provider import OpenAICompatProvider
 from nanobot.runtime.langfuse import (
     LangfuseFlushTimeoutError,
     LangfuseRuntime,
+    LangfuseScoreUploadError,
     _install_bounded_flush,
     _repair_consumer_threads,
     _wait_for_queue,
@@ -192,6 +193,80 @@ def test_langfuse_restarts_dead_consumer_threads() -> None:
         consumer.pause()
     for consumer in [*resources._ingestion_consumers, *resources._media_upload_consumers]:
         consumer.join(timeout=1)
+
+
+def test_benchmark_scores_use_synchronous_sdk_ingestion(monkeypatch) -> None:
+    uploaded: list[list[dict]] = []
+    resources = SimpleNamespace(
+        add_score_task=Mock(),
+        _score_ingestion_client=SimpleNamespace(
+            batch_post=lambda *, batch, metadata: uploaded.append(batch),
+        ),
+        public_key="pk-test",
+        flush_at=1,
+        flush_interval=0.01,
+    )
+    runtime = LangfuseRuntime.__new__(LangfuseRuntime)
+    runtime.client = SimpleNamespace(_resources=resources)
+    original = resources.add_score_task
+
+    ingestion = runtime.synchronous_score_ingestion()
+    with ingestion:
+        resources.add_score_task({"type": "score-create", "body": {"value": 1}})
+    ingestion.raise_for_errors()
+
+    assert resources.add_score_task is original
+    assert uploaded == [[{"type": "score-create", "body": {"value": 1}}]]
+
+
+def test_synchronous_score_ingestion_does_not_wait_for_stale_background_score() -> None:
+    score_queue = Queue()
+    score_queue.put("stale-unfinished-score")
+    original_flush = Mock()
+    resources = SimpleNamespace(
+        add_score_task=Mock(),
+        flush=original_flush,
+        _shutdown=True,
+        tracer_provider=None,
+        _score_ingestion_queue=score_queue,
+        _media_upload_queue=Queue(),
+        _score_ingestion_client=Mock(),
+        public_key="pk-test",
+        flush_at=1,
+        flush_interval=0.01,
+    )
+    runtime = LangfuseRuntime.__new__(LangfuseRuntime)
+    runtime.client = SimpleNamespace(_resources=resources)
+
+    with runtime.synchronous_score_ingestion():
+        started = time.monotonic()
+        resources.flush()
+        assert time.monotonic() - started < 0.5
+        original_flush.assert_not_called()
+
+    assert resources.flush is original_flush
+
+
+def test_benchmark_score_upload_error_is_not_silently_dropped() -> None:
+    def fail_upload(**_kwargs) -> None:
+        raise RuntimeError("score endpoint unavailable")
+
+    resources = SimpleNamespace(
+        add_score_task=Mock(),
+        _score_ingestion_client=SimpleNamespace(batch_post=fail_upload),
+        public_key="pk-test",
+        flush_at=1,
+        flush_interval=0.01,
+    )
+    runtime = LangfuseRuntime.__new__(LangfuseRuntime)
+    runtime.client = SimpleNamespace(_resources=resources)
+
+    ingestion = runtime.synchronous_score_ingestion()
+    with ingestion:
+        resources.add_score_task({"type": "score-create", "body": {"value": 1}})
+
+    with pytest.raises(LangfuseScoreUploadError, match="score endpoint unavailable"):
+        ingestion.raise_for_errors()
 
 
 @pytest.mark.asyncio

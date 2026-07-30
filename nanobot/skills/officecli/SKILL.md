@@ -1,6 +1,6 @@
 ---
 name: officecli
-description: Default Office skill for creating, inspecting, validating, and modifying docx, xlsx, and pptx with the pinned OfficeCLI capability. Use for general Office requests unless the user explicitly asks for the Python OfficePython skill.
+description: Office skill for creating, inspecting, validating, and modifying docx, xlsx, and pptx with the pinned OfficeCLI capability.
 metadata:
   nanobot:
     requires:
@@ -9,11 +9,11 @@ metadata:
 
 # OfficeCLI
 
-Use the pinned OfficeCLI capability for general Word, Excel, and PowerPoint work. This Skill is independent from `office-python`; it may use OfficeCLI's own commands, help system, DOM paths, batch format, validation, previews, raw XML, MCP, plugins, and resident mode when appropriate.
+Use the pinned OfficeCLI capability for general Word, Excel, and PowerPoint work. It may use OfficeCLI's own commands, help system, DOM paths, batch format, validation, previews, raw XML, MCP, plugins, and resident mode when appropriate.
 
 ## Mybot rules
 
-- OfficeCLI is normally preferred for Office requests. If the user explicitly asks for a Python implementation, use `office-python` instead.
+- OfficeCLI is the supported Office implementation for benchmark and general Office requests.
 - Mybot provides an `officecli` launcher that downloads only the pinned contract asset on first use, verifies its checksum, caches it under the nanobot data directory, and disables upstream auto-update. Never invoke upstream `install`/`update` or follow `latest` from an Agent task.
 - If the packaged launcher cannot provision the pinned binary, report the reason and use another enabled Skill only when that matches the request.
 - Before a data analysis or quantitative reporting task, run the shared Office core to create `workbook_schema.json` and `verified_facts.json`. Pure formatting, inspection, comments, or text extraction do not need an empty facts workflow.
@@ -48,7 +48,7 @@ Use an input snapshot supplied by the Runtime when P4 is available. Until then, 
 6. Run `officecli validate` and a visual view before delivery.
 7. Record the actual binary version, commands/batch, validation, previews, facts, and final files as artifacts.
 
-The existing `compile_officecli.py` and render helpers are an optional grounded-report compatibility path. They are not the only supported OfficeCLI workflow and do not require this Skill to share the Python Skill's DSL for other tasks.
+The existing `compile_officecli.py` and render helpers are an optional grounded-report compatibility path.
 
 ## Version source
 

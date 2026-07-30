@@ -9,7 +9,7 @@ Mybot 在 nanobot v0.2.1 的 Agent 循环上，补出了一套“可以安全执
 
 ```text
 固定测试输入
-  -> Office 业务闭环
+  -> OfficeCLI 业务闭环
   -> Skill 声明与可用性
   -> Sandbox / Policy / 人工确认 / 文件冲突保护
   -> [可选增强] 聊天级 Git Worktree 隔离
@@ -25,7 +25,7 @@ P0-P8 阶段不是互不相关的功能，而是逐层回答工程问题；当�
 | 阶段 | 它回答的问题 | 核心关键词 |
 | --- | --- | --- |
 | P0 | 怎么证明以后没有把系统改坏？ | fixture、golden truth、CI |
-| P1 | Agent 怎样完成一个真实 Office 任务，并公平比较两种 Office 实现？ | verified facts、双 Skill、OfficePython、plan |
+| P1 | Agent 怎样完成一个真实 Office 任务，并比较两个 Agent 模型？ | verified facts、OfficeCLI、模型矩阵、plan |
 | P2 | Skill 怎样被机器发现、校验、禁用和诊断？ | manifest、availability、fail closed |
 | P3 | Agent 能做什么、何时要问人、怎样防越权和覆盖？ | sandbox、policy、HITL、OCC |
 | P3.1 | Git 项目聊天怎样隔离工作树，又不丢 dirty 状态？ | explicit worktree、binding、safe cleanup |
@@ -61,14 +61,14 @@ P0-P8 阶段不是互不相关的功能，而是逐层回答工程问题；当�
 | 阶段 | 状态 | 当前真实边界 |
 | --- | --- | --- |
 | [P0 准备](./P0-准备阶段代码变更说明.md) | 已完成 | 固定 Office fixture 与 CI 确定性回归门已落地。 |
-| [P1 Office 垂直切片](./P1-office垂直切片代码变更说明.md) | 已完成 | `officecli` 与通用 `office-python` 双 Skill 已落地；后者使用中立 JSON CLI、只读输入和原子 artifact 发布。 |
+| [P1 Office 垂直切片](./P1-office垂直切片代码变更说明.md) | 已完成 | 仅保留 `officecli` Skill；OCB benchmark 比较 Luna 与 DeepSeek V4 Flash。 |
 | [P2 Skill Pack Manifest](./P2-skillpack-manifest代码变更说明.md) | 已完成 | typed manifest、局部 fail closed、结构化 availability、统一开关与显式单轮路由已落地。 |
 | [P3 Sandbox / Policy](./P3-policy权限层代码变更说明.md) | 已完成 | Exec/session/CLI Apps 统一 `LaunchSpec`，Seatbelt/Bubblewrap、受批直接 curl、Policy/HITL/OCC 与 fail-closed 已落地。 |
-| [P3.1 Workspace / Worktree](./P3.1-worktree隔离代码变更说明.md) | 选做（未实现） | 已完成 WebUI per-chat worktree、HEAD 基线、持久绑定、fork 和保守清理的契约设计；未排期，不计入 Runtime Core 验收。 |
+| [P3.1 Workspace / Worktree](./P3.1-worktree隔离代码变更说明.md) | 选做（未实现） | 只有契约设计；没有 WebUI、WorktreeManager 或 Git 生命周期代码，不计入 Runtime Core 验收。 |
 | [P4 Artifact / Checkpoint](./P4-artifact-checkpoint代码变更说明.md) | 已完成 Core | 输入快照、artifact/lineage、hash-bound checkpoint、pending/uncertain 恢复已落地；不承诺通用 exactly-once。 |
-| [P5 Trace / Eval](./P5-trace-eval代码变更说明.md) | P5.1 代码完成，外部 smoke 待配置 | cassette、脱敏 trace、Langfuse SDK observation、Dataset/Experiment、OfficeBench evaluator、三套 adapter、独立 benchmark venv、Annotation Queue/export contract 已落地；Terra Judge、Cloud真实回读、人工审核和发布分数待配置。 |
+| [P5 Trace / Eval](./P5-trace-eval代码变更说明.md) | P5.1 代码完成，外部 smoke 待配置 | cassette、脱敏 trace、Langfuse SDK observation、OCB Dataset/Experiment adapter、独立 benchmark venv、Annotation Queue/export contract 已落地；真实人工审核和发布分数待完成。 |
 | [P6 通用性扩展](./P6-通用性扩展代码变更说明.md) | 选做（未实现） | 仅完成 Research 最小闭环设计，未排期，不计入项目冻结和最终验收。 |
-| [P7 最终交付](./P7-面试交付物代码变更说明.md) | 代码完成，外部证据待配置 | README 最终结果页、Mermaid 架构图、CI/benchmark 入口、三套 adapter、Langfuse Experiment/Annotation Queue/export contract 已落地；真实 Cloud/Terra/人工审核结果尚未发布。 |
+| [P7 最终交付](./P7-面试交付物代码变更说明.md) | 代码完成，外部证据待配置 | README 最终结果页、Mermaid 架构图、OCB/CI 入口、Langfuse Experiment/Annotation Queue/export contract 已落地；真实人工审核结果尚未发布。 |
 | [P8 多 Agent 编排](./P8-多agent编排代码变更说明.md) | 已完成 Core | active-plan gate、最多 5 个 direct child、禁止嵌套、隔离 artifact/HITL/trace 已落地；共享文件租约未实现。 |
 
 ## 一条任务在系统里的总调用链
@@ -108,7 +108,7 @@ WebUI WebSocket 消息
 
 不要从“我接了几个模型、做了几个页面”开始讲。更有区分度的讲法是：
 
-> 我基于 nanobot 的 AgentLoop/AgentRunner 做二次开发，先用固定 Office fixture 建立确定性真值，再做两个独立 Office Skill 验证真实任务链。随后把 Runtime 补成分层治理：Skill manifest 负责声明和诊断，Policy 负责 allow/ask/deny，Seatbelt/Bubblewrap 负责 OS 强制，InteractionRequest 负责可持久化的人机等待，OCC 防止并发覆盖，Artifact/Checkpoint 负责血缘和恢复，Cassette/Trace/Eval 负责无 Key 回归与硬门量化，最后再把同一套约束复用到 Subagent。
+> 我基于 nanobot 的 AgentLoop/AgentRunner 做二次开发，先用固定 Office fixture 建立确定性真值，再用唯一的 OfficeCLI Skill 验证真实任务链。随后把 Runtime 补成分层治理：Skill manifest 负责声明和诊断，Policy 负责 allow/ask/deny，Seatbelt/Bubblewrap 负责 OS 强制，InteractionRequest 负责可持久化的人机等待，OCC 防止并发覆盖，Artifact/Checkpoint 负责血缘和恢复，Cassette/Trace/Eval 负责无 Key 回归与硬门量化，最后再把同一套约束复用到 Subagent。
 
 如果被追问“最难的是什么”，优先讲：
 

@@ -157,6 +157,11 @@ class LLMProvider(ABC):
     supports_progress_deltas = False
 
     _CHAT_RETRY_DELAYS = (1, 2, 4)
+    # HTTP gateway failures are bounded even when callers opt into the
+    # persistent retry mode.  A relay can return an untrusted Retry-After
+    # value (or keep returning 503 forever), so a request must not occupy an
+    # Agent worker indefinitely.
+    _HTTP_RETRY_AFTER_MAX = max(_CHAT_RETRY_DELAYS)
     _PERSISTENT_MAX_DELAY = 60
     _PERSISTENT_IDENTICAL_ERROR_LIMIT = 10
     _RETRY_HEARTBEAT_CHUNK = 30
@@ -854,6 +859,20 @@ class LLMProvider(ABC):
                     return result
                 return response
 
+            has_http_status = response.error_status_code is not None
+            if attempt > len(delays) and (not persistent or has_http_status):
+                retries = attempt - 1
+                logger.warning(
+                    "LLM request failed after {} retries, giving up: {}",
+                    retries,
+                    (response.content or "")[:120].lower(),
+                )
+                if on_retry_wait:
+                    await on_retry_wait(
+                        f"Model request failed after {retries} retries, giving up."
+                    )
+                return response
+
             if persistent and identical_error_count >= self._PERSISTENT_IDENTICAL_ERROR_LIMIT:
                 logger.warning(
                     "Stopping persistent retry after {} identical transient errors: {}",
@@ -866,20 +885,10 @@ class LLMProvider(ABC):
                     )
                 return response
 
-            if not persistent and attempt > len(delays):
-                logger.warning(
-                    "LLM request failed after {} retries, giving up: {}",
-                    attempt,
-                    (response.content or "")[:120].lower(),
-                )
-                if on_retry_wait:
-                    await on_retry_wait(
-                        f"Model request failed after {attempt} retries, giving up."
-                    )
-                break
-
             base_delay = delays[min(attempt - 1, len(delays) - 1)]
             delay = self._extract_retry_after_from_response(response) or base_delay
+            if has_http_status:
+                delay = min(delay, self._HTTP_RETRY_AFTER_MAX)
             if persistent:
                 delay = min(delay, self._PERSISTENT_MAX_DELAY)
 

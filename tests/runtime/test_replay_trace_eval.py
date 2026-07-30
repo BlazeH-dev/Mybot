@@ -121,14 +121,13 @@ def test_five_case_eval_report_has_no_hard_failures() -> None:
     assert len(report["fixture_digest"]) == 64
     rendered = markdown_report(report)
     assert "Overall: PASS" in rendered
-    assert "subagent-comparison.md" in rendered
 
 
 def test_openxml_metric_parses_parts_and_rejects_broken_relationships(tmp_path: Path) -> None:
     valid = CaseContext(
         case_id="valid",
         root=Path.cwd(),
-        data={"files": ["tests/fixtures/office_python/sample.xlsx"]},
+        data={"files": ["tests/fixtures/runtime_eval/office_baseline.xlsx"]},
     )
     assert OpenXmlValidationMetric().score(valid).passed
 

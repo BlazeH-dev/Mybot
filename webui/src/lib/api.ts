@@ -248,6 +248,27 @@ export async function fetchEvaluationCases(
   return payload.cases;
 }
 
+export type DeleteEvaluationRunResult = {
+  deleted: boolean;
+  scheduled?: boolean;
+};
+
+export async function deleteEvaluationRun(
+  token: string,
+  runId: string,
+  base: string = "",
+): Promise<DeleteEvaluationRunResult> {
+  const payload = await request<DeleteEvaluationRunResult>(
+    `${base}/api/evaluations/runs/${encodeURIComponent(runId)}/delete?confirm=1`,
+    token,
+    // The embedded websockets HTTP parser accepts GET requests only. Keep
+    // this destructive route explicit and uncached with a confirmation query.
+    { cache: "no-store" },
+    API_READ_TIMEOUT_MS,
+  );
+  return payload;
+}
+
 export async function fetchSkillDetail(
   token: string,
   name: string,

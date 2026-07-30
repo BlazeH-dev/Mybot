@@ -845,7 +845,6 @@ export interface EvaluationSuite {
   model_presets: EvaluationOption[];
   runtime_profiles: EvaluationOption[];
   benchmark_samples: Record<string, number[]>;
-  presentbench_samples: number[];
 }
 
 export interface EvaluationCatalogPayload {
@@ -862,8 +861,6 @@ export interface EvaluationRequestPayload {
   model_presets: string[];
   runtime_profiles: string[];
   benchmark_samples: Record<string, number>;
-  /** @deprecated Kept for compatibility with older gateway payloads. */
-  presentbench_sample: number;
   allow_licensed_content: boolean;
 }
 
@@ -871,6 +868,7 @@ export interface EvaluationEstimate {
   profile?: string;
   case_counts?: Record<string, number>;
   skill_runs?: number;
+  model_runs?: number;
   judge_runs?: number;
   estimated_tokens?: Record<string, number>;
 }
@@ -898,10 +896,27 @@ export interface EvaluationMetrics {
   ttft_seconds?: number;
 }
 
+export interface EvaluationFailureSignal {
+  category: string;
+  label: string;
+  summary: string;
+  count: number;
+}
+
+export interface EvaluationFailure {
+  category: string;
+  label: string;
+  summary: string;
+  detail?: string;
+  retryable?: boolean;
+  signals?: EvaluationFailureSignal[];
+}
+
 export interface EvaluationCase {
   case_id: string;
   benchmark?: string;
   skill?: string;
+  model_preset?: string;
   status: string;
   score_status?: string;
   scores?: Record<string, number | boolean | string | null>;
@@ -938,7 +953,10 @@ export interface EvaluationJob {
   cancel_requested?: boolean;
   resumable?: boolean;
   resume_count?: number;
+  case_rerun?: { benchmark: string; skill: string; case_id: string } | null;
+  case_rerun_count?: number;
   error?: string | null;
+  failure?: EvaluationFailure | null;
   created_at?: string | null;
   started_at?: string | null;
   finished_at?: string | null;
@@ -982,6 +1000,7 @@ export type EvaluationSocketEvent =
   | { event: "evaluation_started"; request_id?: string; job: EvaluationJob }
   | { event: "evaluation_cancelled"; request_id?: string; job: EvaluationJob }
   | { event: "evaluation_resumed"; request_id?: string; job: EvaluationJob }
+  | { event: "evaluation_case_rerun"; request_id?: string; job: EvaluationJob }
   | { event: "evaluation_job_updated"; job: EvaluationJob }
   | { event: "validation_failed"; request_id?: string; errors: string[] };
 
@@ -1157,6 +1176,7 @@ export type Outbound =
   | { type: "evaluation_cancel"; request_id: string; job_id: string }
   | { type: "evaluation_retry"; request_id: string; job_id: string }
   | { type: "evaluation_resume"; request_id: string; job_id: string }
+  | { type: "evaluation_case_rerun"; request_id: string; job_id: string; benchmark: string; skill: string; model_preset?: string; case_id: string }
   | {
       type: "interaction_response";
       chat_id: string;

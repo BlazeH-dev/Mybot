@@ -513,6 +513,27 @@ describe("NanobotClient", () => {
     }));
   });
 
+  it("sends a targeted evaluation Case rerun", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    lastSocket().fakeOpen();
+
+    const requestId = client.rerunEvaluationCase("job-1", "ocb", "officecli", "602");
+
+    expect(JSON.parse(lastSocket().sent.at(-1) as string)).toEqual({
+      type: "evaluation_case_rerun",
+      request_id: requestId,
+      job_id: "job-1",
+      benchmark: "ocb",
+      skill: "officecli",
+      case_id: "602",
+    });
+  });
+
   it("includes an explicit turn id on outbound WebUI messages", () => {
     const client = new NanobotClient({
       url: "ws://test",

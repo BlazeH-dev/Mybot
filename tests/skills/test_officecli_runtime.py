@@ -70,7 +70,7 @@ def test_packaged_contract_keeps_version_capabilities_and_policy_boundaries() ->
     assert all(len(asset["sha256"]) == 64 for asset in contract["assets"].values())
 
 
-def test_officecli_skill_routes_python_requests_to_office_python() -> None:
+def test_officecli_skill_has_no_retired_python_route() -> None:
     root = Path(__file__).resolve().parents[2]
     skill_text = (root / "nanobot" / "skills" / "officecli" / "SKILL.md").read_text(
         encoding="utf-8"
@@ -81,7 +81,7 @@ def test_officecli_skill_routes_python_requests_to_office_python() -> None:
         )
     )
 
-    assert "`office-python`" in skill_text
+    assert "Python Office" not in skill_text
     assert "office-automation" not in skill_text
     assert manifest["validated_version"] == "1.0.135"
 

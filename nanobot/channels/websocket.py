@@ -779,7 +779,7 @@ class WebSocketChannel(BaseChannel):
                 job=job,
             )
             return
-        if t in {"evaluation_cancel", "evaluation_retry", "evaluation_resume"}:
+        if t in {"evaluation_cancel", "evaluation_retry", "evaluation_resume", "evaluation_case_rerun"}:
             request_id = envelope.get("request_id")
             job_id = envelope.get("job_id")
             if not isinstance(job_id, str):
@@ -795,6 +795,15 @@ class WebSocketChannel(BaseChannel):
                     job = self._evaluations.cancel(job_id)
                 elif t == "evaluation_resume":
                     job = self._evaluations.resume(job_id)
+                elif t == "evaluation_case_rerun":
+                    rerun_kwargs = {
+                        "benchmark": str(envelope.get("benchmark") or ""),
+                        "skill": str(envelope.get("skill") or ""),
+                        "case_id": str(envelope.get("case_id") or ""),
+                    }
+                    if envelope.get("model_preset"):
+                        rerun_kwargs["model_preset"] = str(envelope["model_preset"])
+                    job = self._evaluations.rerun_case(job_id, **rerun_kwargs)
                 else:
                     job = self._evaluations.retry(job_id)
             except (KeyError, ValueError) as exc:
@@ -810,6 +819,8 @@ class WebSocketChannel(BaseChannel):
                 (
                     "evaluation_cancelled"
                     if t == "evaluation_cancel"
+                    else "evaluation_case_rerun"
+                    if t == "evaluation_case_rerun"
                     else "evaluation_resumed"
                     if t == "evaluation_resume"
                     else "evaluation_started"

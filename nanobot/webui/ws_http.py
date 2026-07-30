@@ -22,7 +22,11 @@ from websockets.http11 import Request as WsRequest
 from websockets.http11 import Response
 
 from nanobot.command.builtin import builtin_command_palette
-from nanobot.evaluations.catalog import EvaluationCatalog, EvaluationRequest
+from nanobot.evaluations.catalog import (
+    TERMINAL_JOB_STATUSES,
+    EvaluationCatalog,
+    EvaluationRequest,
+)
 from nanobot.evaluations.jobs import EvaluationJobService
 from nanobot.evaluations.results import LangfuseEvaluationReader
 from nanobot.utils.subagent_channel_display import scrub_subagent_messages_for_channel
@@ -78,6 +82,16 @@ from nanobot.webui.workspaces import (
     WorkspaceDirectoryError,
     browse_workspace_directories,
 )
+
+_ACTIVE_EVALUATION_STATUSES = frozenset({
+    "queued",
+    "preflight",
+    "preparing",
+    "estimating",
+    "running",
+    "remote_scoring",
+})
+_EVALUATION_REMOTE_DELETE_TIMEOUT_SECONDS = 8.0
 
 if TYPE_CHECKING:
     from nanobot.bus.queue import MessageBus
@@ -170,6 +184,7 @@ class GatewayHTTPHandler:
         self.evaluation_results = evaluation_results
         self._log = log
         self._runtime_surface = runtime_surface
+        self._evaluation_delete_tasks: set[asyncio.Task[None]] = set()
 
         from nanobot.webui.settings_api import runtime_capabilities as _rc
         from nanobot.webui.settings_routes import WebUISettingsRouter
@@ -286,32 +301,118 @@ class GatewayHTTPHandler:
             }
             local = []
             for job in self.evaluations.list():
-                linked = next(
-                    (
-                        remote_by_id[str(run_id)]
-                        for run_id in job.get("dataset_run_ids", [])
-                        if str(run_id) in remote_by_id
-                    ),
-                    None,
-                )
+                linked_ids = {str(run_id) for run_id in job.get("dataset_run_ids", [])}
+                resume_token = str(job.get("resume_token") or job.get("job_id") or "")
+                stable_suffix = f"-job-{resume_token}" if resume_token else ""
+                linked_runs = [
+                    linked
+                    for run_id, linked in remote_by_id.items()
+                    if run_id in linked_ids
+                    or (stable_suffix and str(linked.get("name") or "").endswith(stable_suffix))
+                ]
+                if str(job.get("status") or "") in _ACTIVE_EVALUATION_STATUSES:
+                    for linked in linked_runs:
+                        linked["status"] = "running"
                 enriched = {**job, "source": "mybot"}
-                if linked is not None:
-                    for field in ("usage", "metrics"):
-                        if linked.get(field) is not None:
-                            enriched[field] = linked[field]
-                    if not enriched.get("aggregate_scores") and linked.get("aggregate_scores"):
-                        enriched["aggregate_scores"] = linked["aggregate_scores"]
+                linked_scores: dict[str, Any] = {}
+                linked_usage: dict[str, int] = {}
+                linked_metrics: dict[str, float | int] = {}
+                for linked in linked_runs:
+                    prefix = "/".join(filter(None, [
+                        str(linked.get("benchmark") or ""),
+                        str(linked.get("skill") or ""),
+                    ]))
+                    for name, value in (linked.get("aggregate_scores") or {}).items():
+                        linked_scores[f"{prefix}/{name}" if prefix else str(name)] = value
+                    for name, value in (linked.get("usage") or {}).items():
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            linked_usage[name] = linked_usage.get(name, 0) + int(value)
+                    for name, value in (linked.get("metrics") or {}).items():
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            linked_metrics[name] = linked_metrics.get(name, 0) + value
+                if not enriched.get("aggregate_scores") and linked_scores:
+                    enriched["aggregate_scores"] = linked_scores
+                if linked_usage:
+                    enriched["usage"] = linked_usage
+                if linked_metrics:
+                    enriched["metrics"] = linked_metrics
                 local.append(enriched)
             return _http_json_response({"jobs": local, "langfuse": remote})
+        delete_match = re.match(r"^/api/evaluations/runs/([A-Za-z0-9_-]+)/delete$", got)
+        if delete_match:
+            run_id = delete_match.group(1)
+            local = self.evaluations.get(run_id)
+            if local is not None and str(local.get("status") or "") not in TERMINAL_JOB_STATUSES:
+                return _http_error(409, "only terminal evaluation jobs can be deleted")
+            task = asyncio.create_task(
+                self._delete_evaluation_history(run_id, local),
+                name=f"evaluation-delete-{run_id}",
+            )
+            self._evaluation_delete_tasks.add(task)
+            task.add_done_callback(self._evaluation_delete_tasks.discard)
+            self._log.info("Evaluation history deletion scheduled: {}", run_id)
+            return _http_json_response({"deleted": True, "scheduled": True})
         match = re.match(r"^/api/evaluations/runs/([A-Za-z0-9_-]+)(/cases)?$", got)
         if match:
             run_id = match.group(1)
             local = self.evaluations.get(run_id)
             if local is not None:
+                if match.group(2):
+                    remote = await asyncio.to_thread(self.evaluation_results.list_runs)
+                    remote_by_id = {
+                        str(row.get("dataset_run_id")): row
+                        for row in remote.get("runs", [])
+                        if row.get("dataset_run_id")
+                    }
+                    remote_cases: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+                    linked_ids = {str(item) for item in local.get("dataset_run_ids", [])}
+                    resume_token = str(local.get("resume_token") or local.get("job_id") or "")
+                    stable_suffix = f"-job-{resume_token}" if resume_token else ""
+                    linked_runs = [
+                        linked
+                        for dataset_run_id, linked in remote_by_id.items()
+                        if dataset_run_id in linked_ids
+                        or (
+                            stable_suffix
+                            and str(linked.get("name") or "").endswith(stable_suffix)
+                        )
+                    ]
+                    for linked in linked_runs:
+                        benchmark = str(linked.get("benchmark") or "")
+                        skill = str(linked.get("skill") or "")
+                        model_preset = str(linked.get("model_preset") or "")
+                        for case in linked.get("cases", []):
+                            key = (
+                                benchmark,
+                                skill,
+                                str(case.get("model_preset") or model_preset),
+                                str(case.get("case_id") or ""),
+                            )
+                            remote_cases[key] = case
+                    cases = []
+                    for case in self.evaluations.cases(run_id):
+                        key = (
+                            str(case.get("benchmark") or ""),
+                            str(case.get("skill") or ""),
+                            str(case.get("model_preset") or ""),
+                            str(case.get("case_id") or ""),
+                        )
+                        linked_case = remote_cases.get(key)
+                        if (
+                            linked_case
+                            and str(local.get("status") or "") in _ACTIVE_EVALUATION_STATUSES
+                            and linked_case.get("status") == "failed"
+                        ):
+                            linked_case = {
+                                **linked_case,
+                                "status": "pending",
+                                "score_status": "pending",
+                                "scores": {},
+                            }
+                        cases.append({**case, **linked_case} if linked_case else case)
+                    return _http_json_response({"cases": cases})
                 return _http_json_response(
-                    {"cases": self.evaluations.cases(run_id)}
-                    if match.group(2)
-                    else local
+                    local
                 )
             remote = await asyncio.to_thread(self.evaluation_results.list_runs)
             row = next(
@@ -329,6 +430,53 @@ class GatewayHTTPHandler:
             return _http_json_response(row)
         return _http_error(404, "evaluation route not found")
 
+    async def _delete_evaluation_history(
+        self,
+        run_id: str,
+        local: dict[str, Any] | None,
+    ) -> None:
+        linked_ids = {str(item) for item in (local or {}).get("dataset_run_ids", [])}
+        resume_token = str(
+            (local or {}).get("resume_token") or (local or {}).get("job_id") or ""
+        )
+        stable_suffix = f"-job-{resume_token}" if resume_token else ""
+
+        local_deleted = local is None
+        if local is not None:
+            try:
+                local_deleted = await asyncio.to_thread(self.evaluations.delete, run_id)
+            except Exception:
+                self._log.exception("Local evaluation history deletion failed: {}", run_id)
+
+        if local is None:
+            linked_ids.add(run_id)
+        try:
+            if stable_suffix:
+                remote = await asyncio.to_thread(self.evaluation_results.list_runs)
+                linked_ids.update(
+                    str(item.get("dataset_run_id"))
+                    for item in remote.get("runs", [])
+                    if item.get("dataset_run_id")
+                    and str(item.get("name") or "").endswith(stable_suffix)
+                )
+            remote_result = await asyncio.to_thread(
+                self.evaluation_results.delete_runs,
+                sorted(linked_ids),
+            )
+            self._log.info(
+                "Evaluation history deletion finished: {} local_deleted={} "
+                "remote_deleted={} remote_missing={}",
+                run_id,
+                local_deleted,
+                int(remote_result.get("deleted") or 0),
+                len(remote_result.get("missing", [])),
+            )
+        except Exception:
+            self._log.exception(
+                "Langfuse evaluation history deletion failed in background: {}",
+                run_id,
+            )
+
     @staticmethod
     def _evaluation_request_from_query(path: str) -> EvaluationRequest:
         query = _parse_query(path)
@@ -338,7 +486,6 @@ class GatewayHTTPHandler:
             return raw.split(",") if raw else None
 
         raw_samples = _query_first(query, "benchmark_samples")
-        sample = _query_first(query, "presentbench_sample")
         payload: dict[str, Any] = {
             "suite_id": _query_first(query, "suite_id") or "office",
             "profile": _query_first(query, "profile") or "office-smoke",
@@ -359,11 +506,6 @@ class GatewayHTTPHandler:
                 payload["benchmark_samples"] = json.loads(raw_samples)
             except json.JSONDecodeError as exc:
                 raise ValueError("benchmark_samples must be valid JSON") from exc
-        elif sample:
-            try:
-                payload["presentbench_sample"] = int(sample)
-            except ValueError as exc:
-                raise ValueError("presentbench_sample must be an integer") from exc
         return EvaluationRequest.from_payload(payload)
 
     # -- Token issue --------------------------------------------------------

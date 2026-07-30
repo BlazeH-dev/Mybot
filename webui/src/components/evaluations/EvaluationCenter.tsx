@@ -11,6 +11,7 @@ import {
   RefreshCw,
   RotateCcw,
   ShieldCheck,
+  Trash2,
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -26,6 +27,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  deleteEvaluationRun,
   fetchEvaluationCases,
   fetchEvaluationCatalog,
   fetchEvaluationReadiness,
@@ -33,6 +41,7 @@ import {
 } from "@/lib/api";
 import type {
   EvaluationCase,
+  EvaluationFailure,
   EvaluationJob,
   EvaluationJobStatus,
   EvaluationMetrics,
@@ -71,6 +80,42 @@ function formatScore(value: unknown): string {
   return value == null ? "-" : String(value);
 }
 
+function displayScoreEntries(scores: Record<string, unknown>): Array<[string, unknown]> {
+  return Object.entries(scores).filter(([, value]) => (
+    typeof value !== "string" || value.length <= 80
+  ));
+}
+
+type CaseVariantField = "model_preset" | "skill" | "benchmark";
+
+const CASE_VARIANT_FIELDS: CaseVariantField[] = ["model_preset", "skill", "benchmark"];
+
+function caseVariantFields(cases: EvaluationCase[]): CaseVariantField[] {
+  const compared = CASE_VARIANT_FIELDS.filter((field) => (
+    new Set(cases.map((item) => item[field]).filter(Boolean)).size > 1
+  ));
+  if (compared.length > 0) return compared;
+  const available = CASE_VARIANT_FIELDS.find((field) => cases.some((item) => item[field]));
+  return available ? [available] : [];
+}
+
+function formatModelVariant(value: string): string {
+  const gpt = /^gpt-(\d+)-(\d+)-(.+)$/.exec(value);
+  if (gpt) return `gpt-${gpt[1]}.${gpt[2]}-${gpt[3]}`;
+  if (value.toLowerCase().startsWith("deepseek-")) {
+    return `DeepSeek-${value.slice("deepseek-".length)}`;
+  }
+  return value;
+}
+
+function caseVariantLabel(item: EvaluationCase, fields: CaseVariantField[]): string {
+  const values = fields.map((field) => {
+    const value = item[field];
+    return field === "model_preset" && value ? formatModelVariant(value) : value;
+  });
+  return values.filter(Boolean).join(" / ") || "-";
+}
+
 function formatDuration(value: number | undefined): string {
   if (value == null || !Number.isFinite(value)) return "-";
   return value < 10 ? `${value.toFixed(1)}s` : `${Math.round(value)}s`;
@@ -101,6 +146,61 @@ function StatusPill({ status }: { status: string }) {
     <span className={cn("inline-flex rounded px-2 py-1 text-[11px] font-medium", statusTone(status))}>
       {status.replaceAll("_", " ")}
     </span>
+  );
+}
+
+function FailureDetailsButton({ failure }: { failure?: EvaluationFailure | null }) {
+  const [open, setOpen] = useState(false);
+  if (!failure) return null;
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 text-red-700 hover:text-red-700 dark:text-red-300 dark:hover:text-red-300"
+        onClick={() => setOpen(true)}
+        title="View failure reason"
+        aria-label="View failure reason"
+      >
+        <AlertTriangle className="h-3.5 w-3.5" />
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Evaluation failure details</DialogTitle>
+            <DialogDescription>{failure.summary}</DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60vh] space-y-5 overflow-y-auto pr-1 text-sm">
+            <section>
+              <div className="text-xs font-medium text-muted-foreground">Primary cause</div>
+              <div className="mt-1 font-medium text-red-700 dark:text-red-300">{failure.label}</div>
+              <div className="mt-1 text-muted-foreground">
+                {failure.retryable === false ? "Fix configuration before retrying." : "This failure can be retried or resumed."}
+              </div>
+            </section>
+            {failure.detail ? (
+              <section>
+                <div className="text-xs font-medium text-muted-foreground">Original error</div>
+                <pre className="mt-2 whitespace-pre-wrap break-words rounded border bg-muted/35 p-3 font-mono text-xs leading-5">{failure.detail}</pre>
+              </section>
+            ) : null}
+            {failure.signals?.length ? (
+              <section>
+                <div className="text-xs font-medium text-muted-foreground">Concurrent signals</div>
+                <div className="mt-2 divide-y rounded border">
+                  {failure.signals.map((signal) => (
+                    <div key={signal.category} className="grid gap-1 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto]">
+                      <div><div className="font-medium">{signal.label}</div><div className="text-xs text-muted-foreground">{signal.summary}</div></div>
+                      <div className="text-xs text-muted-foreground">{signal.count} occurrences</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -171,8 +271,6 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
   const [runtimeProfiles, setRuntimeProfiles] = useState<string[]>([]);
   const [benchmarkSamples, setBenchmarkSamples] = useState<Record<string, number>>({
     ocb: 1018,
-    officebench: 93,
-    presentbench: 238,
   });
   const [allowLicensedContent, setAllowLicensedContent] = useState(false);
   const [readiness, setReadiness] = useState<EvaluationReadiness | null>(null);
@@ -187,6 +285,9 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [cases, setCases] = useState<Record<string, EvaluationCase[]>>({});
   const [casesLoading, setCasesLoading] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; label: string; remote: boolean } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const request = useMemo<EvaluationRequestPayload>(() => ({
     suite_id: suite?.id ?? "office",
@@ -197,7 +298,6 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
     model_presets: modelPresets,
     runtime_profiles: runtimeProfiles,
     benchmark_samples: benchmarkSamples,
-    presentbench_sample: benchmarkSamples.presentbench ?? 238,
     allow_licensed_content: allowLicensedContent,
   }), [
     action,
@@ -233,7 +333,7 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
       if (firstSuite && benchmarks.length === 0) {
         setBenchmarks(firstSuite.benchmarks.map((item) => item.id));
         setSkills(firstSuite.skills.filter((item) => item.available !== false && item.compatible !== false).map((item) => item.id));
-        setModelPresets(firstSuite.model_presets.slice(0, 1).map((item) => item.id));
+        setModelPresets(firstSuite.model_presets.map((item) => item.id));
         setRuntimeProfiles(firstSuite.runtime_profiles.slice(0, 1).map((item) => item.id));
       }
       setRuns(history);
@@ -285,7 +385,7 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
       setError(event.errors.join("; "));
       return;
     }
-    if (event.event === "evaluation_started" || event.event === "evaluation_cancelled" || event.event === "evaluation_resumed") {
+    if (event.event === "evaluation_started" || event.event === "evaluation_cancelled" || event.event === "evaluation_resumed" || event.event === "evaluation_case_rerun") {
       setSubmitting(false);
       setConfirmOpen(false);
     }
@@ -335,6 +435,38 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
       setError((caught as Error).message);
     } finally {
       setCasesLoading(null);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setError(null);
+    setDeleteError(null);
+    try {
+      const deletion = await deleteEvaluationRun(token, deleteTarget.id);
+      if (!deletion.deleted) throw new Error("Evaluation history was not deleted");
+      setRuns((current) => current ? {
+        ...current,
+        jobs: current.jobs.filter((job) => job.job_id !== deleteTarget.id),
+        langfuse: {
+          ...current.langfuse,
+          runs: current.langfuse.runs.filter((run) => run.dataset_run_id !== deleteTarget.id),
+        },
+      } : current);
+      setCases((current) => {
+        const next = { ...current };
+        delete next[deleteTarget.id];
+        return next;
+      });
+      if (expandedRun === deleteTarget.id) setExpandedRun(null);
+      setDeleteTarget(null);
+    } catch (caught) {
+      const message = (caught as Error).message;
+      setError(message);
+      setDeleteError(message);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -416,9 +548,7 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
             {profile === "office-release" && benchmarks.length > 0 ? (
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                 {benchmarks.map((benchmark) => {
-                  const options = suite?.benchmark_samples?.[benchmark]
-                    ?? (benchmark === "presentbench" ? suite?.presentbench_samples : undefined)
-                    ?? [];
+                  const options = suite?.benchmark_samples?.[benchmark] ?? [];
                   const label = suite?.benchmarks.find((item) => item.id === benchmark)?.label ?? benchmark;
                   if (options.length === 0) return null;
                   return (
@@ -450,7 +580,7 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
           <aside className="border-l-0 xl:border-l xl:pl-8">
             <h2 className="text-sm font-semibold">{t("evaluations.estimate", { defaultValue: "Estimate and gates" })}</h2>
             <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-              <div><dt className="text-xs text-muted-foreground">Cases</dt><dd className="mt-1 font-medium">{formatNumber(readiness?.estimate.skill_runs)}</dd></div>
+              <div><dt className="text-xs text-muted-foreground">Cases</dt><dd className="mt-1 font-medium">{formatNumber(readiness?.estimate.model_runs ?? readiness?.estimate.skill_runs)}</dd></div>
               <div><dt className="text-xs text-muted-foreground">Judge runs</dt><dd className="mt-1 font-medium">{formatNumber(readiness?.estimate.judge_runs)}</dd></div>
               <div className="col-span-2"><dt className="text-xs text-muted-foreground">Estimated tokens</dt><dd className="mt-1 text-2xl font-semibold">{formatNumber(totalTokens)}</dd></div>
             </dl>
@@ -487,11 +617,11 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
             <table className="w-full min-w-[1080px] text-left text-xs">
               <thead className="border-b bg-muted/35 text-muted-foreground"><tr><th className="w-10 px-3 py-2.5" /><th className="px-3 py-2.5 font-medium">Run</th><th className="px-3 py-2.5 font-medium">Variant</th><th className="px-3 py-2.5 font-medium">Status</th><th className="px-3 py-2.5 font-medium">Scores</th><th className="px-3 py-2.5 font-medium">Usage & performance</th><th className="px-3 py-2.5 font-medium">Review</th><th className="px-3 py-2.5 font-medium">Created</th><th className="px-3 py-2.5 text-right font-medium">Actions</th></tr></thead>
               <tbody className="divide-y">
-                {historicalJobs.map((job) => (
-                  <HistoryRows key={`job-${job.job_id}`} id={job.job_id} label={`${job.suite_id} / ${job.profile}`} variant={job.request?.skills.join(", ") ?? job.action ?? "-"} status={job.status} scores={job.aggregate_scores ?? {}} usage={job.usage} metrics={job.metrics} review={job.review_status ?? "-"} created={job.created_at} links={job.langfuse_links ?? []} progress={job.total_cases ? `${job.completed_cases ?? 0}/${job.total_cases}${job.remaining_cases != null ? ` · ${job.remaining_cases} remaining` : ""}${job.resumed_cases ? ` · ${job.resumed_cases} reused` : ""}${job.resume_count ? ` · resumed ${job.resume_count}x` : ""}` : undefined} expanded={expandedRun === job.job_id} cases={cases[job.job_id]} casesLoading={casesLoading === job.job_id} onToggle={() => void toggleCases(job.job_id)} onResume={job.resumable && ["failed", "cancelled", "interrupted"].includes(job.status) ? () => client.resumeEvaluation(job.job_id) : undefined} onRetry={["failed", "cancelled", "interrupted"].includes(job.status) ? () => client.retryEvaluation(job.job_id) : undefined} />
+                  {historicalJobs.map((job) => (
+                  <HistoryRows key={`job-${job.job_id}`} id={job.job_id} label={`${job.suite_id} / ${job.profile}`} variant={job.request?.model_presets?.join(", ") ?? job.action ?? "-"} status={job.status} failure={job.failure} scores={job.aggregate_scores ?? {}} usage={job.usage} metrics={job.metrics} review={job.review_status ?? "-"} created={job.created_at} links={job.langfuse_links ?? []} progress={job.total_cases ? `${job.completed_cases ?? 0}/${job.total_cases}${job.remaining_cases != null ? ` · ${job.remaining_cases} remaining` : ""}${job.resumed_cases ? ` · ${job.resumed_cases} reused` : ""}${job.resume_count ? ` · resumed ${job.resume_count}x` : ""}` : undefined} expanded={expandedRun === job.job_id} cases={cases[job.job_id]} casesLoading={casesLoading === job.job_id} onToggle={() => void toggleCases(job.job_id)} onCaseRerun={(item) => client.rerunEvaluationCase(job.job_id, item.benchmark ?? "", item.skill ?? "", item.case_id, item.model_preset)} onResume={job.resumable && ["failed", "cancelled", "interrupted"].includes(job.status) ? () => client.resumeEvaluation(job.job_id) : undefined} onRetry={["failed", "cancelled", "interrupted"].includes(job.status) ? () => client.retryEvaluation(job.job_id) : undefined} onDelete={() => { setDeleteError(null); setDeleteTarget({ id: job.job_id, label: `${job.suite_id} / ${job.profile}`, remote: false }); }} />
                 ))}
                 {(runs?.langfuse.runs ?? []).map((run) => (
-                  <HistoryRows key={`remote-${run.dataset_run_id}`} id={run.dataset_run_id} label={run.name} variant={[run.benchmark, run.skill, run.model_preset].filter(Boolean).join(" / ")} status={run.status} scores={run.aggregate_scores} usage={run.usage} metrics={run.metrics} review={run.review_status} created={run.created_at} links={run.langfuse_url ? [run.langfuse_url] : []} expanded={expandedRun === run.dataset_run_id} cases={cases[run.dataset_run_id]} casesLoading={casesLoading === run.dataset_run_id} onToggle={() => void toggleCases(run.dataset_run_id)} />
+                  <HistoryRows key={`remote-${run.dataset_run_id}`} id={run.dataset_run_id} label={run.name} variant={[run.benchmark, run.skill, run.model_preset].filter(Boolean).join(" / ")} status={run.status} scores={run.aggregate_scores} usage={run.usage} metrics={run.metrics} review={run.review_status} created={run.created_at} links={run.langfuse_url ? [run.langfuse_url] : []} expanded={expandedRun === run.dataset_run_id} cases={cases[run.dataset_run_id]} casesLoading={casesLoading === run.dataset_run_id} onToggle={() => void toggleCases(run.dataset_run_id)} onDelete={() => { setDeleteError(null); setDeleteTarget({ id: run.dataset_run_id, label: run.name, remote: true }); }} />
                 ))}
                 {historicalJobs.length === 0 && (runs?.langfuse.runs.length ?? 0) === 0 ? <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">{loading ? "Loading..." : t("evaluations.noHistory", { defaultValue: "No evaluation runs yet." })}</td></tr> : null}
               </tbody>
@@ -505,7 +635,7 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
           <DialogHeader>
             <DialogTitle>{t("evaluations.confirmTitle", { defaultValue: "Confirm evaluation launch" })}</DialogTitle>
             <DialogDescription>
-              {formatNumber(totalTokens)} estimated tokens · {formatNumber(readiness?.estimate.skill_runs)} case runs
+              {formatNumber(totalTokens)} estimated tokens · {formatNumber(readiness?.estimate.model_runs ?? readiness?.estimate.skill_runs)} case runs
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 rounded border bg-muted/25 p-3 text-sm">
@@ -520,6 +650,32 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
             <Button disabled={!confirmed || submitting} onClick={start}>{submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}Confirm and start</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open && !deleting) { setDeleteTarget(null); setDeleteError(null); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete evaluation history?</DialogTitle>
+            <DialogDescription>
+              {deleteTarget?.remote
+                ? `Permanently delete ${deleteTarget.label} and its Langfuse Dataset Run data. This cannot be undone.`
+                : `Delete ${deleteTarget?.label ?? "this evaluation"} from Mybot and permanently delete its linked Langfuse Dataset Run data. Local logs and private case checkpoints will also be removed.`}
+            </DialogDescription>
+          </DialogHeader>
+          {deleteError ? (
+            <div role="alert" className="flex items-start gap-2 rounded border border-red-500/25 bg-red-500/[0.06] px-3 py-2 text-sm text-red-700 dark:text-red-300">
+              <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>删除失败：{deleteError}</span>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" disabled={deleting} onClick={() => { setDeleteTarget(null); setDeleteError(null); }}>Cancel</Button>
+            <Button variant="destructive" disabled={deleting} onClick={() => void confirmDelete()}>
+              {deleting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+              Delete history
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -549,31 +705,55 @@ function CurrentJobRow({ job, onCancel }: { job: EvaluationJob; onCancel: () => 
 }
 
 function HistoryRows({
-  id, label, variant, status, scores, usage, metrics, review, created, links, progress, expanded, cases, casesLoading, onToggle, onResume, onRetry,
+  id, label, variant, status, failure, scores, usage, metrics, review, created, links, progress, expanded, cases, casesLoading, onToggle, onCaseRerun, onResume, onRetry, onDelete,
 }: {
-  id: string; label: string; variant: string; status: string; scores: Record<string, unknown>; usage?: EvaluationUsage | null; metrics?: EvaluationMetrics | null; review: string; created?: string | null; links: string[]; progress?: string; expanded: boolean; cases?: EvaluationCase[]; casesLoading: boolean; onToggle: () => void; onResume?: () => void; onRetry?: () => void;
+  id: string; label: string; variant: string; status: string; failure?: EvaluationFailure | null; scores: Record<string, unknown>; usage?: EvaluationUsage | null; metrics?: EvaluationMetrics | null; review: string; created?: string | null; links: string[]; progress?: string; expanded: boolean; cases?: EvaluationCase[]; casesLoading: boolean; onToggle: () => void; onCaseRerun?: (item: EvaluationCase) => void; onResume?: () => void; onRetry?: () => void; onDelete?: () => void;
 }) {
+  const uniqueLinks = [...new Set(links)];
+  const scoreEntries = displayScoreEntries(scores);
   return (
     <>
       <tr className="hover:bg-muted/20">
         <td className="px-3 py-3"><Button variant="ghost" size="icon" className="h-6 w-6" onClick={onToggle} aria-label="Toggle case details">{expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}</Button></td>
         <td className="max-w-[260px] px-3 py-3"><p className="truncate font-medium" title={label}>{label}</p><p className="mt-0.5 font-mono text-[10px] text-muted-foreground">{id.slice(0, 12)}{progress ? ` · ${progress}` : ""}</p></td>
         <td className="max-w-[210px] truncate px-3 py-3 text-muted-foreground" title={variant}>{variant || "-"}</td>
-        <td className="px-3 py-3"><StatusPill status={status} /></td>
-        <td className="px-3 py-3">{Object.keys(scores).length ? Object.entries(scores).map(([name, value]) => <div key={name}><span className="text-muted-foreground">{name}</span> {formatScore(value)}</div>) : "-"}</td>
+        <td className="px-3 py-3"><div className="flex items-center gap-1"><StatusPill status={status} /><FailureDetailsButton failure={failure} /></div></td>
+        <td className="px-3 py-3">{scoreEntries.length ? scoreEntries.map(([name, value]) => <div key={name}><span className="text-muted-foreground">{name}</span> {formatScore(value)}</div>) : "-"}</td>
         <td className="px-3 py-3"><UsageSummary usage={usage} metrics={metrics} /></td>
         <td className="px-3 py-3 text-muted-foreground">{review}</td>
         <td className="whitespace-nowrap px-3 py-3 text-muted-foreground">{formatDate(created)}</td>
-        <td className="px-3 py-3"><div className="flex justify-end gap-1">{links.map((link) => <Button key={link} asChild variant="ghost" size="icon" className="h-7 w-7"><a href={link} target="_blank" rel="noreferrer" title="Open Langfuse"><ExternalLink className="h-3.5 w-3.5" /></a></Button>)}{onResume ? <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onResume} title="Resume unfinished cases" aria-label="Resume unfinished cases"><Play className="h-3.5 w-3.5" /></Button> : null}{onRetry ? <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onRetry} title="Retry from scratch" aria-label="Retry from scratch"><RotateCcw className="h-3.5 w-3.5" /></Button> : null}</div></td>
+        <td className="px-3 py-3"><div className="flex justify-end gap-1"><LangfuseLinks links={uniqueLinks} />{onResume ? <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onResume} title="Resume unfinished cases" aria-label="Resume unfinished cases"><Play className="h-3.5 w-3.5" /></Button> : null}{onRetry ? <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onRetry} title="Retry from scratch" aria-label="Retry from scratch"><RotateCcw className="h-3.5 w-3.5" /></Button> : null}{onDelete ? <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={onDelete} title="Delete evaluation history" aria-label="Delete evaluation history"><Trash2 className="h-3.5 w-3.5" /></Button> : null}</div></td>
       </tr>
-      {expanded ? <tr><td colSpan={9} className="bg-muted/15 px-6 py-4">{casesLoading ? <div className="flex items-center gap-2 text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading cases...</div> : <CaseTable cases={cases ?? []} />}</td></tr> : null}
+      {expanded ? <tr><td colSpan={9} className="bg-muted/15 px-6 py-4">{casesLoading ? <div className="flex items-center gap-2 text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading cases...</div> : <CaseTable cases={cases ?? []} onRerun={onCaseRerun} />}</td></tr> : null}
     </>
   );
 }
 
-function CaseTable({ cases }: { cases: EvaluationCase[] }) {
-  if (cases.length === 0) return <p className="text-muted-foreground">No case details available.</p>;
+function LangfuseLinks({ links }: { links: string[] }) {
+  if (links.length === 0) return null;
+  if (links.length === 1) {
+    return <Button asChild variant="ghost" size="icon" className="h-7 w-7"><a href={links[0]} target="_blank" rel="noreferrer" title="Open Langfuse" aria-label="Open Langfuse"><ExternalLink className="h-3.5 w-3.5" /></a></Button>;
+  }
   return (
-    <div className="overflow-x-auto"><table className="w-full min-w-[880px]"><thead className="text-muted-foreground"><tr><th className="pb-2 font-medium">Case</th><th className="pb-2 font-medium">Variant</th><th className="pb-2 font-medium">Execution</th><th className="pb-2 font-medium">Scores</th><th className="pb-2 font-medium">Usage & performance</th><th className="pb-2 text-right font-medium">Trace</th></tr></thead><tbody className="divide-y">{cases.map((item, index) => <tr key={`${item.case_id}-${index}`}><td className="max-w-[300px] truncate py-2 pr-3 font-mono text-[10px]" title={item.case_id}>{item.case_id}</td><td className="py-2 pr-3 text-muted-foreground">{[item.benchmark, item.skill].filter(Boolean).join(" / ") || "-"}</td><td className="py-2 pr-3"><StatusPill status={item.status} /></td><td className="py-2 pr-3">{item.scores ? Object.entries(item.scores).map(([name, value]) => <span key={name} className="mr-3"><span className="text-muted-foreground">{name}</span> {formatScore(value)}</span>) : item.score_status ?? "-"}</td><td className="py-2 pr-3"><UsageSummary usage={item.usage} metrics={item.metrics} /></td><td className="py-2 text-right">{item.trace_url || item.langfuse_url ? <Button asChild variant="ghost" size="icon" className="h-7 w-7"><a href={item.trace_url ?? item.langfuse_url ?? "#"} target="_blank" rel="noreferrer"><ExternalLink className="h-3.5 w-3.5" /></a></Button> : "-"}</td></tr>)}</tbody></table></div>
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="h-7 w-7" title={`Open ${links.length} Langfuse runs`} aria-label={`Open ${links.length} Langfuse runs`}><ExternalLink className="h-3.5 w-3.5" /></Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {links.map((link, index) => (
+          <DropdownMenuItem key={link} asChild>
+            <a href={link} target="_blank" rel="noreferrer"><ExternalLink className="h-3.5 w-3.5" />Langfuse run {index + 1}</a>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function CaseTable({ cases, onRerun }: { cases: EvaluationCase[]; onRerun?: (item: EvaluationCase) => void }) {
+  if (cases.length === 0) return <p className="text-muted-foreground">No case details available.</p>;
+  const variantFields = caseVariantFields(cases);
+  return (
+    <div className="overflow-x-auto"><table className="w-full min-w-[920px]"><thead className="text-muted-foreground"><tr><th className="pb-2 font-medium">Case</th><th className="pb-2 font-medium">Variant</th><th className="pb-2 font-medium">Execution</th><th className="pb-2 font-medium">Scores</th><th className="pb-2 font-medium">Usage & performance</th><th className="pb-2 text-right font-medium">Trace</th><th className="pb-2 text-right font-medium">Action</th></tr></thead><tbody className="divide-y">{cases.map((item, index) => <tr key={`${item.case_id}-${item.model_preset ?? ""}-${index}`}><td className="max-w-[300px] truncate py-2 pr-3 font-mono text-[10px]" title={item.case_id}>{item.case_id}</td><td className="py-2 pr-3 text-muted-foreground">{caseVariantLabel(item, variantFields)}</td><td className="py-2 pr-3"><StatusPill status={item.status} /></td><td className="py-2 pr-3">{item.scores ? displayScoreEntries(item.scores).map(([name, value]) => <span key={name} className="mr-3"><span className="text-muted-foreground">{name}</span> {formatScore(value)}</span>) : item.score_status ?? "-"}</td><td className="py-2 pr-3"><UsageSummary usage={item.usage} metrics={item.metrics} /></td><td className="py-2 text-right">{item.trace_url || item.langfuse_url ? <Button asChild variant="ghost" size="icon" className="h-7 w-7"><a href={item.trace_url ?? item.langfuse_url ?? "#"} target="_blank" rel="noreferrer"><ExternalLink className="h-3.5 w-3.5" /></a></Button> : "-"}</td><td className="py-2 text-right">{onRerun && ["failed", "completed"].includes(item.status) ? <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onRerun(item)} title="Rerun this case" aria-label={`Rerun case ${item.case_id}`}><RotateCcw className="h-3.5 w-3.5" /></Button> : "-"}</td></tr>)}</tbody></table></div>
   );
 }

@@ -83,13 +83,7 @@ def markdown_report(report: dict[str, Any]) -> str:
         ]
         if issues:
             lines.extend((f"## {case['case_id']}", "", *[f"- {issue}" for issue in issues], ""))
-    lines.extend((
-        "",
-        (
-            "Subagent 对比见 `subagent-comparison.md`。该报告使用固定 fixture 与 fake "
-            "provider，验证治理和回归开销；不代表真模型质量。"
-        ),
-    ))
+    lines.extend(("", "该报告使用固定 fixture 与 fake provider，验证治理和回归开销；不代表真实模型质量。"))
     return "\n".join(lines).rstrip() + "\n"
 
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobot.evaluations.catalog import EvaluationCatalog, EvaluationRequest
+from nanobot.evaluations.failures import classify_evaluation_failure
 
 
 def _now() -> str:
@@ -32,10 +33,11 @@ def _write(path: Path, job: dict[str, Any]) -> None:
     os.replace(temp, path)
 
 
-def _case_key(case: dict[str, Any]) -> tuple[str, str, str]:
+def _case_key(case: dict[str, Any]) -> tuple[str, str, str, str]:
     return (
         str(case.get("benchmark") or ""),
         str(case.get("skill") or ""),
+        str(case.get("model_preset") or ""),
         str(case.get("case_id") or ""),
     )
 
@@ -45,6 +47,7 @@ def _upsert_case(job: dict[str, Any], event: dict[str, Any], **fields: Any) -> N
         "case_id": event.get("case_id"),
         "benchmark": event.get("benchmark"),
         "skill": event.get("skill"),
+        "model_preset": event.get("model_preset"),
     }
     key = _case_key(identity)
     cases = job.setdefault("cases", [])
@@ -84,7 +87,8 @@ def _consume_progress(path: Path, offset: int, job: dict[str, Any]) -> int:
             if kind == "run_started":
                 job["status"] = "running"
                 job["phase"] = "running"
-                job["total_cases"] = int(event.get("total_cases") or job.get("total_cases") or 0)
+                if not isinstance(job.get("case_rerun"), dict) and not job.get("total_cases"):
+                    job["total_cases"] = int(event.get("total_cases") or job.get("total_cases") or 0)
                 job["pending_cases"] = int(event.get("pending_cases") or 0)
                 job["checkpoint_cases"] = int(event.get("checkpoint_cases") or 0)
             elif kind == "variant_started":
@@ -119,7 +123,7 @@ def _consume_progress(path: Path, offset: int, job: dict[str, Any]) -> int:
                     trace_url=event.get("trace_url"),
                     langfuse_url=event.get("dataset_run_url"),
                 )
-            elif kind == "variant_completed":
+            elif kind in {"variant_run_discovered", "variant_completed"}:
                 run_id = event.get("dataset_run_id")
                 url = event.get("dataset_run_url")
                 if run_id and run_id not in job.setdefault("dataset_run_ids", []):
@@ -127,9 +131,15 @@ def _consume_progress(path: Path, offset: int, job: dict[str, Any]) -> int:
                 if url and url not in job.setdefault("langfuse_links", []):
                     job["langfuse_links"].append(url)
                 for case in reversed(job.get("cases", [])):
-                    if case.get("benchmark") == event.get("benchmark") and case.get("skill") == event.get("skill") and not case.get("langfuse_url"):
+                    if (
+                        case.get("benchmark") == event.get("benchmark")
+                        and case.get("skill") == event.get("skill")
+                        and case.get("model_preset") == event.get("model_preset")
+                        and not case.get("langfuse_url")
+                    ):
                         case["langfuse_url"] = url
-                job["current_case"] = None
+                if kind == "variant_completed":
+                    job["current_case"] = None
             elif kind == "run_completed":
                 job["phase"] = "remote_scoring"
                 job["status"] = "remote_scoring"
@@ -152,6 +162,18 @@ def run(job_path: Path) -> int:
             "--resume-token",
             str(job.get("resume_token") or job.get("job_id")),
         ])
+        case_rerun = job.get("case_rerun")
+        if isinstance(case_rerun, dict):
+            benchmark_command.extend([
+                "--rerun-benchmark",
+                str(case_rerun.get("benchmark") or ""),
+                "--rerun-skill",
+                str(case_rerun.get("skill") or ""),
+                "--rerun-model-preset",
+                str(case_rerun.get("model_preset") or ""),
+                "--rerun-case",
+                str(case_rerun.get("case_id") or ""),
+            ])
     command = [sys.executable, "-m", "nanobot", *benchmark_command]
     env = os.environ.copy()
     env["NANOBOT_EVALUATION_PROGRESS_LOG"] = str(progress_path)
@@ -186,11 +208,30 @@ def run(job_path: Path) -> int:
     job["progress_offset"] = offset
     if process.returncode == 0:
         if request.action == "prepare":
-            job.update(status="completed", phase="completed", review_status="not_required")
+            job.update(
+                status="completed",
+                phase="completed",
+                review_status="not_required",
+                error=None,
+                failure=None,
+            )
         elif request.profile == "ci":
-            job.update(status="completed", phase="completed", completed_cases=job.get("total_cases", 0), review_status="not_required")
+            job.update(
+                status="completed",
+                phase="completed",
+                completed_cases=job.get("total_cases", 0),
+                review_status="not_required",
+                error=None,
+                failure=None,
+            )
         else:
-            job.update(status="awaiting_review", phase="awaiting_review", review_status="pending")
+            job.update(
+                status="awaiting_review",
+                phase="awaiting_review",
+                review_status="pending",
+                error=None,
+                failure=None,
+            )
         job["finished_at"] = _now()
         job["output_tail"] = output[-20:]
         _write(job_path, job)
@@ -199,6 +240,10 @@ def run(job_path: Path) -> int:
         status="failed",
         phase="failed",
         error=(output[-1] if output else f"benchmark exited with code {process.returncode}"),
+        failure=classify_evaluation_failure(
+            output[-200:],
+            output[-1] if output else f"benchmark exited with code {process.returncode}",
+        ),
         output_tail=output[-20:],
         finished_at=_now(),
         resumable=request.action == "run" and request.profile != "ci",

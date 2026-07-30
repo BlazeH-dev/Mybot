@@ -322,10 +322,51 @@ async def test_sdk_capture_prefers_run_level_snapshot():
     await hook.after_run(AgentRunHookContext(
         messages=final_messages,
         tools_used=["read_file"],
+        stop_reason="error",
+        error="provider unavailable",
     ))
 
     assert hook.tools_used == ["read_file"]
     assert hook.messages == final_messages
+    assert hook.stop_reason == "error"
+    assert hook.error == "provider unavailable"
+
+
+@pytest.mark.asyncio
+async def test_run_exposes_agent_stop_reason_and_error():
+    from nanobot.agent.hook import AgentRunHookContext
+    from nanobot.bus.events import OutboundMessage
+
+    class FakeLoop:
+        def __init__(self) -> None:
+            self._extra_hooks = []
+
+        async def process_direct(
+            self,
+            message: str,
+            *,
+            session_key: str,
+            metadata: dict | None = None,
+        ):
+            del message, session_key, metadata
+            context = AgentRunHookContext(
+                messages=[],
+                final_content="Service temporarily unavailable",
+                stop_reason="error",
+                error="Service temporarily unavailable",
+            )
+            for hook in self._extra_hooks:
+                await hook.after_run(context)
+            return OutboundMessage(
+                channel="cli",
+                chat_id="direct",
+                content="Service temporarily unavailable",
+            )
+
+    result = await Nanobot(FakeLoop()).run("work")
+
+    assert result.stop_reason == "error"
+    assert result.error == "Service temporarily unavailable"
 
 
 @pytest.mark.asyncio

@@ -12,11 +12,7 @@ import pyarrow.parquet as parquet
 import pytest
 from typer.testing import CliRunner
 
-from nanobot.benchmark_adapters import (
-    materialize_ocb,
-    materialize_officebench,
-    materialize_presentbench,
-)
+from nanobot.benchmark_adapters import materialize_ocb
 from nanobot.cli.benchmark import (
     BenchmarkError,
     _case_manifest_digests,
@@ -24,19 +20,26 @@ from nanobot.cli.benchmark import (
     _cloud_smoke,
     _dataset_row_payload,
     _deterministic_stratified_rows,
+    _download_hf_snapshot,
+    _enqueue_review_items,
+    _ensure_experiment_complete,
+    _flush_benchmark_runtime,
+    _get_annotation_queue,
     _manifest,
     _missing_ocb_references,
-    _officebench_evaluator,
+    _read_rows,
     _release_dataset_name,
+    _remote_item_has_required_scores,
     _sample_stratum,
     _select_values,
-    _stage_case_workspace,
     _update_readme_benchmark_block,
     _validate_case_assets,
+    _wait_for_local_scores,
     benchmark_app,
     estimate_payload,
     export_run,
 )
+from nanobot.runtime.langfuse import LangfuseFlushTimeoutError
 
 
 def _response(data, **meta):
@@ -77,15 +80,15 @@ def test_profiles_pin_public_revisions_and_estimate_tokens() -> None:
         assert len(spec["license_sha256"]) == 64, name
     assert manifest["smoke_cases"]["ocb"] == ["602", "631", "15", "121"]
     assert "pricing_usd_per_million_tokens" not in manifest
-    estimate = estimate_payload("office-smoke", 238, manifest)
-    assert estimate["skill_runs"] == 24
-    assert estimate["judge_runs"] == 16
+    estimate = estimate_payload("office-smoke", manifest)
+    assert estimate["skill_runs"] == 4
+    assert estimate["judge_runs"] == 4
     assert estimate["estimated_tokens"] == {
-        "agent_input": 432000,
-        "agent_output": 120000,
-        "judge_input": 192000,
-        "judge_output": 24000,
-        "total": 768000,
+        "agent_input": 72000,
+        "agent_output": 20000,
+        "judge_input": 48000,
+        "judge_output": 6000,
+        "total": 146000,
     }
 
 
@@ -143,6 +146,49 @@ def test_ocb_adapter_uses_explicit_row_ids(tmp_path: Path) -> None:
     assert materialized[0]["input"]["reference_sha256"][0]
 
 
+def test_case_manifest_reader_preserves_unicode_line_separator(tmp_path: Path) -> None:
+    path = tmp_path / "ocb.jsonl"
+    rows = [
+        {"input": {"prompt": "first\u2028paragraph"}, "metadata": {"case_id": "0"}},
+        {"input": {"prompt": "second"}, "metadata": {"case_id": "1"}},
+    ]
+    path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    assert _read_rows(path) == rows
+
+
+def test_hf_snapshot_download_retries_and_deduplicates_patterns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, str] | None]] = []
+
+    def fake_run(command: list[str], *, cwd=None, env=None) -> str:
+        calls.append((command, env))
+        if len(calls) == 1:
+            raise BenchmarkError("connection interrupted")
+        return str(tmp_path / "dataset")
+
+    monkeypatch.setattr("nanobot.cli.benchmark._run", fake_run)
+    monkeypatch.setattr("nanobot.cli.benchmark.time.sleep", lambda _seconds: None)
+
+    result = _download_hf_snapshot(
+        Path(sys.executable),
+        {"dataset_id": "owner/dataset", "dataset_revision": "revision"},
+        tmp_path / "dataset",
+        ["reference_files/example.docx", "reference_files/example.docx"],
+    )
+
+    assert result == (tmp_path / "dataset").resolve()
+    assert len(calls) == 2
+    assert calls[0][0].count("reference_files/example.docx") == 1
+    assert calls[0][1]["HF_HUB_DISABLE_XET"] == "1"
+    assert "max_workers=1" in calls[0][0][2]
+
+
 def test_missing_ocb_references_are_reported_without_local_paths() -> None:
     rows = [{
         "input": {
@@ -155,10 +201,9 @@ def test_missing_ocb_references_are_reported_without_local_paths() -> None:
 
 
 def test_case_manifest_digests_and_assets_fail_closed(tmp_path: Path) -> None:
-    for benchmark in ("ocb", "officebench", "presentbench"):
-        (tmp_path / f"office-smoke-{benchmark}.jsonl").write_text(benchmark, encoding="utf-8")
+    (tmp_path / "office-smoke-ocb.jsonl").write_text("ocb", encoding="utf-8")
     digests = _case_manifest_digests(tmp_path, "office-smoke")
-    assert set(digests) == {"ocb", "officebench", "presentbench"}
+    assert set(digests) == {"ocb"}
     assert all(len(value) == 64 for value in digests.values())
 
     with pytest.raises(BenchmarkError, match="missing.pptx"):
@@ -168,31 +213,28 @@ def test_case_manifest_digests_and_assets_fail_closed(tmp_path: Path) -> None:
 
 
 def test_run_filters_are_validated_and_deduplicated() -> None:
-    assert _select_values(["ocb", "ocb"], ("ocb", "officebench"), "benchmark") == ("ocb",)
+    assert _select_values(["ocb", "ocb"], ("ocb",), "benchmark") == ("ocb",)
     with pytest.raises(BenchmarkError, match="unknown benchmark"):
-        _select_values(["presentbench"], ("ocb", "officebench"), "benchmark")
+        _select_values(["removed"], ("ocb",), "benchmark")
 
 
-def test_release_case_manifests_are_sampled_per_benchmark(tmp_path: Path) -> None:
-    full_counts = {"ocb": 1018, "officebench": 93, "presentbench": 238}
-    for benchmark, count in full_counts.items():
-        rows = "".join(
-            json.dumps({"metadata": {"case_id": f"{benchmark}-{index}"}}) + "\n"
-            for index in range(count)
-        )
-        (tmp_path / f"office-release-{benchmark}.jsonl").write_text(rows, encoding="utf-8")
+def test_release_case_manifest_is_sampled(tmp_path: Path) -> None:
+    rows = "".join(
+        json.dumps({
+            "input": {"format": "docx"},
+            "metadata": {"case_id": f"ocb-{index}", "track": "qa"},
+        }) + "\n"
+        for index in range(1018)
+    )
+    (tmp_path / "office-release-ocb.jsonl").write_text(rows, encoding="utf-8")
 
     sampled = _case_manifest_map(
         {"case_manifest_root": str(tmp_path)},
         "office-release",
-        benchmark_samples={"ocb": 255, "officebench": 24, "presentbench": 60},
+        benchmark_samples={"ocb": 255},
     )
 
-    assert {benchmark: len(rows) for benchmark, rows in sampled.items()} == {
-        "ocb": 255,
-        "officebench": 24,
-        "presentbench": 60,
-    }
+    assert {benchmark: len(rows) for benchmark, rows in sampled.items()} == {"ocb": 255}
 
 
 def test_release_sampling_is_reproducible_proportional_and_nested() -> None:
@@ -228,73 +270,64 @@ def test_release_sampling_is_reproducible_proportional_and_nested() -> None:
     assert _release_dataset_name("office-release-ocb", "ocb", 1018) == "office-release-ocb"
 
 
-@pytest.mark.parametrize(
-    ("benchmark", "row", "expected"),
-    [
-        (
-            "ocb",
-            {"input": {"format": "xlsx"}, "metadata": {"track": "edit"}},
-            "xlsx|edit",
-        ),
-        (
-            "officebench",
-            {"input": {}, "metadata": {"case_id": "1-10/2"}},
-            "1-10",
-        ),
-        (
-            "presentbench",
-            {"input": {}, "metadata": {"domain": "education"}},
-            "education",
-        ),
-    ],
-)
-def test_release_sampling_strata(
-    benchmark: str,
-    row: dict[str, object],
-    expected: str,
+def test_release_sampling_stratum_is_format_and_track() -> None:
+    row = {"input": {"format": "xlsx"}, "metadata": {"track": "edit"}}
+    assert _sample_stratum("ocb", row) == "xlsx|edit"
+
+
+def test_experiment_result_omission_fails_with_case_details() -> None:
+    pending = [SimpleNamespace(id="item-1"), SimpleNamespace(id="item-2")]
+    result = SimpleNamespace(
+        item_results=[SimpleNamespace(item=SimpleNamespace(id="item-1"))]
+    )
+
+    with pytest.raises(BenchmarkError, match=r"1/2.*1-11/0"):
+        _ensure_experiment_complete(
+            result,
+            pending,
+            case_by_item_id={"item-1": "1-10/0", "item-2": "1-11/0"},
+            task_failures=[("1-11/0", "workspace failed")],
+        )
+
+
+def test_remote_resume_requires_output_present() -> None:
+    complete = {
+        "score_names": ["output_present", "mybot_score"],
+        "score_values": {"output_present": True, "mybot_score": 0.0},
+    }
+    missing = {"score_names": ["mybot_score"], "score_values": {"mybot_score": 1.0}}
+    assert _remote_item_has_required_scores("ocb", complete) is True
+    assert _remote_item_has_required_scores("ocb", missing) is False
+
+
+def test_score_readback_lag_keeps_completed_case_pending(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert _sample_stratum(benchmark, row) == expected
+    monkeypatch.setattr("nanobot.cli.benchmark._SCORE_READBACK_ATTEMPTS", 1)
+    monkeypatch.setattr("nanobot.cli.benchmark._remote_trace_scores", lambda *_args, **_kwargs: {})
+
+    assert _wait_for_local_scores(
+        SimpleNamespace(),
+        trace_id="trace-late",
+        benchmark="ocb",
+    ) == {}
 
 
-def test_officebench_staging_and_pinned_evaluator_contract(tmp_path: Path) -> None:
-    source_root = tmp_path / "OfficeBench"
-    task_root = source_root / "tasks" / "1-1"
-    (task_root / "subtasks").mkdir(parents=True)
-    (task_root / "testbed" / "data").mkdir(parents=True)
-    (task_root / "reference").mkdir()
-    (task_root / "testbed" / "data" / "input.txt").write_text("input")
-    (task_root / "reference" / "expected.txt").write_text("expected")
-    (task_root / "subtasks" / "0.json").write_text(json.dumps({
-        "task": "create data/result.txt",
-        "evaluation": [{"function": "synthetic", "args": {}}],
-    }))
-    (source_root / "evaluation.py").write_text(
-        "from pathlib import Path\n"
-        "def evaluate_output(task_id, subtask_id, output_dir):\n"
-        "    return (Path(output_dir) / 'data' / 'result.txt').read_text() == 'ok'\n"
-    )
-    manifest_path = tmp_path / "officebench.jsonl"
-    rows = materialize_officebench(source_root, manifest_path, cases=["1-1/0"])
-    workspace = _stage_case_workspace(
-        benchmark="officebench",
-        source=rows[0],
-        run_root=tmp_path / "run",
-        skill="office-python",
-    )
-    (workspace / "data" / "result.txt").write_text("ok")
+def test_benchmark_flush_tolerates_only_score_ingestion_timeout() -> None:
+    def raise_score_timeout(**_kwargs) -> None:
+        raise LangfuseFlushTimeoutError(
+            "Langfuse score ingestion queue did not drain within 30 seconds (1 unfinished)"
+        )
 
-    from nanobot.cli import benchmark as benchmark_module
+    _flush_benchmark_runtime(SimpleNamespace(flush=raise_score_timeout))
 
-    benchmark_module._WORKSPACES["workspace-token"] = workspace
-    evaluations = _officebench_evaluator(
-        output={"workspace_token": "workspace-token", "case_id": "1-1/0"},
-        benchmark_python=Path(sys.executable),
-        source_root=source_root,
-    )
+    def raise_otel_timeout(**_kwargs) -> None:
+        raise LangfuseFlushTimeoutError(
+            "Langfuse OTEL flush did not finish within 30 seconds"
+        )
 
-    values = {evaluation.name: evaluation.value for evaluation in evaluations}
-    assert values == {"official_score": 1.0, "official_evaluator_ok": True}
-    assert (workspace.parents[3] / "reference" / "expected.txt").is_file()
+    with pytest.raises(LangfuseFlushTimeoutError, match="OTEL flush"):
+        _flush_benchmark_runtime(SimpleNamespace(flush=raise_otel_timeout))
 
 
 def test_dataset_payload_never_uploads_local_paths() -> None:
@@ -325,27 +358,6 @@ def test_dataset_payload_never_uploads_local_paths() -> None:
     assert uploaded_expected == row["expected_output"]
     serialized = json.dumps({"input": uploaded_input, "expected_output": uploaded_expected})
     assert "/private/" not in serialized
-
-
-def test_presentbench_adapter_embeds_rubric_without_local_path(tmp_path: Path) -> None:
-    case_root = tmp_path / "advertising" / "example"
-    task_root = case_root / "generation_task"
-    task_root.mkdir(parents=True)
-    (task_root / "instructions.md").write_text("Create a deck", encoding="utf-8")
-    rubric = {"criteria": [{"name": "content", "weight": 1.0}]}
-    (task_root / "judge_prompt.json").write_text(json.dumps(rubric), encoding="utf-8")
-    (case_root / "material.pdf").write_bytes(b"fixture")
-
-    rows = materialize_presentbench(
-        tmp_path,
-        tmp_path / "presentbench.jsonl",
-        cases=["advertising/example"],
-    )
-
-    expected = rows[0]["expected_output"]
-    assert expected["rubric"] == rubric
-    assert "judge_prompt_path" not in expected
-    assert "/Users/" not in json.dumps(expected)
 
 
 class _FakeExperiments:
@@ -384,6 +396,7 @@ class _FakeClient:
         self.api = SimpleNamespace(
             experiments=_FakeExperiments(experiment, items),
             annotation_queues=_FakeQueues(queue, queue_items),
+            scores_v3=SimpleNamespace(get_many_v3=lambda **_kwargs: _response([], cursor=None)),
         )
         self._base_url = "https://jp.cloud.langfuse.com"
 
@@ -393,6 +406,87 @@ class _FakeClient:
 
 def _score(name: str, value):
     return SimpleNamespace(name=name, value=value)
+
+
+def test_annotation_queue_capacity_reuses_existing_mybot_queue() -> None:
+    existing = SimpleNamespace(id="existing-queue", name="mybot-office-smoke-ocb-review")
+
+    class CapacityError(RuntimeError):
+        status_code = 405
+        body = {"message": "Maximum number of annotation queues reached on Hobby plan."}
+
+    queues = SimpleNamespace(
+        list_queues=lambda **_kwargs: _response([existing]),
+        create_queue=lambda **_kwargs: (_ for _ in ()).throw(CapacityError()),
+    )
+    score_configs = SimpleNamespace(
+        get=lambda **_kwargs: _response(
+            [SimpleNamespace(id="score-config", name="mybot-human-review", is_archived=False)]
+        )
+    )
+    client = SimpleNamespace(
+        api=SimpleNamespace(annotation_queues=queues, score_configs=score_configs)
+    )
+
+    queue = _get_annotation_queue(client, "mybot-office-smoke-review")
+
+    assert queue is existing
+
+
+def test_enqueue_review_items_recreates_deleted_annotation_queue() -> None:
+    stale = SimpleNamespace(id="deleted-queue", name="mybot-office-smoke-review")
+    recreated = SimpleNamespace(id="recreated-queue", name=stale.name)
+
+    class MissingQueueError(RuntimeError):
+        status_code = 404
+        body = {"message": "Annotation queue not found"}
+
+    created_items = []
+
+    class Queues:
+        def list_queue_items(self, queue_id, **_kwargs):
+            if queue_id == stale.id:
+                raise MissingQueueError()
+            assert queue_id == recreated.id
+            return _response([])
+
+        def list_queues(self, **_kwargs):
+            return _response([])
+
+        def create_queue(self, **_kwargs):
+            return recreated
+
+        def create_queue_item(self, queue_id, **kwargs):
+            created_items.append((queue_id, kwargs["object_id"]))
+
+    client = SimpleNamespace(
+        api=SimpleNamespace(
+            annotation_queues=Queues(),
+            score_configs=SimpleNamespace(
+                get=lambda **_kwargs: _response([
+                    SimpleNamespace(
+                        id="score-config",
+                        name="mybot-human-review",
+                        is_archived=False,
+                    )
+                ])
+            ),
+        )
+    )
+
+    queue_id, added = _enqueue_review_items(
+        SimpleNamespace(client=client),
+        queue=stale,
+        trace_ids=["trace-1", "trace-2"],
+        profile="office-smoke",
+    )
+
+    assert queue_id == recreated.id
+    assert added == 2
+    assert created_items == [
+        (recreated.id, "trace-1"),
+        (recreated.id, "trace-2"),
+    ]
 
 
 def test_export_requires_scores_review_and_builds_real_deep_link() -> None:
@@ -406,9 +500,9 @@ def test_export_requires_scores_review_and_builds_real_deep_link() -> None:
         dataset_id="dataset-id",
         metadata={
             "profile": "office-smoke",
-            "benchmark": "officebench",
-            "evaluation_source": "officebench_official",
-            "required_remote_score": "official_score",
+            "benchmark": "ocb",
+            "evaluation_source": "langfuse_terra",
+            "required_remote_score": "mybot_score",
             "annotation_queue_name": "review-queue",
         },
         scores=[],
@@ -419,8 +513,7 @@ def test_export_requires_scores_review_and_builds_real_deep_link() -> None:
         level="DEFAULT",
         scores=[
             _score("output_present", True),
-            _score("official_score", 0.0),
-            _score("official_evaluator_ok", True),
+            _score("mybot_score", 0.0),
             _score("mybot-human-review", 1.0),
         ],
     )
@@ -432,6 +525,41 @@ def test_export_requires_scores_review_and_builds_real_deep_link() -> None:
     assert payload["reviewed_items"] == 1
     assert payload["deep_link"].endswith("/datasets/dataset-id/runs/run-id")
     assert "{project-id}" not in payload["deep_link"]
+
+
+def test_export_finds_reused_queue_when_old_run_metadata_is_stale() -> None:
+    now = datetime.now(timezone.utc)
+    experiment = SimpleNamespace(
+        id="run-id",
+        name="run",
+        start_time=now,
+        end_time=now,
+        item_count=1,
+        dataset_id="dataset-id",
+        metadata={
+            "profile": "office-smoke",
+            "benchmark": "ocb",
+            "required_remote_score": "mybot_score",
+            "annotation_queue_name": "mybot-office-smoke-ocb-officecli-review",
+        },
+        scores=[],
+    )
+    item = SimpleNamespace(
+        trace_id="trace-id",
+        end_time=now,
+        level="DEFAULT",
+        scores=[
+            _score("output_present", True),
+            _score("mybot_score", 0.5),
+            _score("mybot-human-review", 1.0),
+        ],
+    )
+    queue = SimpleNamespace(id="queue-id", name="mybot-office-smoke-ocb-officecli-review")
+    queue_item = SimpleNamespace(object_id="trace-id", status="COMPLETED")
+
+    payload = export_run(_FakeClient(experiment, [item], queue, [queue_item]), "run-id")
+
+    assert payload["annotation_queue_name"] == queue.name
 
 
 def test_export_rejects_missing_remote_judge_score() -> None:
@@ -476,8 +604,6 @@ def test_run_has_no_price_confirmation_option() -> None:
     assert "--benchmark" in result.stdout
     assert "--skill" in result.stdout
     assert "--ocb-sample" in result.stdout
-    assert "--officebench-sample" in result.stdout
-    assert "--presentbench-sample" in result.stdout
 
 
 def test_export_readme_block_is_controlled(tmp_path: Path) -> None:
@@ -488,9 +614,9 @@ def test_export_readme_block_is_controlled(tmp_path: Path) -> None:
     )
     _update_readme_benchmark_block(
         {
-            "benchmark": "officebench",
-            "evaluation_source": "officebench_official",
-            "required_score": "official_score",
+            "benchmark": "ocb",
+            "evaluation_source": "langfuse_terra",
+            "required_score": "mybot_score",
             "item_count": 1,
             "reviewed_items": 1,
             "required_reviewed_items": 1,
@@ -500,5 +626,5 @@ def test_export_readme_block_is_controlled(tmp_path: Path) -> None:
     )
     content = readme.read_text(encoding="utf-8")
     assert "old" not in content
-    assert "official_score" in content
+    assert "mybot_score" in content
     assert content.count("benchmark-results:begin") == 1

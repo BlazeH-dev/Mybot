@@ -18,6 +18,8 @@ class RunResult:
     content: str
     tools_used: list[str]
     messages: list[dict[str, Any]]
+    stop_reason: str | None = None
+    error: str | None = None
 
 
 class Nanobot:
@@ -101,6 +103,8 @@ class Nanobot:
             content=content,
             tools_used=capture.tools_used,
             messages=capture.messages,
+            stop_reason=capture.stop_reason,
+            error=capture.error,
         )
 
     async def aclose(self) -> None:

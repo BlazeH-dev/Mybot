@@ -1,7 +1,7 @@
 # P8 受控 Subagent 编排代码说明
 
 > 对应计划：`docs/plans/runtime-steps/P8-多agent编排.md`
-> 当前状态：Core 已完成（2026-07-18）；2026-07-20 取消 child token/总时长/tool-call 工作量配额。共享 workspace 文件租约、自动共享父 artifact 和完整 child checkpoint 调度未实现。
+> 当前状态：Core 已完成。Child 不设置 token/总时长/tool-call 工作量配额；共享 workspace 文件租约、自动共享父 artifact 和完整 child checkpoint 调度未实现。
 
 ## 这一阶段解决什么问题
 
@@ -175,7 +175,7 @@ WebUI 在父 chat 显示卡片。child lifecycle 进入轮询等待：
 - 总 lifecycle timeout。
 - max tool calls。
 
-2026-07-20 取消了这些参数，`spawn` schema 只保留：
+当前 `spawn` schema 只保留：
 
 ```text
 task

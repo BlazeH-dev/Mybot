@@ -11,17 +11,16 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from nanobot.config.loader import load_config, resolve_config_env_vars
+from nanobot.evaluations.credentials import adobe_pdf_services_available
 
 ROOT = Path(__file__).resolve().parents[2]
 OFFICE_PROFILE_PATH = ROOT / "benchmarks" / "office" / "profiles.json"
 OFFICE_SUITE_MANIFEST_PATH = ROOT / "benchmarks" / "suites" / "office" / "manifest.yaml"
 DEFAULT_CACHE = Path.home() / ".cache" / "nanobot" / "benchmarks"
-OFFICE_BENCHMARKS = ("ocb", "officebench", "presentbench")
+OFFICE_BENCHMARKS = ("ocb",)
 OFFICE_PROFILES = ("ci", "office-smoke", "office-release")
 OFFICE_BENCHMARK_SAMPLES = {
     "ocb": (255, 509, 1018),
-    "officebench": (24, 47, 93),
-    "presentbench": (60, 119, 238),
 }
 DEFAULT_OFFICE_BENCHMARK_SAMPLES = {
     benchmark: samples[-1] for benchmark, samples in OFFICE_BENCHMARK_SAMPLES.items()
@@ -37,10 +36,9 @@ class EvaluationRequest:
     profile: str = "office-smoke"
     action: str = "run"
     benchmarks: tuple[str, ...] = OFFICE_BENCHMARKS
-    skills: tuple[str, ...] = ("officecli", "office-python")
-    model_presets: tuple[str, ...] = ("gpt-5-6-luna",)
+    skills: tuple[str, ...] = ("officecli",)
+    model_presets: tuple[str, ...] = ("gpt-5-6-luna", "deepseek-v4-flash")
     runtime_profiles: tuple[str, ...] = ("default",)
-    presentbench_sample: int | None = None
     benchmark_samples: dict[str, int] = field(
         default_factory=lambda: dict(DEFAULT_OFFICE_BENCHMARK_SAMPLES)
     )
@@ -49,10 +47,7 @@ class EvaluationRequest:
     def __post_init__(self) -> None:
         samples = dict(DEFAULT_OFFICE_BENCHMARK_SAMPLES)
         samples.update(self.benchmark_samples)
-        if self.presentbench_sample is not None:
-            samples["presentbench"] = self.presentbench_sample
         object.__setattr__(self, "benchmark_samples", samples)
-        object.__setattr__(self, "presentbench_sample", samples["presentbench"])
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> EvaluationRequest:
@@ -77,20 +72,14 @@ class EvaluationRequest:
                 if not isinstance(value, int):
                     raise ValueError(f"benchmark_samples.{benchmark} must be an integer")
                 samples[benchmark] = value
-        elif "presentbench_sample" in payload:
-            sample = payload["presentbench_sample"]
-            if not isinstance(sample, int):
-                raise ValueError("presentbench_sample must be an integer")
-            samples["presentbench"] = sample
         return cls(
             suite_id=str(payload.get("suite_id") or "office").strip(),
             profile=str(payload.get("profile") or "office-smoke").strip(),
             action=str(payload.get("action") or "run").strip(),
             benchmarks=strings("benchmarks", OFFICE_BENCHMARKS),
-            skills=strings("skills", ("officecli", "office-python")),
-            model_presets=strings("model_presets", ("gpt-5-6-luna",)),
+            skills=strings("skills", ("officecli",)),
+            model_presets=strings("model_presets", ("gpt-5-6-luna", "deepseek-v4-flash")),
             runtime_profiles=strings("runtime_profiles", ("default",)),
-            presentbench_sample=None,
             benchmark_samples=samples,
             allow_licensed_content=payload.get("allow_licensed_content") is True,
         )
@@ -166,6 +155,9 @@ class OfficeEvaluationAdapter:
     def catalog(self, available_skills: list[dict[str, Any]]) -> dict[str, Any]:
         manifest = _office_manifest()
         suite = _office_suite_manifest()
+        agent_models = manifest["models"]["agent"]
+        if isinstance(agent_models, str):
+            agent_models = [agent_models]
         known = {str(skill["name"]): skill for skill in available_skills if skill.get("name")}
         skills: list[dict[str, Any]] = []
         for name in manifest["skills"]:
@@ -186,14 +178,12 @@ class OfficeEvaluationAdapter:
             "profiles": suite["profiles"],
             "benchmarks": suite["benchmarks"],
             "skills": sorted(skills, key=lambda item: item["label"]),
-            "model_presets": [{"id": manifest["models"]["agent"], "label": manifest["models"]["agent"]}],
+            "model_presets": [{"id": model, "label": model} for model in agent_models],
             "runtime_profiles": [{"id": "default", "label": "Default runtime"}],
             "benchmark_samples": {
                 benchmark: list(samples)
                 for benchmark, samples in OFFICE_BENCHMARK_SAMPLES.items()
             },
-            # Kept for clients from the first WebUI contract.
-            "presentbench_samples": list(OFFICE_BENCHMARK_SAMPLES["presentbench"]),
             "extension": {
                 "manifest": "benchmarks/suites/<suite-id>/manifest.yaml",
                 "adapter": "benchmarks/suites/<suite-id>/adapter.py",
@@ -202,6 +192,9 @@ class OfficeEvaluationAdapter:
 
     def _validate(self, request: EvaluationRequest) -> None:
         manifest = _office_manifest()
+        agent_models = manifest["models"]["agent"]
+        if isinstance(agent_models, str):
+            agent_models = [agent_models]
         if request.suite_id != self.suite_id:
             raise ValueError(f"unknown evaluation suite: {request.suite_id}")
         if request.action not in {"run", "prepare"}:
@@ -216,8 +209,11 @@ class OfficeEvaluationAdapter:
             raise ValueError("select at least one Office Skill")
         if invalid_skills:
             raise ValueError(f"unsupported Office Skills: {invalid_skills}")
-        if request.model_presets != (manifest["models"]["agent"],):
-            raise ValueError(f"Office suite requires model preset {manifest['models']['agent']}")
+        invalid_models = sorted(set(request.model_presets) - set(agent_models))
+        if request.profile != "ci" and not request.model_presets:
+            raise ValueError("select at least one model preset")
+        if invalid_models:
+            raise ValueError(f"unsupported Office model presets: {invalid_models}")
         if request.runtime_profiles != ("default",):
             raise ValueError("Office suite currently supports only the default Runtime profile")
         if request.profile == "office-release":
@@ -236,8 +232,8 @@ class OfficeEvaluationAdapter:
             else dict(request.benchmark_samples)
         )
         selected_counts = {name: count for name, count in counts.items() if name in request.benchmarks}
-        runs = sum(selected_counts.values()) * len(request.skills)
-        judged = sum(selected_counts.get(name, 0) for name in ("ocb", "presentbench")) * len(request.skills)
+        runs = sum(selected_counts.values()) * len(request.skills) * len(request.model_presets)
+        judged = selected_counts.get("ocb", 0) * len(request.skills) * len(request.model_presets)
         per_case = manifest["estimate_tokens_per_case"]
         tokens = {
             "agent_input": runs * per_case["agent_input"],
@@ -250,6 +246,7 @@ class OfficeEvaluationAdapter:
             "profile": request.profile,
             "case_counts": selected_counts,
             "skill_runs": runs,
+            "model_runs": runs,
             "judge_runs": judged,
             "estimated_tokens": tokens,
         }
@@ -273,8 +270,16 @@ class OfficeEvaluationAdapter:
             except (OSError, json.JSONDecodeError):
                 prepared = None
         langfuse = config.observability.langfuse
-        openai = config.providers.openai
         soffice = _soffice_probe(prepared)
+        provider_ready: dict[str, bool] = {}
+        for preset_name in request.model_presets:
+            preset = config.resolve_preset(preset_name)
+            provider = getattr(config.providers, preset.provider, None)
+            provider_ready[preset_name] = bool(
+                provider
+                and provider.api_key
+                and (provider.api_base or preset.provider == "deepseek")
+            )
         checks = {
             "prepared": prepared is not None,
             "prepared_path": str(prepared_path),
@@ -283,9 +288,10 @@ class OfficeEvaluationAdapter:
             "langfuse_configured": bool(langfuse.resolved_public_key() and langfuse.resolved_secret_key()),
             "langfuse_base_url": langfuse.resolved_base_url(),
             "capture_content": bool(langfuse.capture_content),
-            "model_provider_configured": bool(openai.api_key and openai.api_base),
+            "model_provider_configured": all(provider_ready.values()),
+            "model_provider_status": provider_ready,
             "libreoffice": soffice,
-            "adobe_credentials": bool(os.environ.get("PDF_SERVICES_CLIENT_ID") and os.environ.get("PDF_SERVICES_CLIENT_SECRET")),
+            "adobe_credentials": adobe_pdf_services_available(),
         }
         blockers: list[str] = []
         warnings: list[str] = []
@@ -296,7 +302,7 @@ class OfficeEvaluationAdapter:
         if langfuse.resolved_base_url() != "https://jp.cloud.langfuse.com":
             blockers.append("Langfuse base URL must use Japan Cloud")
         if request.action == "run" and not checks["model_provider_configured"]:
-            blockers.append("Luna model provider is not configured")
+            blockers.append("one or more selected model providers are not configured")
         if not soffice["available"]:
             blockers.append("Stable LibreOffice is unavailable")
         if request.action == "run":
@@ -331,11 +337,10 @@ class OfficeEvaluationAdapter:
                 command.append("--allow-licensed-content")
             return command
         if request.action == "run" and request.profile != "ci":
-            command.extend(["--model-preset", request.model_presets[0]])
+            for model_preset in request.model_presets:
+                command.extend(["--model-preset", model_preset])
             for benchmark, option in (
                 ("ocb", "--ocb-sample"),
-                ("officebench", "--officebench-sample"),
-                ("presentbench", "--presentbench-sample"),
             ):
                 command.extend([option, str(request.benchmark_samples[benchmark])])
             for benchmark in request.benchmarks:

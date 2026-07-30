@@ -3,16 +3,14 @@
   "id": "office",
   "version": "1.0.0",
   "name": "Office benchmark",
-  "description": "Compare trusted Office Skills on OCB, OfficeBench, and PresentBench.",
+  "description": "Compare GPT-5.6 Luna and DeepSeek V4 Flash on OCB with OfficeCLI.",
   "profiles": [
     {"id": "ci", "label": "CI", "requires_cloud": false, "requires_licensed_content": false, "requires_review": false},
     {"id": "office-smoke", "label": "Office smoke", "requires_cloud": true, "requires_licensed_content": true, "requires_review": true},
     {"id": "office-release", "label": "Office release", "requires_cloud": true, "requires_licensed_content": true, "requires_review": true}
   ],
   "benchmarks": [
-    {"id": "ocb", "label": "OCB", "score": "mybot_score", "evaluator": "langfuse-terra"},
-    {"id": "officebench", "label": "OfficeBench", "score": "official_score", "evaluator": "official-local"},
-    {"id": "presentbench", "label": "PresentBench", "score": "mybot_score", "evaluator": "langfuse-terra"}
+    {"id": "ocb", "label": "OCB", "score": "mybot_score", "evaluator": "langfuse-terra"}
   ],
   "dimensions": ["skill", "model_preset", "runtime_profile"],
   "requirements": {

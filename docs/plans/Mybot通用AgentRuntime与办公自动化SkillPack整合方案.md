@@ -1,6 +1,6 @@
 # Mybot 通用 Agent Runtime 与 Office Skill Pack 整合方案
 
-> 当前基线：2026-07-24。历史修订统一见 `docs/修改记录.md`，本文只保留当前有效决策。
+> 当前基线：以仓库当前代码、测试和 `docs/runtime-code-notes/` 为准。历史修订统一见 `docs/修改记录.md`。
 
 ## 1. 定位与目标
 
@@ -15,9 +15,8 @@ Mybot 基于 nanobot v0.2.1 二次开发，不重写 Agent 框架，而是在现
 
 Office 是首个验证领域，不是产品唯一方向：
 
-- `office-python`：已落地的通用 Python Office baseline，通过单一 request/result JSON CLI 提供 DOCX/XLSX/PPTX 的 `inspect/query/create/apply/validate/render`；旧窄周报工作流和 fixture 已删除。
-- `officecli`：固定版本 OfficeCLI 的通用 Office 能力和默认路由。
-- 两者共享 verified facts、输入快照、通用验证器和 Runtime 治理，但各自保留操作接口；OfficePython 不得调用 OfficeCLI，比较结果必须来自相同条件下的公开 benchmark 和固定 evaluator 映射。
+- `officecli`：固定版本 OfficeCLI 的唯一 Office 能力和默认路由。
+- Office benchmark 在相同 verified facts、输入快照、Policy、Runtime 和 evaluator 下比较 `gpt-5-6-luna` 与 `deepseek-v4-flash`。
 
 ## 2. 文档权威顺序与 AI 执行规则
 
@@ -55,7 +54,6 @@ nanobot/runtime/
   checkpoint.py      计划任务安全恢复
   trace.py           Mybot 语义埋点、OTel 上下文与 Langfuse Python SDK
   replay.py          轻量 cassette
-  evals/             Langfuse Experiment task/evaluator adapter、OfficeBench 官方 evaluator 与本地硬门
 
 nanobot/security/sandbox/
   manager.py         sandbox mode、provider capability 与 fail-closed
@@ -87,11 +85,11 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 - `disabledSkills` 是唯一启用/禁用入口，不建立平行配置。
 - WebUI 开关写入 `disabledSkills` 后应热刷新主 Agent 与子代理；只影响后续回合，不要求重启网关。
 - 用户可在单轮消息中用 `@skill-name` 显式指定可用 Skill；运行时必须校验其可用性并把正文作为本轮路由契约加载。未指定时，继续采用摘要 + 模型渐进选择。
-- 普通 Office 请求默认优先 `officecli`；用户明确要求 Python 时使用 `office-python`。
-- P1.1 已将目录、manifest、展示名和 Skill id 改为 `office-python`，提供 DOCX/XLSX/PPTX 的通用 `inspect/query/create/apply/validate/render`；旧 id、显式路由和历史兼容入口已删除。启动时仅清理 `disabledSkills` 中的旧 id，不迁移为新 id。
+- 普通 Office 请求默认优先 `officecli`；用户明确要求 Python 时使用 `officecli`。
+- `officecli` 是唯一内置 Office Skill，提供 DOCX/XLSX/PPTX 的通用 `inspect/query/create/apply/validate/render`；旧 id、显式路由和历史兼容入口已删除。启动时仅清理 `disabledSkills` 中的旧 id，不迁移为新 id。
 - OfficeCLI 版本、平台资产和 checksum 只有 provider contract 一个真相源；Mybot 安装的同名 launcher 可在首次使用时自动准备并校验固定资产，Agent 任务不得调用上游 latest/install/update。
 - 定量结论必须来自 `verified_facts.json`；纯格式、提取和批注任务不强制跑事实层。
-- 两个 Skill 的比较固定使用相同输入、`gpt-5-6-luna`、Policy、约束和 evaluator，分开报告 coverage 与共同任务质量；不得通过 prompt、路由或评分偏袒 OfficeCLI。
+- 两个 Agent 模型的比较固定使用相同输入、OfficeCLI、Policy、约束和 evaluator，分开报告 coverage 与共同任务质量；不得通过 prompt、路由或评分偏袒任一模型。
 
 ### 4.2 Plan 契约
 
@@ -174,8 +172,7 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 - Provider 观测必须在 `runner._request_model()` 内逐调用创建 generation observation（记录 start_time/TTFT/latency/usage）。优先使用 `langfuse.openai` drop-in（provider 从 config 设置环境变量后导入），自动追踪所有 OpenAI-compatible provider（OpenAI/DeepSeek/GPT-5.6）；检测到 drop-in 时 runner 不重复创建 generation。
 - Tool 观测必须在 `runner._run_tool()` 内逐调用创建 tool observation（记录 tool_call_id/arguments 摘要/latency/result 摘要/error）。
 - Langfuse 负责 Trace/Sessions、Datasets/Dataset Runs、Experiments、Scores、LLM-as-a-Judge、Code Evaluator、Annotation Queue、成本/延迟 Dashboard、趋势和 CI regression gate。
-- Langfuse Python SDK `run_experiment()` 在 Mybot 进程中调用 task callback；OfficeBench 官方 evaluator、OpenXML/渲染/文件检查作为 SDK evaluator function 返回 `Evaluation`，不需要 Mybot 的第二套 EvalResult 数据库。
-- Langfuse LLM Connection 承担 OCB/PresentBench 的 Terra Judge（通过 OpenAI-compatible 端点配置 `gpt-5-6-terra`）；只有平台无法消费 PresentBench 视觉媒体时，才允许该维度本地 SDK evaluator fallback，结果仍只写 Langfuse Score。
+- Langfuse Python SDK `run_experiment()` 在 Mybot 进程中调用 task callback；OCB 使用 Langfuse LLM Connection 连接 `gpt-5.6-terra`，产生 `mybot_score` 和 reasoning，不需要 Mybot 的第二套 EvalResult/Score 数据库。
 - Mybot 新建 `nanobot/cli/benchmark.py`（prepare/estimate/run/export），封装 `langfuse.run_experiment()` 和 Langfuse API 查询。Langfuse Dataset Run、Score 和 Annotation 是评估真相源，Git/README 只是只读导出快照。
 
 ## 5. 阶段路线图
@@ -183,7 +180,7 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 | 阶段                                                                | 状态  | 交付范围                                              | 阶段出口                                          |
 | ----------------------------------------------------------------- | --- | ------------------------------------------------- | --------------------------------------------- |
 | [P0 准备](runtime-steps/P0-准备.md)                                   | 已完成 | 固定 Office fixture、Python 3.11 CI smoke            | fixture 可复算，workflow 可运行；远端状态以最新 Actions 记录为准 |
-| [P1 Office 垂直切片](runtime-steps/P1-office垂直切片.md)                  | 已完成 | 双 Skill Core；OfficePython 通用化、改名和中立基线       | 两条 Office 路径可独立运行；公平质量比较由 P5.1 公开 benchmark 承接                         |
+| [P1 Office 垂直切片](runtime-steps/P1-office垂直切片.md)                  | 已完成 | 单一 OfficeCLI Skill 与模型比较基线       | 两个 Agent 模型使用独立 Dataset Run；公平质量比较由 P5.1 公开 benchmark 承接                         |
 | [P2 Manifest](runtime-steps/P2-skillpack-manifest.md)             | 已执行 | typed manifest、局部 fail closed、availability、开关     | 坏 Skill 不拖垮网关且不能进入候选                          |
 | [P3 Sandbox/Policy/HITL/OCC](runtime-steps/P3-policy权限层.md)       | 已完成 | 统一 LaunchSpec、Seatbelt/Bubblewrap、受批直接 curl、Policy/HITL/OCC | restricted fail closed，网络 grant 不泄漏到 session/CLI Apps |
 | [P3.1 Workspace/Worktree](runtime-steps/P3.1-worktree隔离.md)          | 选做（未实现） | WebUI 显式 per-chat worktree、持久绑定、fork 与保守清理       | 启动后不丢 dirty/新 commit，不扩大 Agent Git 权限              |
@@ -196,7 +193,7 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 
 详细实施只看对应 `docs/plans/runtime-steps/P*.md`。
 
-P5.1/P7 的用户外部配置、真实 smoke、人工审核与发布命令统一按 `runtime-steps/P5-trace-eval.md` 的“P5.1 用户配置与真实运行步骤（必须按顺序）”执行；任何 Key、许可、稳定 LibreOffice、价格、Judge、Score、Queue 或 deep link 硬门缺失时不得发布结果。
+P5.1/P7 的外部配置、真实 smoke、人工审核与发布顺序统一按 `runtime-steps/P5-trace-eval.md` 的“外部配置前置”和“阶段出口”执行；任何 Key、许可、稳定 LibreOffice、Judge、Score、Queue 或 deep link 硬门缺失时不得发布结果。
 
 ## 6. 顺序、cutline 与选做项
 
@@ -204,14 +201,14 @@ P5.1/P7 的用户外部配置、真实 smoke、人工审核与发布命令统一
 
 ```text
 已完成主链：P0 → P1 → P2 → P3 → S5.0 → P4 → P8 → P5 Core
-已完成代码追加阶段：P1.1 OfficePython → P5.1 Observability/Eval → P7
-待外部交付闭环：日本区 Cloud smoke → Terra Judge/PresentBench media → Annotation Queue → Dataset Run export
+代码交付阶段：OfficeCLI → P5.1 Observability/Eval → P7
+待外部交付闭环：日本区 Cloud smoke → OCB Terra Judge → Annotation Queue → Dataset Run export
 选做候选：P6 Research 最小闭环；P3.1 Worktree MVP
 ```
 
 冻结前必做：
 
-- P1、P2、P3、P4、P8；P1.1 必须完成 OfficePython 通用化、直接改名、旧窄工作流/周报 fixture 删除和最小中立 fixture 回归。
+- P1、P2、P3、P4、P8；OfficeCLI 通用化、旧窄工作流/周报 fixture 删除和最小中立 fixture 回归必须完成。
 - S5.0 的 3–4 个关键 cassette。
 - P5 Core：trace、确定性 eval/report、安全红队；P5.1 的 Langfuse SDK observation、Dataset/Experiment、SDK evaluator、Terra Judge/Annotation Queue/export 代码与 contract 已完成，真实 Terra Connection、Cloud Score、人审和发布仍按外部 runbook 验收。
 - P7 benchmark、README 最终结果页、架构/quickstart 和最终结果证据。
@@ -225,7 +222,6 @@ P5.1/P7 的用户外部配置、真实 smoke、人工审核与发布命令统一
 1. P6 Research 最小闭环；只在主线完成后、确有第二领域通用性验证需求时启动，不计入项目冻结和最终验收。
 2. P3.1 WebUI per-chat worktree；只有主线完成且真实冲突频率证明有价值时启动，不得扩展成通用 Git IDE/分支发布平台。
 3. Langfuse 自托管、本地 Compose 与 Redis/MinIO/ClickHouse/PostgreSQL 运维；已选择日本区 Langfuse Cloud，除非后续出现明确合规或可用性需求，否则不回到自托管支线。
-4. SpreadsheetBench Verified 高级 Excel 深度 benchmark；首批使用 OCB、OfficeBench Office subset 和 PresentBench。
 5. 白盒记忆治理、artifact delta/staging。
 6. 多模型成本矩阵与 KV cache 优化。
 7. Subagent 共享 workspace 文件租约与冲突可视化。
@@ -250,15 +246,15 @@ P5.1/P7 的用户外部配置、真实 smoke、人工审核与发布命令统一
 | OfficeCLI OpenXML 校验       | 100%（登记的兼容例外除外） |
 | CI 确定性 smoke               | < 60 秒          |
 
-同时记录但不设虚假目标：公开 benchmark 任务成功率、OfficeBench 官方分数、OCB/PresentBench Mybot Terra 分数、LLM/tool 成功率与错误、P50/P95、token/成本、Agent 循环步数、人类等待/恢复、Subagent 成本与时长溢价、人工审计分数。P5/P7 不采集业务对话量、用户满意度、CPU、内存或 GPU 指标。
+同时记录但不设虚假目标：OCB 任务成功率与 Mybot Terra 分数、LLM/tool 成功率与错误、P50/P95、token/成本、Agent 循环步数、人类等待/恢复、Subagent 成本与时长溢价、人工审计分数。P5/P7 不采集业务对话量、用户满意度、CPU、内存或 GPU 指标。
 
 P3.1 只有被明确启动后，才新增“Worktree 自动清理导致的 dirty/新 commit 丢失 = 0”作为该选做阶段的独立硬门；不计入当前 Runtime Core 验收。
 
-评估来源按 benchmark 固定：OfficeBench Office subset 在 Langfuse Experiment Runner 进程中原样调用官方确定性 evaluator，记录 `official_score`；OCB/PresentBench 将公开 data/reference/checklist/rubric 配置到 Langfuse Dataset 和 Custom LLM-as-a-Judge，通过 OpenAI-compatible LLM Connection 使用 `gpt-5-6-terra`，记录 `mybot_score`。OCB/PresentBench 不标记 `official-comparable`；人工审计使用 Langfuse Annotation Queue。P5 Core Runtime hard gate 保留为独立回归证据，三套 benchmark 不合成总分。
+评估来源固定为 OCB：公开 data/reference/assertion/rubric 进入 Langfuse Dataset 和 Custom LLM-as-a-Judge，通过 OpenAI-compatible LLM Connection 使用 `gpt-5.6-terra`，记录 `mybot_score`；结果标记为 `OCB/Mybot evaluation`，不标记 `official-comparable`。人工审计使用 Langfuse Annotation Queue，P5 Core Runtime hard gate 保留为独立回归证据。
 
-P5.1/P7 的 benchmark 固定使用三个 profile：`ci` 完全离线；`office-smoke` 使用三套 benchmark 各 4 个固定分层 case，两个 Skill 跑相同任务并全部进入 Langfuse Annotation Queue；`office-release` 运行 OCB 全量、固定 OfficeBench Office subset，PresentBench 在成本估算后从 full/50%/25% 中确认并使用独立 Dataset/series。三套 adapter 共用独立 benchmark venv，与 Mybot 主环境隔离；`prepare` 固定 revision/SHA/license、最小精确 constraints、模型/evaluator、LibreOffice 版本和成本配置，`run` 只调用 Langfuse `run_experiment()`。
+P5.1/P7 固定使用三个 profile：`ci` 完全离线；`office-smoke` 使用 4 个 OCB 固定分层 case，两个 Agent 模型使用同一 OfficeCLI 跑相同任务并全部进入 Langfuse Annotation Queue；`office-release` 从 OCB full/50%/25% 中选择独立 Dataset/series。OCB adapter 使用独立 benchmark venv，与 Mybot 主环境隔离；`prepare` 固定 revision/SHA/license、最小精确 constraints、模型/evaluator 和 LibreOffice 版本，`run` 只调用 Langfuse `run_experiment()`。
 
-release 固定执行 `prepare office-release -> estimate office-release -> run office-release`：prepare 先缓存并校验 OCB/OfficeBench release 数据和 PresentBench 三档候选资产，estimate 只读已准备数据和价格配置，run 只冻结并消费选定 manifest。smoke prepare 只覆盖固定 12 case，不能替代 release prepare。
+release 固定执行 `prepare office-release -> estimate office-release -> run office-release`：prepare 缓存并校验 OCB release 数据，estimate 只读已准备数据，run 只冻结并消费选定 manifest。smoke prepare 只覆盖固定 4 case，不能替代 release prepare。
 
 Mybot 只维护 benchmark 编排状态和本机恢复 checkpoint，不维护 Score 或趋势真相源；Langfuse Experiment/Dataset Run 负责运行记录、评分、审核和比较。Job 采用全局单运行、持久队列和手动 Resume：同一 `resume_token` 生成稳定 Dataset Run 名，远端成功 item 跳过，本地已完成 Case 复用权限 `0600` 的输入指纹/模型输出 checkpoint，只重跑缺失 evaluator/Trace，避免重复模型 token；Retry 才创建新 Job。checkpoint 不进入 HTTP/UI，Langfuse 仍是 Trace/Score/审核唯一真相源。`export --dataset-run` 只有在 Langfuse Score、Annotation Queue 和运行完整性满足要求时才生成 README 快照。smoke/release 必须完成日本区 Langfuse Cloud 真实写入、flush、回读、Annotation Queue 和 deep link smoke；普通任务和 CI 默认关闭 Cloud 且不承诺离线 Trace 补传。
 
@@ -284,7 +280,7 @@ Mybot 只维护 benchmark 编排状态和本机恢复 checkpoint，不维护 Sco
 - 用户/IDE 修改不会被过期读取静默覆盖。
 - 已激活且 hash 绑定的计划任务可从可验证 checkpoint 恢复，未知副作用转人工。
 - Office 任务能形成可追踪产物和确定性报告。
-- OfficePython 与 OfficeCLI 能在相同条件下完成 coverage/共同任务比较；OCB、OfficeBench Office subset、PresentBench 的结果口径可复现且不混成总分。
+- `gpt-5-6-luna` 与 `deepseek-v4-flash` 能在相同 OCB Dataset、OfficeCLI、Policy 和 evaluator 配置下比较，结果口径可复现。
 - 日本区 Langfuse Cloud 未启用或不可用时，普通 Runtime、本地 deterministic/cassette、Policy/OCC/HITL/OpenXML 硬门仍正常，但明确没有持久 Trace/Experiment；启用时可查询 Agent/LLM/tool/Policy/Interaction/artifact/checkpoint/child observation，比较 Dataset Run 和 Score 并处理 Annotation Queue。
 - WebUI 新增独立 `#/evaluations` 评测中心，但不复制 Langfuse 真相源：通过共享 suite catalog/adapter 与 Job Service 展示 readiness、估算、队列、进度、Case 状态、断点续测计数、分数摘要和 CLI/WebUI 历史，并提供 Resume 同 Job、Retry 新 Job 及 Dataset Run、Trace、Annotation Queue deep link；人工评分、Trace 详情和 Judge reasoning 仍只在 Langfuse 完成。未来新增评测维度只需提交受信任的 `benchmarks/suites/<suite-id>/manifest.yaml`、`adapter.py` 和测试，不需重复开发页面。
 - Subagent 权限、上下文、产物、usage、取消和循环熔断均可核对。
