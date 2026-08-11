@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import unquote, urlparse
 
 from nanobot.security.workspace_access import WorkspaceScope
@@ -26,9 +27,10 @@ def file_preview_payload(
     raw_path: str | None,
     *,
     scope: WorkspaceScope,
+    trusted_files: Mapping[str, str] | None = None,
     max_bytes: int = MAX_FILE_PREVIEW_BYTES,
 ) -> dict[str, Any]:
-    """Return a text preview for a file inside the session workspace."""
+    """Return a text preview for a workspace file or an exact session-bound artifact."""
 
     path = _clean_preview_path(raw_path)
     if not path:
@@ -36,6 +38,7 @@ def file_preview_payload(
     if len(path) > 4096:
         raise WebUIFilePreviewError(400, "path is too long")
 
+    trusted_checksum: str | None = None
     try:
         resolved = resolve_allowed_path(
             path,
@@ -46,12 +49,18 @@ def file_preview_payload(
     except FileNotFoundError as e:
         raise WebUIFilePreviewError(404, "file not found") from e
     except WorkspaceBoundaryError as e:
-        raise WebUIFilePreviewError(403, "file is outside the current workspace") from e
+        trusted = _resolve_trusted_file(path, trusted_files)
+        if trusted is None:
+            raise WebUIFilePreviewError(403, "file is outside the current workspace") from e
+        resolved, trusted_checksum = trusted
     except OSError as e:
         raise WebUIFilePreviewError(400, "invalid path") from e
 
     if not resolved.is_file():
         raise WebUIFilePreviewError(404, "file not found")
+
+    if trusted_checksum is not None and _sha256_file(resolved) != trusted_checksum:
+        raise WebUIFilePreviewError(409, "file checksum validation failed")
 
     try:
         with open(resolved, "rb") as f:
@@ -79,6 +88,84 @@ def file_preview_payload(
         "size": resolved.stat().st_size,
         "truncated": truncated,
     }
+
+
+def session_plan_preview_files(session_data: Any) -> dict[str, str]:
+    """Return the exact current plan file trusted by the current session state."""
+
+    if not isinstance(session_data, dict):
+        return {}
+    metadata = session_data.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    plan = metadata.get("plan_state")
+    if not isinstance(plan, dict):
+        return {}
+
+    task_id = plan.get("task_id")
+    revision = plan.get("revision")
+    plan_hash = plan.get("plan_hash")
+    markdown = plan.get("plan_markdown")
+    if (
+        not isinstance(task_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", task_id)
+        or isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 1
+        or not isinstance(plan_hash, str)
+        or not plan_hash
+        or not isinstance(markdown, dict)
+    ):
+        return {}
+
+    path = markdown.get("path")
+    checksum = markdown.get("checksum")
+    if (
+        not isinstance(path, str)
+        or not Path(path).is_absolute()
+        or markdown.get("artifact_id") != "plan_markdown"
+        or markdown.get("revision") != revision
+        or markdown.get("plan_hash") != plan_hash
+        or not isinstance(checksum, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", checksum)
+    ):
+        return {}
+
+    candidate = Path(path).expanduser()
+    expected_tail = Path(".nanobot-runtime") / "artifacts" / task_id / "plan.md"
+    if tuple(candidate.parts[-len(expected_tail.parts):]) != expected_tail.parts:
+        return {}
+    return {str(candidate): checksum}
+
+
+def _resolve_trusted_file(
+    path: str,
+    trusted_files: Mapping[str, str] | None,
+) -> tuple[Path, str] | None:
+    if not trusted_files:
+        return None
+    try:
+        candidate = Path(path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    for trusted_path, checksum in trusted_files.items():
+        if not isinstance(trusted_path, str) or not isinstance(checksum, str):
+            continue
+        try:
+            allowed = Path(trusted_path).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if candidate == allowed and re.fullmatch(r"[0-9a-f]{64}", checksum):
+            return candidate, checksum
+    return None
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _clean_preview_path(raw_path: str | None) -> str:

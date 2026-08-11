@@ -45,8 +45,16 @@ _CLOUD_READBACK_ATTEMPTS = 30
 _CLOUD_READBACK_INTERVAL_SEC = 2
 _SCORE_READBACK_ATTEMPTS = 30
 _SCORE_READBACK_INTERVAL_SEC = 1
-_HF_DOWNLOAD_ATTEMPTS = 8
+_HF_DOWNLOAD_ATTEMPTS = 3
 _HF_DOWNLOAD_RETRY_INTERVAL_SEC = 2
+_HF_CONNECT_TIMEOUT_SEC = 10
+_HF_DOWNLOAD_TIMEOUT_SEC = 120
+_HF_DOWNLOAD_PROCESS_TIMEOUT_SEC = 7_200
+_HF_MIRROR_ENDPOINT = "https://hf-mirror.com"
+_ADOBE_CONVERSION_ATTEMPTS = 3
+_ADOBE_CONVERSION_RETRY_INTERVAL_SEC = 2
+_ADOBE_CONNECT_TIMEOUT_MS = 30_000
+_ADOBE_READ_TIMEOUT_MS = 120_000
 _PROGRESS_LOCK = threading.Lock()
 
 
@@ -101,15 +109,25 @@ def _run(
     *,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
+    timeout_seconds: float | None = None,
 ) -> str:
-    completed = subprocess.run(
-        command,
-        cwd=cwd,
-        check=False,
-        text=True,
-        capture_output=True,
-        env=env,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            check=False,
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stderr or exc.stdout or ""
+        detail = output.decode(errors="replace") if isinstance(output, bytes) else str(output)
+        suffix = f": {detail[-1200:]}" if detail.strip() else ""
+        raise BenchmarkError(
+            f"command timed out after {timeout_seconds:g}s ({' '.join(command)}){suffix}"
+        ) from exc
     if completed.returncode:
         detail = (completed.stderr or completed.stdout).strip()
         raise BenchmarkError(f"command failed ({' '.join(command)}): {detail[-1200:]}")
@@ -118,6 +136,13 @@ def _run(
 
 def _clone_at_revision(name: str, spec: dict[str, Any], root: Path) -> Path:
     target = root / "sources" / name
+    license_path = target / "LICENSE"
+    if (target / ".git").is_dir() and license_path.is_file():
+        actual = _run(["git", "rev-parse", "HEAD"], cwd=target)
+        dirty = bool(_run(["git", "status", "--porcelain"], cwd=target))
+        digest = hashlib.sha256(license_path.read_bytes()).hexdigest()
+        if actual == spec["revision"] and not dirty and digest == spec["license_sha256"]:
+            return target
     if not (target / ".git").is_dir():
         target.parent.mkdir(parents=True, exist_ok=True)
         _run(["git", "clone", "--filter=blob:none", "--no-checkout", spec["url"], str(target)])
@@ -126,7 +151,6 @@ def _clone_at_revision(name: str, spec: dict[str, Any], root: Path) -> Path:
     actual = _run(["git", "rev-parse", "HEAD"], cwd=target)
     if actual != spec["revision"]:
         raise BenchmarkError(f"{name} revision mismatch: expected {spec['revision']}, got {actual}")
-    license_path = target / "LICENSE"
     digest = hashlib.sha256(license_path.read_bytes()).hexdigest()
     if digest != spec["license_sha256"]:
         raise BenchmarkError(f"{name} LICENSE digest mismatch: {digest}")
@@ -170,6 +194,8 @@ def _download_hf_snapshot(
     # Xet responses are intermittently truncated on this machine; the regular
     # Hugging Face HTTP path is slower but resumable and content-equivalent.
     env["HF_HUB_DISABLE_XET"] = "1"
+    env["HF_HUB_ETAG_TIMEOUT"] = str(_HF_CONNECT_TIMEOUT_SEC)
+    env["HF_HUB_DOWNLOAD_TIMEOUT"] = str(_HF_DOWNLOAD_TIMEOUT_SEC)
     patterns = list(dict.fromkeys(allow_patterns))
     command = [
         str(python),
@@ -180,17 +206,46 @@ def _download_hf_snapshot(
         str(target),
         *patterns,
     ]
+    configured_endpoint = os.environ.get("HF_ENDPOINT", "").strip()
+    endpoints = [configured_endpoint] if configured_endpoint else [
+        "https://huggingface.co",
+        _HF_MIRROR_ENDPOINT,
+    ]
     last_error: BenchmarkError | None = None
-    for attempt in range(1, _HF_DOWNLOAD_ATTEMPTS + 1):
-        try:
-            output = _run(command, env=env)
-            return Path(output.splitlines()[-1]).resolve()
-        except BenchmarkError as exc:
-            last_error = exc
-            if attempt < _HF_DOWNLOAD_ATTEMPTS:
-                time.sleep(_HF_DOWNLOAD_RETRY_INTERVAL_SEC)
+    total_attempts = len(endpoints) * _HF_DOWNLOAD_ATTEMPTS
+    attempt_number = 0
+    for endpoint in endpoints:
+        endpoint_env = dict(env)
+        endpoint_env["HF_ENDPOINT"] = endpoint
+        for endpoint_attempt in range(1, _HF_DOWNLOAD_ATTEMPTS + 1):
+            attempt_number += 1
+            label = (
+                f"Download {dataset_id} via {endpoint} "
+                f"({attempt_number}/{total_attempts})"
+            )
+            _emit_evaluation_progress(
+                "prepare_stage",
+                stage="download_dataset",
+                label=label,
+                endpoint=endpoint,
+                attempt=endpoint_attempt,
+                total_attempts=_HF_DOWNLOAD_ATTEMPTS,
+            )
+            console.print(f"[cyan]{label}[/cyan]")
+            try:
+                output = _run(
+                    command,
+                    env=endpoint_env,
+                    timeout_seconds=_HF_DOWNLOAD_PROCESS_TIMEOUT_SEC,
+                )
+                return Path(output.splitlines()[-1]).resolve()
+            except BenchmarkError as exc:
+                last_error = exc
+                if endpoint_attempt < _HF_DOWNLOAD_ATTEMPTS:
+                    time.sleep(_HF_DOWNLOAD_RETRY_INTERVAL_SEC)
     raise BenchmarkError(
-        f"Hugging Face dataset download failed after {_HF_DOWNLOAD_ATTEMPTS} resumable attempts"
+        f"Hugging Face dataset download failed after {total_attempts} resumable attempts "
+        f"across {', '.join(endpoints)}"
     ) from last_error
 
 
@@ -304,21 +359,58 @@ def _download_ocb_references(
     missing = _missing_ocb_references(rows)
     if not missing:
         return
-    _run(
-        [
-            str(python),
-            str(source_root / "download_and_convert_files.py"),
-            "--manifest",
-            str(data_root / "data" / "ocb_source_urls.parquet"),
-            "--output-dir",
-            str(data_root / "reference_files"),
-            "--filename",
-            ",".join(missing),
-            "--delay",
-            "0",
-        ],
-        env=adobe_pdf_services_env(),
+    wrapper = (
+        "import runpy, socket, sys; "
+        "original_getaddrinfo = socket.getaddrinfo; "
+        "socket.getaddrinfo = lambda *args, **kwargs: sorted("
+        "original_getaddrinfo(*args, **kwargs), "
+        "key=lambda item: item[0] != socket.AF_INET); "
+        "from adobe.pdfservices.operation.config.client_config import ClientConfig; "
+        "from adobe.pdfservices.operation.pdf_services import PDFServices; "
+        "original_init = PDFServices.__init__; "
+        "PDFServices.__init__ = lambda self, credentials, *, client_config=None: "
+        "original_init(self, credentials, client_config=client_config or ClientConfig("
+        f"connect_timeout={_ADOBE_CONNECT_TIMEOUT_MS}, read_timeout={_ADOBE_READ_TIMEOUT_MS})); "
+        "script_path = sys.argv[1]; sys.argv = sys.argv[1:]; "
+        "runpy.run_path(script_path, run_name='__main__')"
     )
+    output_root = data_root / "reference_files"
+    for attempt in range(1, _ADOBE_CONVERSION_ATTEMPTS + 1):
+        remaining = [
+            name
+            for name in missing
+            if not (output_root / name).is_file() or (output_root / name).stat().st_size <= 1024
+        ]
+        if not remaining:
+            return
+        _emit_evaluation_progress(
+            "prepare_stage",
+            stage="references",
+            label=(
+                "Convert licensed Office references with Adobe "
+                f"({attempt}/{_ADOBE_CONVERSION_ATTEMPTS})"
+            ),
+        )
+        _run(
+            [
+                str(python),
+                "-c",
+                wrapper,
+                str(source_root / "download_and_convert_files.py"),
+                "--manifest",
+                str(data_root / "data" / "ocb_source_urls.parquet"),
+                "--output-dir",
+                str(output_root),
+                "--filename",
+                ",".join(remaining),
+                "--delay",
+                "0",
+            ],
+            env=adobe_pdf_services_env(),
+            timeout_seconds=(_ADOBE_READ_TIMEOUT_MS / 1000) * len(remaining) * 2,
+        )
+        if attempt < _ADOBE_CONVERSION_ATTEMPTS:
+            time.sleep(_ADOBE_CONVERSION_RETRY_INTERVAL_SEC)
 
 
 def _item_field(item: Any, name: str, default: Any = None) -> Any:
@@ -707,16 +799,25 @@ def prepare(
         root = _cache_root(cache_dir)
         root.mkdir(parents=True, exist_ok=True)
         manifest = _manifest()
+        _emit_evaluation_progress(
+            "prepare_stage", stage="source", label="Validate pinned benchmark source"
+        )
         sources = {
             name: str(_clone_at_revision(name, spec, root))
             for name, spec in manifest["repositories"].items()
         }
         python = _ensure_benchmark_venv(root)
         if install:
+            _emit_evaluation_progress(
+                "prepare_stage", stage="dependencies", label="Install benchmark dependencies"
+            )
             _run([str(python), "-m", "pip", "install", "-r", str(root / "constraints.txt")])
         libreoffice = _probe_soffice(soffice, soffice_version)
         dataset_sources: dict[str, str] = {}
         ocb_spec = manifest["repositories"]["ocb"]
+        _emit_evaluation_progress(
+            "prepare_stage", stage="dataset", label="Download pinned OCB metadata"
+        )
         ocb_data = _download_hf_snapshot(
             python,
             ocb_spec,
@@ -735,6 +836,9 @@ def prepare(
             if profile == "office-smoke"
             else None
         )
+        _emit_evaluation_progress(
+            "prepare_stage", stage="manifest", label="Materialize fixed smoke cases"
+        )
         _materialize_manifest(
             python,
             "ocb",
@@ -744,6 +848,9 @@ def prepare(
         )
         ocb_rows = _read_rows(case_manifest_root / f"{profile}-ocb.jsonl")
         if allow_licensed_content:
+            _emit_evaluation_progress(
+                "prepare_stage", stage="references", label="Download licensed Office references"
+            )
             _download_hf_snapshot(
                 python,
                 ocb_spec,
@@ -794,6 +901,9 @@ def prepare(
         prepared["asset_fingerprint"] = _fingerprint(prepared)
         runtime = _langfuse_runtime()
         try:
+            _emit_evaluation_progress(
+                "prepare_stage", stage="langfuse_dataset", label="Upload prepared Langfuse Dataset"
+            )
             prepared["datasets"] = _upload_prepared_datasets(
                 runtime,
                 prepared,
@@ -801,9 +911,15 @@ def prepare(
                 case_manifest_root,
                 allow_licensed_content=allow_licensed_content,
             )
+            _emit_evaluation_progress(
+                "prepare_stage", stage="cloud_smoke", label="Verify Langfuse Cloud write and readback"
+            )
             prepared["cloud_smoke"] = _cloud_smoke(runtime)
         finally:
             runtime.shutdown()
+        _emit_evaluation_progress(
+            "prepare_stage", stage="finalize", label="Write prepared profile fingerprint"
+        )
         prepared["fingerprint"] = _fingerprint(prepared)
         path = _prepared_path(root, profile)
         path.write_text(json.dumps(prepared, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

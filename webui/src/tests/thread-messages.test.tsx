@@ -9,6 +9,38 @@ import {
 import type { UIMessage } from "@/lib/types";
 
 describe("ThreadMessages", () => {
+  it("does not render plan cards inside the message timeline", () => {
+    const message: UIMessage = {
+      id: "plan-trace",
+      role: "tool",
+      kind: "trace",
+      content: "plan()",
+      traces: ["plan()"],
+      createdAt: 1,
+      toolEvents: [{
+        version: 1,
+        phase: "end",
+        call_id: "plan-call",
+        name: "plan",
+        arguments: { action: "create" },
+        result: JSON.stringify({
+          plan: {
+            task_id: "timeline-plan",
+            goal: "Keep the plan outside the timeline",
+            status: "active",
+            plan_hash: "hash",
+            revision: 1,
+            steps: [{ id: "work", description: "Work", status: "running" }],
+          },
+        }),
+      }],
+    };
+
+    render(<ThreadMessages messages={[message]} />);
+
+    expect(screen.queryByTestId("plan-progress-card")).not.toBeInTheDocument();
+  });
+
   it("groups consecutive reasoning and tool rows into one timeline before the answer", () => {
     const messages: UIMessage[] = [
       {

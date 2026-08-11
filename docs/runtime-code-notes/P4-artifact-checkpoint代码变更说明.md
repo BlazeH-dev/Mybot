@@ -350,3 +350,32 @@ Artifact 是任务数据和文件的事实记录；Checkpoint 是执行控制状
 - P5 的 replayability、artifact completion、OpenXML 和 trace 都以 P4 metadata 为证据。
 - P8 child 产物必须进入固定 child root，父 Agent 再汇总或发布正式 artifact。
 - P7 最终结果页可以用可复现报告展示输入快照、lineage、kill→resume 和 uncertain 决策。
+
+## 2026-08-11：Plan DAG、Markdown 与确定性完成
+
+- 新增 `nanobot/runtime/plan_scheduler.py`：DAG validation、topological batches、节点状态机、增量 revision 复用、running node recovery 和固定 Markdown renderer。
+- `PlanTool` 固定原子生成当前任务的 `plan.md`，ArtifactStore 固定 id 为 `plan_markdown`；metadata 绑定当前 revision/hash/checksum，修订覆盖文件但不覆盖结构化 revision、checkpoint 和 trace 历史。
+- `CheckpointStore` 持久化 plan revision、node recovery sets 和 children；`AgentLoop` 在下一次继续任务前对孤立 running node 做恢复分类。
+- `plan complete` 在节点终态与 expected artifact 路径/存在性校验通过后直接标记 `completed`；不再生成 `reflection-rN.json` 或持久化审查状态。
+- 定向回归覆盖 Markdown 稳定章节、单文件 revision 替换、旧 `plan-rN.md`/`plan_md_rN` 迁移清理、tamper 检测、orphan child→uncertain→typed retry、kill/resume 和 complete 闸门。
+- WebUI 预览跨 workspace 的当前 `plan.md` 时，HTTP 层从 session `plan_state` 提取精确绑定并复核 task/revision/hash/artifact id/path/SHA-256；文件被替换或内容变化时返回 checksum 错误，不展示 stale/tampered artifact。
+
+## 2026-08-11：Failed Node Resume
+
+- `PlanScheduler.retry_failed()` 在不修改 contract/revision/hash 的前提下保存失败 attempt 摘要、增加 retry count，并清除旧 child/artifact/result/error 执行绑定后回到 ready。
+- `PlanTool` 新增 hash-bound `resume`；只接受 active confirmed plan，显式重试 failed 节点、重新计算 DAG 并派发 ready child。`failed → running/in_progress` 的模型调用兼容转换为同一安全 retry 路径。
+- active 计划卡片新增“继续执行”，即使历史 card 仍显示 running 也保留恢复入口；按钮提示模型先调用 `plan.resume`，不得直接把 failed 标记为 succeeded。
+
+## 2026-08-11：固定计划文件与会话级单卡片
+
+- `_plan_markdown_path()` 固定返回 task artifact root 下的 `plan.md`；写入使用唯一临时文件和 `os.replace()`，登记后再次调用 ArtifactStore verify。
+- `ArtifactStore.remove()` 只删除指定 task 的精确 artifact id 记录。PlanTool 在新文件验证成功后清理 `plan_md_rN` 记录，再删除精确匹配 `plan-r<digits>.md` 的文件，避免 checkpoint 引用已移除历史文件。
+- `_ensure_plan_markdown()` 可识别并验证当前 revision 的旧绑定，迁移后同步回写 `plan.json`、session metadata 和 checkpoint；其他 stale path/id/hash 继续 fail loud。
+- `session_plan_preview_files()` 只接受固定 id `plan_markdown` 和固定尾路径 `.nanobot-runtime/artifacts/<task_id>/plan.md`。
+- WebUI 从完整 `displayMessages` 提取最新 plan snapshot，`ThreadMessages` 不再渲染卡片；`ThreadShell` 在 Header 与 Viewport 之间维护唯一实例，并按 session key 将单行折叠状态写入 localStorage。
+
+## 2026-08-11：修订计划单击确认使用完整 Hash
+
+- 等待初次或 revision 确认时，`plan_state_runtime_lines()` 保留完整 `plan_hash`，并给出可直接调用 `plan(confirm)` 的精确 `expected_plan_hash`；active 等非确认状态仍使用短 hash 保持上下文紧凑。
+- typed plan confirmation 恢复 checkpoint 时，替换后的 plan tool result 显式携带 `task_id` 和完整 `plan_hash`，避免 Agent 从展示用短 hash 猜测确认参数。
+- 回归覆盖完整 hash 的 Runtime 注入和 interaction materialization，保证计划卡片单击执行后不会先触发 hash mismatch、再 `plan(get)`、再确认。

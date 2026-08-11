@@ -18,6 +18,8 @@ class InteractionKind(StrEnum):
     APPROVAL = "approval"
     PLAN_CONFIRMATION = "plan_confirmation"
     RECOVERY_DECISION = "recovery_decision"
+    # Read-only compatibility for requests persisted before post-plan reflection was removed.
+    REFLECTION_DECISION = "reflection_decision"
 
 
 class InteractionStrategy(StrEnum):

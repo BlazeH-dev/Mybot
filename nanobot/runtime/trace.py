@@ -23,6 +23,8 @@ class TraceContext:
     task_id: str
     actor: str
     path: str
+    session_id: str | None = None
+    turn_id: str | None = None
 
 
 _CURRENT_TRACE: contextvars.ContextVar[TraceContext | None] = contextvars.ContextVar(
@@ -72,6 +74,8 @@ def emit_trace_event(name: str, attributes: dict[str, Any] | None = None) -> Non
         "event.name": name,
         "mybot.task.id": ctx.task_id,
         "mybot.actor": ctx.actor,
+        "mybot.session.id": ctx.session_id,
+        "mybot.webui.turn.id": ctx.turn_id,
         "attributes": attributes or {},
     })
 
@@ -85,6 +89,8 @@ class TraceHook(AgentHook):
         actor: str,
         model: str,
         parent: TraceContext | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
         initial_events: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(reraise=True)
@@ -95,6 +101,8 @@ class TraceHook(AgentHook):
         self.trace_id = parent.trace_id if parent is not None else uuid4().hex
         self.span_id = uuid4().hex[:16]
         self.parent_span_id = parent.span_id if parent is not None else None
+        self.session_id = session_id if session_id is not None else (parent.session_id if parent else None)
+        self.turn_id = turn_id if turn_id is not None else (parent.turn_id if parent else None)
         self.initial_events = list(initial_events or [])
         self._started = 0.0
         self._token: contextvars.Token[TraceContext | None] | None = None
@@ -110,6 +118,8 @@ class TraceHook(AgentHook):
             "gen_ai.request.model": self.model,
             "mybot.task.id": self.task_id,
             "mybot.actor": self.actor,
+            "mybot.session.id": self.session_id,
+            "mybot.webui.turn.id": self.turn_id,
             "attributes": attributes or {},
         }
 
@@ -121,6 +131,8 @@ class TraceHook(AgentHook):
             task_id=self.task_id,
             actor=self.actor,
             path=self.path,
+            session_id=self.session_id,
+            turn_id=self.turn_id,
         )
         self._token = _CURRENT_TRACE.set(trace_context)
         _append(self.path, self._row("gen_ai.agent.run.start", {

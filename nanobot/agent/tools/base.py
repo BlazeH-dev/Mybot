@@ -5,6 +5,7 @@ import typing
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, TypeVar
 
 if typing.TYPE_CHECKING:
@@ -174,6 +175,11 @@ class Tool(ABC):
     def read_only(self) -> bool:
         """Whether this tool is side-effect free and safe to parallelize."""
         return False
+
+    @property
+    def trusted_read_roots(self) -> tuple[Path, ...]:
+        """Extra roots this read-only tool may access outside a restricted workspace."""
+        return ()
 
     @property
     def concurrency_safe(self) -> bool:

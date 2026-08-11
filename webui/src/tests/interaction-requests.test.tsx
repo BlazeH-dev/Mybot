@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { InteractionRequests } from "@/components/thread/InteractionRequests";
+import { setAppLanguage } from "@/i18n";
 
 describe("InteractionRequests", () => {
   it("renders a parameter-bound approval and submits approve once", () => {
@@ -31,19 +32,58 @@ describe("InteractionRequests", () => {
     expect(onRespond).toHaveBeenCalledWith("ir_1", 2, { approved: true });
   });
 
-  it("keeps plan confirmation out of the generic interaction card list", () => {
-    const onRespond = vi.fn();
+  it("localizes approval chrome and known policy reasons", async () => {
+    await setAppLanguage("zh-CN");
     render(
       <InteractionRequests
         interactions={[{
-          request_id: "ir_plan",
+          request_id: "ir_localized_approval",
           revision: 1,
-          kind: "plan_confirmation",
-          strategy: "required",
+          kind: "approval",
+          strategy: "expire_and_deny",
           status: "pending",
-          created_at: "2026-07-18T00:00:00+00:00",
-          payload: { goal: "Build report" },
+          created_at: "2026-08-11T00:00:00+00:00",
+          payload: {
+            reason_i18n_key: "thread.interaction.approvalReason.highRiskCommand",
+            binding: {
+              reason: "high-risk local command requires approval in Default Permission",
+              target: "git commit -m test",
+            },
+          },
         }]}
+        onRespond={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("需要批准")).toBeInTheDocument();
+    expect(screen.getByText("默认权限下，执行高风险本地命令需要批准。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "仅本次批准" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "拒绝" })).toBeInTheDocument();
+  });
+
+  it("keeps plan confirmation and removed reflection requests out of the card list", () => {
+    const onRespond = vi.fn();
+    render(
+      <InteractionRequests
+        interactions={[
+          {
+            request_id: "ir_plan",
+            revision: 1,
+            kind: "plan_confirmation",
+            strategy: "required",
+            status: "pending",
+            created_at: "2026-07-18T00:00:00+00:00",
+            payload: { goal: "Build report" },
+          },
+          {
+            request_id: "ir_legacy_reflection",
+            revision: 1,
+            kind: "reflection_decision",
+            strategy: "required",
+            status: "pending",
+            created_at: "2026-08-10T00:00:00+00:00",
+            payload: {},
+          },
+        ]}
         onRespond={onRespond}
       />,
     );
@@ -104,6 +144,49 @@ describe("InteractionRequests", () => {
         sections: ["Summary", "Risks"],
         title: "Weekly report",
       },
+    });
+  });
+
+  it("localizes runtime HITL cards while preserving protocol answer values", async () => {
+    await setAppLanguage("zh-CN");
+    const onRespond = vi.fn();
+    render(
+      <InteractionRequests
+        interactions={[{
+          request_id: "ir_recovery",
+          revision: 1,
+          kind: "recovery_decision",
+          strategy: "required",
+          status: "pending",
+          created_at: "2026-08-10T00:00:00+00:00",
+          payload: {},
+          questions: [{
+            id: "recovery_action",
+            header: "Recovery",
+            header_i18n_key: "thread.interaction.recovery.header",
+            question: "Choose the next recovery action",
+            question_i18n_key: "thread.interaction.recovery.question",
+            options: [
+              {
+                label: "Retry",
+                label_i18n_key: "thread.interaction.recovery.retry",
+                description: "Retry after checking",
+                description_i18n_key: "thread.interaction.recovery.retryDescription",
+              },
+            ],
+          }],
+        }]}
+        onRespond={onRespond}
+      />,
+    );
+    expect(screen.getByText("需要你的输入")).toBeInTheDocument();
+    expect(screen.getByText("恢复执行")).toBeInTheDocument();
+    expect(screen.getByText(/中断任务的执行结果不确定/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    fireEvent.click(screen.getByRole("button", { name: "继续" }));
+    expect(onRespond).toHaveBeenCalledWith("ir_recovery", 1, {
+      answers: { recovery_action: "Retry" },
+      answer: "Retry",
     });
   });
 });

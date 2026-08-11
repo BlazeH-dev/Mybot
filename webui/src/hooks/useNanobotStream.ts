@@ -8,6 +8,7 @@ import {
   normalizeToolProgressEvents,
   toolTraceLinesFromEvents,
 } from "@/lib/tool-traces";
+import { mergeSubagentActivityList } from "@/lib/subagent-activity";
 import type { StreamError } from "@/lib/nanobot-client";
 import type {
   InboundEvent,
@@ -18,6 +19,7 @@ import type {
   OutboundMcpPresetMention,
   OutboundMedia,
   GoalStateWsPayload,
+  SubagentActivity,
   ToolProgressEvent,
   UIImage,
   UIMediaAttachment,
@@ -435,8 +437,10 @@ export function useNanobotStream(
   initialMessages: UIMessage[] = [],
   hasPendingToolCalls = false,
   onTurnEnd?: () => void,
+  initialSubagentActivities: SubagentActivity[] = [],
 ): {
   messages: UIMessage[];
+  subagentActivities: SubagentActivity[];
   isStreaming: boolean;
   /** Unix epoch seconds when the current user turn started (WebSocket ``goal_status``). */
   runStartedAt: number | null;
@@ -462,6 +466,9 @@ export function useNanobotStream(
 } {
   const { client } = useClient();
   const [messages, setMessages] = useState<UIMessage[]>(initialMessages);
+  const [subagentActivities, setSubagentActivities] = useState<SubagentActivity[]>(
+    initialSubagentActivities,
+  );
   /** If the last loaded message is a trace row (e.g. "Using 2 tools"),
    * the model was still processing when the page loaded — keep the
    * loading spinner alive so the user sees the model is active. */
@@ -706,6 +713,7 @@ export function useNanobotStream(
   // history response after the optimistic first message has already rendered.
   useEffect(() => {
     setMessages(initialMessages);
+    setSubagentActivities(initialSubagentActivities);
     setIsStreaming(
       (initialMessages.length > 0
         ? initialMessages[initialMessages.length - 1].kind === "trace"
@@ -729,6 +737,20 @@ export function useNanobotStream(
   }, [chatId, client, clearActivitySegment, clearPendingStreamWork]);
 
   useEffect(() => {
+    if (initialSubagentActivities.length === 0) return;
+    setSubagentActivities((current) => {
+      const byId = new Map(current.map((item) => [item.childId, item]));
+      for (const item of initialSubagentActivities) {
+        const existing = byId.get(item.childId);
+        const existingTime = existing?.updatedAt ? Date.parse(existing.updatedAt) : 0;
+        const incomingTime = item.updatedAt ? Date.parse(item.updatedAt) : 0;
+        if (!existing || incomingTime >= existingTime) byId.set(item.childId, item);
+      }
+      return Array.from(byId.values());
+    });
+  }, [initialSubagentActivities]);
+
+  useEffect(() => {
     if (hasPendingToolCalls) setIsStreaming(true);
   }, [hasPendingToolCalls]);
 
@@ -742,6 +764,11 @@ export function useNanobotStream(
       if (streamEndTimerRef.current !== null) {
         clearTimeout(streamEndTimerRef.current);
         streamEndTimerRef.current = null;
+      }
+
+      if (ev.event === "subagent_activity") {
+        setSubagentActivities((current) => mergeSubagentActivityList(current, ev.activity));
+        return;
       }
 
       if (ev.event === "delta") {
@@ -1160,6 +1187,7 @@ export function useNanobotStream(
 
   return {
     messages,
+    subagentActivities,
     isStreaming,
     runStartedAt,
     goalState,

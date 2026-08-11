@@ -69,6 +69,33 @@ async def test_plan_only_mode_waits_and_cannot_confirm_same_turn(tmp_path: Path)
     assert blocked.startswith("Error: plan-only mode cannot confirm")
 
 
+async def test_unconfirmed_plan_can_be_revised_before_confirmation(tmp_path: Path) -> None:
+    tool, _ = _make_tool(tmp_path, {"execution_mode": "plan_only"})
+    created = json.loads(await tool.execute(
+        action="create",
+        task_id="task_revise_pending",
+        goal="Propose the implementation",
+        steps=_steps(),
+    ))
+    revised_steps = _steps()
+    revised_steps[0]["description"] = "Inspect workbook dependencies first"
+
+    revised = json.loads(await tool.execute(
+        action="revise",
+        task_id="task_revise_pending",
+        expected_plan_hash=created["plan"]["plan_hash"],
+        steps=revised_steps,
+        revision_reason="User requested dependency inspection first.",
+    ))
+
+    assert revised["plan"]["revision"] == 2
+    assert revised["plan"]["status"] == "awaiting_revision_confirmation"
+    assert revised["plan"]["steps"][0]["description"] == (
+        "Inspect workbook dependencies first"
+    )
+    assert revised["plan"]["approved_plan_hash"] is None
+
+
 def _steps() -> list[dict]:
     return [
         {
@@ -99,10 +126,12 @@ def test_plan_tool_is_statically_discovered_and_registered(tmp_path: Path) -> No
     plan_schema = next(item for item in definitions if item["function"]["name"] == "plan")
     assert plan_schema["function"]["parameters"]["properties"]["action"]["enum"] == [
         "create",
-        "get",
-        "confirm",
-        "update_step",
-        "complete",
+            "get",
+            "revise",
+            "confirm",
+            "resume",
+            "update_step",
+            "complete",
     ]
     assert registry.get_definitions() is definitions
 
@@ -180,7 +209,7 @@ async def test_plan_tool_requires_confirmation_and_tracks_dependencies(tmp_path:
     (artifact_root / "weekly_report.docx").write_bytes(b"docx")
     completed = json.loads(await tool.execute(action="complete", task_id="task_weekly"))
     assert completed["plan"]["status"] == "completed"
-    assert completed["verification"]["passed"] is True
+    assert completed["verification"] == {"passed": True, "missing": []}
 
     session = sessions.get_or_create("websocket:chat-plan")
     assert session.metadata[PLAN_STATE_KEY]["status"] == "completed"
@@ -203,7 +232,8 @@ async def test_plan_tool_runtime_context_is_compact_and_dynamic(tmp_path: Path) 
     assert lines[0].startswith("Plan: task_context (awaiting_confirmation")
     assert any("Plan goal: Build a grounded Office packet" in line for line in lines)
     assert any("wait" in line.lower() for line in lines)
-    assert created["plan"]["plan_hash"][:16] in lines[0]
+    assert f"hash={created['plan']['plan_hash']})" in lines[0]
+    assert f"expected_plan_hash='{created['plan']['plan_hash']}'" in lines[-1]
 
     messages = ContextBuilder(tmp_path).build_messages(
         history=[],

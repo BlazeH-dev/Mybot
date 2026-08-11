@@ -1894,4 +1894,62 @@ describe("useNanobotStream", () => {
     expect(result.current.confirmPlanInteraction("task-ui", "other-hash")).toBe(false);
   });
 
+  it("keeps parallel subagent activity out of the main message timeline", () => {
+    const fake = fakeClient();
+    const { result } = renderHook(() => useNanobotStream("chat-child", EMPTY_MESSAGES), {
+      wrapper: wrap(fake.client),
+    });
+
+    act(() => {
+      fake.emit("chat-child", {
+        event: "subagent_activity",
+        chat_id: "chat-child",
+        activity: {
+          event: "reasoning_delta",
+          child_id: "child-a",
+          label: "A",
+          parent_task_id: "task-1",
+          plan_hash: "hash-1",
+          node_id: "node-a",
+          reasoning_delta: "thinking a",
+        },
+      });
+      fake.emit("chat-child", {
+        event: "subagent_activity",
+        chat_id: "chat-child",
+        activity: {
+          event: "tool_events",
+          child_id: "child-b",
+          label: "B",
+          parent_task_id: "task-1",
+          plan_hash: "hash-1",
+          node_id: "node-b",
+          tool_events: [{ call_id: "call-b", name: "web_search", phase: "start" }],
+        },
+      });
+      fake.emit("chat-child", {
+        event: "subagent_activity",
+        chat_id: "chat-child",
+        activity: {
+          event: "completed",
+          child_id: "child-a",
+          final_result: "done",
+        },
+      });
+    });
+
+    expect(result.current.messages).toEqual([]);
+    expect(result.current.subagentActivities).toHaveLength(2);
+    expect(result.current.subagentActivities[0]).toMatchObject({
+      childId: "child-a",
+      status: "completed",
+      reasoning: "thinking a",
+      finalResult: "done",
+    });
+    expect(result.current.subagentActivities[1].toolEvents[0]).toMatchObject({
+      call_id: "call-b",
+      phase: "start",
+    });
+  });
+
 });

@@ -9,9 +9,11 @@ import {
   listSessions,
 } from "@/lib/api";
 import { deriveTitle } from "@/lib/format";
-import type { ChatSummary, UIMessage, WorkspaceScopePayload } from "@/lib/types";
+import { activitiesFromPayloads } from "@/lib/subagent-activity";
+import type { ChatSummary, SubagentActivity, UIMessage, WorkspaceScopePayload } from "@/lib/types";
 
 const EMPTY_MESSAGES: UIMessage[] = [];
+const EMPTY_SUBAGENT_ACTIVITIES: SubagentActivity[] = [];
 
 /** Sidebar state: fetches the full session list and exposes create / delete actions. */
 export function useSessions(): {
@@ -128,6 +130,7 @@ export function useSessions(): {
 /** Lazy-load a session's on-disk messages the first time the UI displays it. */
 export function useSessionHistory(key: string | null): {
   messages: UIMessage[];
+  subagentActivities: SubagentActivity[];
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -144,6 +147,7 @@ export function useSessionHistory(key: string | null): {
   const [state, setState] = useState<{
     key: string | null;
     messages: UIMessage[];
+    subagentActivities: SubagentActivity[];
     loading: boolean;
     error: string | null;
     hasPendingToolCalls: boolean;
@@ -152,6 +156,7 @@ export function useSessionHistory(key: string | null): {
   }>({
     key: null,
     messages: [],
+    subagentActivities: [],
     loading: false,
     error: null,
     hasPendingToolCalls: false,
@@ -164,6 +169,7 @@ export function useSessionHistory(key: string | null): {
       setState({
         key: null,
         messages: [],
+        subagentActivities: [],
         loading: false,
         error: null,
         hasPendingToolCalls: false,
@@ -180,6 +186,7 @@ export function useSessionHistory(key: string | null): {
       : {
           key,
           messages: [],
+          subagentActivities: [],
           loading: true,
           error: null,
           hasPendingToolCalls: false,
@@ -190,10 +197,11 @@ export function useSessionHistory(key: string | null): {
       try {
         const body = await fetchWebuiThread(token, key);
         if (cancelled) return;
-        if (!body?.messages?.length) {
+        if (!body) {
           setState((prev) => ({
             key,
             messages: [],
+            subagentActivities: [],
             loading: false,
             error: null,
             hasPendingToolCalls: false,
@@ -202,7 +210,7 @@ export function useSessionHistory(key: string | null): {
           }));
           return;
         }
-        const ui: UIMessage[] = body.messages.map((m, idx) => ({
+        const ui: UIMessage[] = (body.messages ?? []).map((m, idx) => ({
           ...m,
           id: m.id ?? `hist-${idx}`,
           createdAt: typeof m.createdAt === "number" ? m.createdAt : Date.now(),
@@ -215,6 +223,7 @@ export function useSessionHistory(key: string | null): {
         setState((prev) => ({
           key,
           messages: ui,
+          subagentActivities: activitiesFromPayloads(body.subagent_activities),
           loading: false,
           error: null,
           hasPendingToolCalls: hasPending,
@@ -227,6 +236,7 @@ export function useSessionHistory(key: string | null): {
           setState((prev) => ({
             key,
             messages: [],
+            subagentActivities: [],
             loading: false,
             error: null,
             hasPendingToolCalls: false,
@@ -237,6 +247,7 @@ export function useSessionHistory(key: string | null): {
           setState((prev) => ({
             key,
             messages: [],
+            subagentActivities: [],
             loading: false,
             error: (e as Error).message,
             hasPendingToolCalls: false,
@@ -254,6 +265,7 @@ export function useSessionHistory(key: string | null): {
   if (!key) {
     return {
       messages: EMPTY_MESSAGES,
+      subagentActivities: EMPTY_SUBAGENT_ACTIVITIES,
       loading: false,
       error: null,
       refresh,
@@ -268,6 +280,7 @@ export function useSessionHistory(key: string | null): {
   if (state.key !== key) {
     return {
       messages: EMPTY_MESSAGES,
+      subagentActivities: EMPTY_SUBAGENT_ACTIVITIES,
       loading: true,
       error: null,
       refresh,
@@ -279,6 +292,7 @@ export function useSessionHistory(key: string | null): {
 
   return {
     messages: state.messages,
+    subagentActivities: state.subagentActivities,
     loading: state.loading,
     error: state.error,
     refresh,

@@ -123,6 +123,7 @@
       "capabilities": "能力",
       "apps": "应用",
       "nativeHost": "原生宿主",
+      "observability": "可观测性",
       "hostSafety": "应用安全",
       "voiceInput": "语音识别"
     },
@@ -205,7 +206,8 @@
       "transcriptionProviderStatus": "提供商状态",
       "transcriptionModel": "模型",
       "transcriptionLanguage": "语言",
-      "voiceLimits": "限制"
+      "voiceLimits": "限制",
+      "langfuseTrace": "发送 Trace 到 Langfuse"
     },
     "help": {
       "theme": "在浅色和深色外观之间切换。",
@@ -249,7 +251,10 @@
       "transcriptionProvider": "使用「提供商」中对应提供商的凭据。",
       "transcriptionProviderStatus": "API Key 仍保存在 providers 里，不写进 transcription 设置。",
       "transcriptionModel": "除非提供商需要自定义模型 ID，否则保持解析后的默认值即可。",
-      "transcriptionLanguage": "可选 ISO-639 语言提示，例如 en、zh、ja 或 ko。"
+      "transcriptionLanguage": "可选 ISO-639 语言提示，例如 en、zh、ja 或 ko。",
+      "langfuseEnabled": "重启后，新对话 Trace 将发送到 Langfuse。",
+      "langfuseDisabled": "重启后，对话 Trace 仅保存在本地 JSONL 文件中。",
+      "langfuseNotConfigured": "请先在 config.json 中配置 Langfuse public key 和 secret key。"
     },
     "timezone": {
       "select": "选择时区",
@@ -422,7 +427,7 @@
         "selectProvider": "选择服务商",
         "credentials": "凭证",
         "noCredentialRequired": "无需 key",
-        "noCredentialHelp": "DuckDuckGo 不需要保存 API key。",
+        "noCredentialHelp": "Bing 不需要保存 API key。",
         "apiKeyHelp": "保存到 config 后只显示掩码提示。",
         "baseUrl": "Base URL",
         "baseUrlHelp": "SearXNG 需要你自己的实例地址。",
@@ -606,6 +611,30 @@
   },
   "thread": {
     "loadingConversation": "正在加载对话…",
+    "interaction": {
+      "approvalTitle": "需要批准",
+      "questionTitle": "需要你的输入",
+      "actionRequired": "需要处理",
+      "approveOnce": "仅本次批准",
+      "deny": "拒绝",
+      "answerPlaceholder": "输入你的回答",
+      "continue": "继续",
+      "approvalReason": {
+        "externalSideEffect": "此操作会产生外部副作用，需要按当前参数批准。",
+        "existingFileWrite": "默认权限下，修改现有本地文件需要批准。",
+        "highRiskCommand": "默认权限下，执行高风险本地命令需要批准。"
+      },
+      "recovery": {
+        "header": "恢复执行",
+        "question": "中断任务的执行结果不确定。请先检查目标，然后选择重试、标记为已完成或取消受影响的步骤。",
+        "retry": "重试",
+        "retryDescription": "仅在检查目标后重试。",
+        "markCompleted": "标记为已完成",
+        "markCompletedDescription": "不要重复执行可能已发生的副作用。",
+        "cancel": "取消",
+        "cancelDescription": "停止此次恢复。"
+      }
+    },
     "empty": {
       "greetings": {
         "workOn": "我们要一起做点什么？",
@@ -672,6 +701,22 @@
       "toggleTheme": "从顶部切换主题",
       "settings": "打开设置",
       "sessionInfo": "会话详情"
+    },
+    "trace": {
+      "open": "查看本轮 Trace",
+      "title": "本轮 Trace",
+      "sourceLocal": "本地脱敏 JSONL",
+      "sourceLangfuse": "Langfuse 可观测数据",
+      "refresh": "刷新 Trace",
+      "openExternal": "在 Langfuse 中打开",
+      "spans": "Span",
+      "tokens": "Token",
+      "duration": "耗时",
+      "eventCount": "{{count}} 个事件",
+      "noTurn": "发送消息后即可查看本轮 Trace。",
+      "loading": "正在加载 Trace...",
+      "empty": "本轮暂时没有可用的 Trace。",
+      "loadFailed": "无法读取可观测数据源。"
     },
     "sessionInfo": {
       "title": "会话",
@@ -878,10 +923,32 @@
       "title": "执行计划",
       "execute": "执行计划",
       "starting": "正在启动…",
+      "resume": "继续执行",
+      "resuming": "正在恢复…",
+      "openDocument": "查看完整计划",
+      "hide": "收起计划",
+      "show": "展开计划",
+      "openSubagents": "查看子智能体",
+      "subagentsRunning": "{{count}} 个子智能体正在执行",
+      "subagentPanel": {
+        "title": "子智能体执行过程",
+        "description": "查看子智能体的实时思考、工具调用、状态与结果。",
+        "waiting": "子智能体步骤正在等待调度。",
+        "iteration": "迭代",
+        "reasoning": "思考过程",
+        "noReasoning": "尚未产生思考内容。",
+        "tools": "工具调用",
+        "noTools": "尚未调用工具。",
+        "result": "执行结果"
+      },
+      "batch": "批次 {{index}}",
+      "dependsOn": "依赖",
       "confirmPrompt": "我确认执行计划 {{taskId}}，计划哈希为 {{planHash}}。请立即执行，持续更新每个计划步骤，并仅在验证通过后完成计划。",
+      "resumePrompt": "继续执行已确认的计划 {{taskId}}，当前完整计划哈希为 {{planHash}}。先调用 plan(action='resume', task_id='{{taskId}}', expected_plan_hash='{{planHash}}') 恢复可重试节点，再继续执行 ready 节点；不要跳过状态机，也不要直接把 failed 标记为 succeeded。",
       "status": {
         "creating": "正在创建",
         "awaiting_confirmation": "等待执行",
+        "awaiting_revision_confirmation": "修订待确认",
         "active": "执行中",
         "completed": "已完成"
       }

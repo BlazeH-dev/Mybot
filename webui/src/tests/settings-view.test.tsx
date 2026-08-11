@@ -135,7 +135,7 @@ const installedAnyGen = {
 
 function renderSettingsView(
   options: {
-    initialSection?: "overview" | "apps" | "advanced" | "models";
+    initialSection?: "overview" | "apps" | "advanced" | "models" | "runtime";
     initialSettings?: SettingsPayload;
     onSettingsChange?: (payload: SettingsPayload) => void;
     onNativeEngineRestart?: () => Promise<string>;
@@ -156,6 +156,71 @@ function renderSettingsView(
     </ClientProvider>,
   );
 }
+
+describe("SettingsView observability", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("saves the Langfuse trace toggle and shows restart pending", async () => {
+    const initial: SettingsPayload = {
+      ...settingsPayload(),
+      observability: {
+        langfuse: {
+          enabled: true,
+          configured: true,
+          base_url: "https://jp.cloud.langfuse.com",
+        },
+      },
+    };
+    const updated: SettingsPayload = {
+      ...initial,
+      observability: {
+        langfuse: {
+          ...initial.observability!.langfuse,
+          enabled: false,
+        },
+      },
+      requires_restart: true,
+      restart_required_sections: ["observability"],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return jsonResponse(initial);
+      if (url === "/api/settings/cli-apps") {
+        return jsonResponse({ apps: [], installed_count: 0 });
+      }
+      if (url === "/api/settings/mcp-presets") {
+        return jsonResponse({ presets: [], installed_count: 0 });
+      }
+      if (url === "/api/settings/observability/update?langfuse_enabled=false") {
+        return jsonResponse(updated);
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSettingsView({ initialSection: "runtime", initialSettings: initial });
+
+    const toggle = await screen.findByRole("switch", { name: "Send traces to Langfuse" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(toggle);
+
+    const save = screen
+      .getAllByRole("button", { name: "Save" })
+      .find((button) => !button.hasAttribute("disabled"));
+    expect(save).toBeDefined();
+    fireEvent.click(save!);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/settings/observability/update?langfuse_enabled=false",
+        expect.objectContaining({ headers: { Authorization: "Bearer tok" } }),
+      ),
+    );
+    expect(await screen.findByText("Saved. Restart when ready.")).toBeInTheDocument();
+  });
+});
 
 describe("SettingsView Apps catalog", () => {
   afterEach(() => {

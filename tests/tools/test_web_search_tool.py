@@ -29,10 +29,11 @@ def _response(
     return r
 
 
-def test_duckduckgo_search_is_exclusive():
-    tool = _tool(provider="duckduckgo")
-    assert tool.exclusive is True
-    assert tool.concurrency_safe is False
+def _mock_bing_fallback(monkeypatch, result: str = "Bing fallback") -> None:
+    async def fake_bing(self, query: str, n: int) -> str:
+        return result
+
+    monkeypatch.setattr(WebSearchTool, "_search_bing", fake_bing)
 
 
 def test_brave_with_api_key_remains_concurrency_safe():
@@ -41,11 +42,11 @@ def test_brave_with_api_key_remains_concurrency_safe():
     assert tool.concurrency_safe is True
 
 
-def test_brave_without_api_key_is_treated_as_duckduckgo_for_concurrency(monkeypatch):
+def test_brave_without_api_key_falls_back_to_concurrency_safe_bing(monkeypatch):
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
     tool = _tool(provider="brave", api_key="")
-    assert tool.exclusive is True
-    assert tool.concurrency_safe is False
+    assert tool.exclusive is False
+    assert tool.concurrency_safe is True
 
 
 @pytest.mark.asyncio
@@ -170,22 +171,15 @@ async def test_volcengine_search(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_volcengine_missing_key_falls_back_to_duckduckgo(monkeypatch):
-    class MockDDGS:
-        def __init__(self, **kw):
-            pass
-
-        def text(self, query, max_results=5):
-            return [{"title": "Fallback", "href": "https://ddg.example", "body": "DuckDuckGo fallback"}]
-
-    monkeypatch.setattr("ddgs.DDGS", MockDDGS)
+async def test_volcengine_missing_key_falls_back_to_bing(monkeypatch):
+    _mock_bing_fallback(monkeypatch)
     monkeypatch.delenv("VOLCENGINE_SEARCH_API_KEY", raising=False)
     monkeypatch.delenv("WEB_SEARCH_API_KEY", raising=False)
 
     tool = _tool(provider="volcengine")
     result = await tool.execute(query="test")
 
-    assert "DuckDuckGo fallback" in result
+    assert result == "Bing fallback"
 
 
 @pytest.mark.asyncio
@@ -212,40 +206,74 @@ async def test_searxng_search(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_duckduckgo_search(monkeypatch):
-    class MockDDGS:
-        def __init__(self, **kw):
-            pass
+async def test_bing_cn_search_parses_results(monkeypatch):
+    html = """
+    <html><body><ol id="b_results">
+      <li class="b_algo">
+        <h2><a href="https://example.com/result">Example result</a></h2>
+        <div class="b_caption"><p>Example snippet</p></div>
+      </li>
+    </ol></body></html>
+    """
 
-        def text(self, query, max_results=5):
-            return [{"title": "DDG Result", "href": "https://ddg.example", "body": "From DuckDuckGo"}]
+    async def mock_get(self, url, **kwargs):
+        assert str(url) == "https://cn.bing.com/search"
+        assert kwargs["params"] == {"q": "test", "count": 1}
+        return httpx.Response(
+            200,
+            text=html,
+            request=httpx.Request("GET", str(url)),
+        )
 
-    monkeypatch.setattr("nanobot.agent.tools.web.DDGS", MockDDGS, raising=False)
-    import nanobot.agent.tools.web as web_mod
-    monkeypatch.setattr(web_mod, "DDGS", MockDDGS, raising=False)
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+    tool = _tool(provider="bing")
 
-    monkeypatch.setattr("ddgs.DDGS", MockDDGS)
+    result = await tool._search_bing_cn("test", 1, 5.0)
 
-    tool = _tool(provider="duckduckgo")
-    result = await tool.execute(query="hello")
-    assert "DDG Result" in result
+    assert result == [{
+        "title": "Example result",
+        "href": "https://example.com/result",
+        "body": "Example snippet",
+    }]
 
 
 @pytest.mark.asyncio
-async def test_brave_fallback_to_duckduckgo_when_no_key(monkeypatch):
-    class MockDDGS:
-        def __init__(self, **kw):
-            pass
+async def test_bing_provider_searches_directly(monkeypatch):
+    calls: list[tuple[str, int, float]] = []
 
-        def text(self, query, max_results=5):
-            return [{"title": "Fallback", "href": "https://ddg.example", "body": "DuckDuckGo fallback"}]
+    async def mock_bing_cn(self, query: str, n: int, timeout: float):
+        calls.append((query, n, timeout))
+        return [{"title": "Bing Result", "href": "https://bing.example", "body": "ok"}]
 
-    monkeypatch.setattr("ddgs.DDGS", MockDDGS)
+    monkeypatch.setattr(WebSearchTool, "_search_bing_cn", mock_bing_cn)
+    tool = _tool(provider="bing")
+
+    result = await tool.execute(query="hello", count=2)
+
+    assert calls == [("hello", 2, 30.0)]
+    assert "Bing Result" in result
+
+
+@pytest.mark.asyncio
+async def test_legacy_duckduckgo_config_is_alias_for_bing(monkeypatch):
+    _mock_bing_fallback(monkeypatch)
+    tool = _tool(provider="duckduckgo")
+
+    result = await tool.execute(query="hello")
+
+    assert result == "Bing fallback"
+    assert tool.exclusive is False
+    assert tool.concurrency_safe is True
+
+
+@pytest.mark.asyncio
+async def test_brave_fallback_to_bing_when_no_key(monkeypatch):
+    _mock_bing_fallback(monkeypatch)
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
 
     tool = _tool(provider="brave", api_key="")
     result = await tool.execute(query="test")
-    assert "Fallback" in result
+    assert result == "Bing fallback"
 
 
 @pytest.mark.asyncio
@@ -313,19 +341,12 @@ async def test_default_provider_is_brave(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_searxng_no_base_url_falls_back(monkeypatch):
-    class MockDDGS:
-        def __init__(self, **kw):
-            pass
-
-        def text(self, query, max_results=5):
-            return [{"title": "Fallback", "href": "https://ddg.example", "body": "fallback"}]
-
-    monkeypatch.setattr("ddgs.DDGS", MockDDGS)
+    _mock_bing_fallback(monkeypatch)
     monkeypatch.delenv("SEARXNG_BASE_URL", raising=False)
 
     tool = _tool(provider="searxng", base_url="")
     result = await tool.execute(query="test")
-    assert "Fallback" in result
+    assert result == "Bing fallback"
 
 
 @pytest.mark.asyncio
@@ -336,14 +357,7 @@ async def test_searxng_invalid_url():
 
 
 @pytest.mark.asyncio
-async def test_jina_422_falls_back_to_duckduckgo(monkeypatch):
-    class MockDDGS:
-        def __init__(self, **kw):
-            pass
-
-        def text(self, query, max_results=5):
-            return [{"title": "Fallback", "href": "https://ddg.example", "body": "DuckDuckGo fallback"}]
-
+async def test_jina_422_falls_back_to_bing(monkeypatch):
     async def mock_get(self, url, **kw):
         assert "s.jina.ai" in str(url)
         raise httpx.HTTPStatusError(
@@ -353,28 +367,21 @@ async def test_jina_422_falls_back_to_duckduckgo(monkeypatch):
         )
 
     monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
-    monkeypatch.setattr("ddgs.DDGS", MockDDGS)
+    _mock_bing_fallback(monkeypatch)
 
     tool = _tool(provider="jina", api_key="jina-key")
     result = await tool.execute(query="test")
-    assert "DuckDuckGo fallback" in result
+    assert result == "Bing fallback"
 
 
 @pytest.mark.asyncio
-async def test_kagi_fallback_to_duckduckgo_when_no_key(monkeypatch):
-    class MockDDGS:
-        def __init__(self, **kw):
-            pass
-
-        def text(self, query, max_results=5):
-            return [{"title": "Fallback", "href": "https://ddg.example", "body": "DuckDuckGo fallback"}]
-
-    monkeypatch.setattr("ddgs.DDGS", MockDDGS)
+async def test_kagi_fallback_to_bing_when_no_key(monkeypatch):
+    _mock_bing_fallback(monkeypatch)
     monkeypatch.delenv("KAGI_API_KEY", raising=False)
 
     tool = _tool(provider="kagi", api_key="")
     result = await tool.execute(query="test")
-    assert "Fallback" in result
+    assert result == "Bing fallback"
 
 
 @pytest.mark.asyncio
@@ -393,28 +400,6 @@ async def test_jina_search_uses_path_encoded_query(monkeypatch):
     await tool.execute(query="hello world")
     assert calls["url"].rstrip("/") == "https://s.jina.ai/hello%20world"
     assert calls["params"] in (None, {})
-
-
-@pytest.mark.asyncio
-async def test_duckduckgo_timeout_returns_error(monkeypatch):
-    """asyncio.wait_for guard should fire when DDG search hangs."""
-    import threading
-    gate = threading.Event()
-
-    class HangingDDGS:
-        def __init__(self, **kw):
-            pass
-
-        def text(self, query, max_results=5):
-            gate.wait(timeout=10)
-            return []
-
-    monkeypatch.setattr("ddgs.DDGS", HangingDDGS)
-    tool = _tool(provider="duckduckgo")
-    tool.config.timeout = 0.2
-    result = await tool.execute(query="test")
-    gate.set()
-    assert "Error" in result
 
 
 @pytest.mark.asyncio
@@ -460,17 +445,9 @@ async def test_olostep_search_formats_answer_and_sources(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_olostep_missing_key_falls_back_to_duckduckgo(monkeypatch):
+async def test_olostep_missing_key_falls_back_to_bing(monkeypatch):
     import sys
     import types
-    from unittest.mock import patch
-
-    class MockDDGS:
-        def __init__(self, **kw):
-            pass
-
-        def text(self, query, max_results=5):
-            return [{"title": "Fallback", "href": "https://ddg.example", "body": "fallback"}]
 
     fake_mod = types.ModuleType("olostep")
     fake_mod.AsyncOlostep = object
@@ -478,11 +455,11 @@ async def test_olostep_missing_key_falls_back_to_duckduckgo(monkeypatch):
     monkeypatch.setitem(sys.modules, "olostep", fake_mod)
 
     monkeypatch.delenv("OLOSTEP_API_KEY", raising=False)
-    with patch("ddgs.DDGS", MockDDGS):
-        tool = _tool(provider="olostep", api_key="")
-        result = await tool.execute(query="test query")
+    _mock_bing_fallback(monkeypatch)
+    tool = _tool(provider="olostep", api_key="")
+    result = await tool.execute(query="test query")
 
-    assert "Fallback" in result
+    assert result == "Bing fallback"
 
 
 @pytest.mark.asyncio

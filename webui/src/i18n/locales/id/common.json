@@ -102,6 +102,7 @@
       "mcp": "Layanan MCP",
       "apps": "Aplikasi",
       "nativeHost": "Host native",
+      "observability": "Observabilitas",
       "hostSafety": "Keamanan aplikasi",
       "voiceInput": "Input suara"
     },
@@ -152,7 +153,8 @@
       "transcriptionProviderStatus": "Status penyedia",
       "transcriptionModel": "Model",
       "transcriptionLanguage": "Bahasa",
-      "voiceLimits": "Batas"
+      "voiceLimits": "Batas",
+      "langfuseTrace": "Kirim trace ke Langfuse"
     },
     "help": {
       "theme": "Beralih antara tampilan terang dan gelap.",
@@ -196,7 +198,10 @@
       "transcriptionProvider": "Menggunakan kredensial penyedia yang sesuai dari Providers.",
       "transcriptionProviderStatus": "API key tetap berada di providers, bukan di pengaturan transkripsi.",
       "transcriptionModel": "Biarkan memakai default yang teresolusi kecuali penyedia membutuhkan id model khusus.",
-      "transcriptionLanguage": "Petunjuk ISO-639 opsional, seperti en, zh, ja, atau ko."
+      "transcriptionLanguage": "Petunjuk ISO-639 opsional, seperti en, zh, ja, atau ko.",
+      "langfuseEnabled": "Trace percakapan baru akan dikirim ke Langfuse setelah dimulai ulang.",
+      "langfuseDisabled": "Trace percakapan akan tetap berada di file JSONL lokal setelah dimulai ulang.",
+      "langfuseNotConfigured": "Konfigurasikan public key dan secret key Langfuse di config.json terlebih dahulu."
     },
     "values": {
       "light": "Terang",
@@ -280,7 +285,7 @@
         "selectProvider": "Pilih provider",
         "credentials": "Kredensial",
         "noCredentialRequired": "Tidak perlu key",
-        "noCredentialHelp": "DuckDuckGo berfungsi tanpa menyimpan API key.",
+        "noCredentialHelp": "Bing berfungsi tanpa menyimpan API key.",
         "apiKeyHelp": "Disimpan di config dan ditampilkan tersamarkan setelah disimpan.",
         "baseUrl": "Base URL",
         "baseUrlHelp": "SearXNG memerlukan URL instance Anda sendiri.",
@@ -585,6 +590,30 @@
   },
   "thread": {
     "loadingConversation": "Memuat percakapan…",
+    "interaction": {
+      "approvalTitle": "Persetujuan diperlukan",
+      "questionTitle": "Masukan Anda diperlukan",
+      "actionRequired": "Tindakan diperlukan",
+      "approveOnce": "Setujui sekali",
+      "deny": "Tolak",
+      "answerPlaceholder": "Ketik jawaban Anda",
+      "continue": "Lanjutkan",
+      "approvalReason": {
+        "externalSideEffect": "Dampak eksternal memerlukan persetujuan untuk parameter yang tepat ini.",
+        "existingFileWrite": "Mengubah file lokal yang ada memerlukan persetujuan dalam Izin Default.",
+        "highRiskCommand": "Perintah lokal berisiko tinggi memerlukan persetujuan dalam Izin Default."
+      },
+      "recovery": {
+        "header": "Pemulihan",
+        "question": "Hasil pekerjaan yang terputus belum pasti. Periksa target, lalu pilih untuk mencoba lagi, menandai langkah selesai, atau membatalkannya.",
+        "retry": "Coba lagi",
+        "retryDescription": "Coba lagi hanya setelah memeriksa target.",
+        "markCompleted": "Tandai selesai",
+        "markCompletedDescription": "Jangan ulangi dampak eksternal.",
+        "cancel": "Batal",
+        "cancelDescription": "Hentikan pemulihan ini."
+      }
+    },
     "empty": {
       "greetings": {
         "workOn": "Apa yang kita kerjakan bersama?",
@@ -652,6 +681,22 @@
       "settings": "Buka pengaturan",
       "sessionInfo": "Detail sesi"
     },
+    "trace": {
+      "open": "Lihat trace giliran saat ini",
+      "title": "Trace giliran",
+      "sourceLocal": "JSONL lokal yang disunting",
+      "sourceLangfuse": "Observasi Langfuse",
+      "refresh": "Muat ulang trace",
+      "openExternal": "Buka di Langfuse",
+      "spans": "Span",
+      "tokens": "Token",
+      "duration": "Durasi",
+      "eventCount": "{{count}} peristiwa",
+      "noTurn": "Kirim pesan untuk membuat trace giliran ini.",
+      "loading": "Memuat trace...",
+      "empty": "Belum ada trace untuk giliran ini.",
+      "loadFailed": "Sumber trace tidak dapat dimuat."
+    },
     "sessionInfo": {
       "title": "Sesi",
       "untitled": "Chat tanpa judul",
@@ -705,6 +750,7 @@
         "drag": "Seret untuk mengurutkan"
       },
       "attachImage": "Lampirkan gambar",
+      "attachFile": "Lampirkan file",
       "imageMode": {
         "label": "Buat gambar",
         "toggle": "Alihkan mode pembuatan gambar",
@@ -814,6 +860,7 @@
       "imageRejected": {
         "unsupported_type": "Tipe file tidak didukung",
         "too_many_images": "Maksimal {{max}} gambar per pesan",
+        "too_many_files": "Maksimal {{max}} file per pesan",
         "magic_mismatch": "File ini tampaknya bukan gambar asli",
         "decode_failed": "Tidak dapat mendekode gambar ini",
         "too_large": "Gambar terlalu besar — coba yang lebih kecil",
@@ -826,8 +873,10 @@
         "mcpGroup": "Layanan MCP",
         "cliBadge": "CLI",
         "mcpBadge": "MCP",
+        "skillBadge": "Skill",
         "cliDescription": "Gunakan @{{name}} sebagai aplikasi CLI lokal",
-        "mcpDescription": "Gunakan @{{name}} sebagai server MCP"
+        "mcpDescription": "Gunakan @{{name}} sebagai server MCP",
+        "skillDescription": "Arahkan giliran ini melalui Skill {{name}}"
       },
       "workspace": {
         "accessAria": "Workspace access mode",
@@ -853,10 +902,32 @@
       "title": "Rencana",
       "execute": "Jalankan rencana",
       "starting": "Memulai…",
+      "resume": "Lanjutkan rencana",
+      "resuming": "Melanjutkan…",
+      "openDocument": "View full plan",
+      "hide": "Sembunyikan rencana",
+      "show": "Tampilkan rencana",
+      "openSubagents": "View subagents",
+      "subagentsRunning": "{{count}} subagents running",
+      "subagentPanel": {
+        "title": "Subagent execution",
+        "description": "Live child-agent reasoning, tool activity, status, and results.",
+        "waiting": "Child steps are waiting to be dispatched.",
+        "iteration": "Iteration",
+        "reasoning": "Reasoning",
+        "noReasoning": "No reasoning has been emitted yet.",
+        "tools": "Tool activity",
+        "noTools": "No tools used yet.",
+        "result": "Result"
+      },
+      "batch": "Batch {{index}}",
+      "dependsOn": "Depends on",
       "confirmPrompt": "Saya mengonfirmasi rencana {{taskId}} dengan hash {{planHash}}. Jalankan sekarang, perbarui setiap langkah, dan selesaikan hanya setelah verifikasi.",
+      "resumePrompt": "Lanjutkan rencana terkonfirmasi {{taskId}} dengan hash lengkap saat ini {{planHash}}. Panggil dahulu plan(action='resume', task_id='{{taskId}}', expected_plan_hash='{{planHash}}'), lalu lanjutkan node ready. Jangan lewati state machine atau menandai node failed sebagai succeeded tanpa eksekusi dan verifikasi.",
       "status": {
         "creating": "Membuat",
         "awaiting_confirmation": "Siap",
+        "awaiting_revision_confirmation": "Revision ready",
         "active": "Berjalan",
         "completed": "Selesai"
       }

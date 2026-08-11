@@ -4,8 +4,13 @@ import { useTranslation } from "react-i18next";
 
 import { FilePreviewPanel } from "@/components/FilePreviewPanel";
 import { InteractionRequests } from "@/components/thread/InteractionRequests";
+import {
+  latestPlanSnapshot,
+  PlanProgressCard,
+} from "@/components/thread/PlanProgressCard";
 import { PromptNavigator } from "@/components/thread/PromptNavigator";
 import { SessionInfoPopover } from "@/components/thread/SessionInfoPopover";
+import { TracePanel } from "@/components/thread/TracePanel";
 import { ThreadComposer } from "@/components/thread/ThreadComposer";
 import { ThreadHeader } from "@/components/thread/ThreadHeader";
 import { StreamErrorNotice } from "@/components/thread/StreamErrorNotice";
@@ -60,6 +65,11 @@ const FILE_PREVIEW_MIN_WIDTH = 360;
 const FILE_PREVIEW_MAX_WIDTH = 860;
 const FILE_PREVIEW_MIN_MAIN_WIDTH = 420;
 const FILE_PREVIEW_CLOSE_ANIMATION_MS = 320;
+const PLAN_COLLAPSED_STORAGE_PREFIX = "mybot.plan.collapsed:";
+
+export function planCollapsedStorageKey(conversationKey: string): string {
+  return `${PLAN_COLLAPSED_STORAGE_PREFIX}${conversationKey}`;
+}
 
 function clampFilePreviewWidth(width: number, maxWidth: number): number {
   return Math.min(Math.max(width, FILE_PREVIEW_MIN_WIDTH), maxWidth);
@@ -253,6 +263,7 @@ export function ThreadShell({
   const historyKey = session?.key ?? null;
   const {
     messages: historical,
+    subagentActivities: historicalSubagentActivities,
     loading,
     hasPendingToolCalls,
     refresh: refreshHistory,
@@ -283,6 +294,7 @@ export function ThreadShell({
   const [filePreviewPath, setFilePreviewPath] = useState<string | null>(null);
   const [filePreviewClosing, setFilePreviewClosing] = useState(false);
   const [filePreviewWidth, setFilePreviewWidth] = useState(FILE_PREVIEW_DEFAULT_WIDTH);
+  const [planCollapsed, setPlanCollapsed] = useState(false);
   const shellRef = useRef<HTMLElement | null>(null);
   const filePreviewWidthRef = useRef(FILE_PREVIEW_DEFAULT_WIDTH);
   const filePreviewCloseTimerRef = useRef<number | null>(null);
@@ -306,6 +318,7 @@ export function ThreadShell({
   }, [onTurnEnd]);
   const {
     messages,
+    subagentActivities,
     isStreaming,
     runStartedAt,
     goalState,
@@ -318,7 +331,13 @@ export function ThreadShell({
     setMessages,
     streamError,
     dismissStreamError,
-  } = useNanobotStream(chatId, initial, hasPendingToolCalls, handleTurnEnd);
+  } = useNanobotStream(
+    chatId,
+    initial,
+    hasPendingToolCalls,
+    handleTurnEnd,
+    historicalSubagentActivities,
+  );
 
   useEffect(() => {
     if (chatId && historyKey) sessionKeyByChatIdRef.current.set(chatId, historyKey);
@@ -346,6 +365,33 @@ export function ThreadShell({
   }, []);
 
   const displayMessages = useMemo(() => projectWebuiThreadMessages(messages), [messages]);
+  const latestPlan = useMemo(() => latestPlanSnapshot(displayMessages), [displayMessages]);
+  const currentTraceTurnId = useMemo(
+    () => [...displayMessages].reverse().find((message) => message.turnId)?.turnId ?? null,
+    [displayMessages],
+  );
+
+  useEffect(() => {
+    if (!historyKey) {
+      setPlanCollapsed(false);
+      return;
+    }
+    try {
+      setPlanCollapsed(window.localStorage.getItem(planCollapsedStorageKey(historyKey)) === "true");
+    } catch {
+      setPlanCollapsed(false);
+    }
+  }, [historyKey]);
+
+  const handlePlanCollapsedChange = useCallback((collapsed: boolean) => {
+    setPlanCollapsed(collapsed);
+    if (!historyKey) return;
+    try {
+      window.localStorage.setItem(planCollapsedStorageKey(historyKey), String(collapsed));
+    } catch {
+      // Storage can be unavailable in privacy-restricted browser contexts.
+    }
+  }, [historyKey]);
 
   const showHeroComposer = messages.length === 0 && !loading;
   const wasShowingHeroComposerRef = useRef(showHeroComposer);
@@ -540,9 +586,17 @@ export function ThreadShell({
   );
 
   const handleExecutePlan = useCallback(
-    (taskId: string, planHash: string) => {
+    (taskId: string, planHash: string, action: "confirm" | "resume") => {
       if (!taskId || !planHash) return;
       setScrollToBottomSignal((value) => value + 1);
+      if (action === "resume") {
+        send(
+          t("message.plan.resumePrompt", { taskId, planHash }),
+          undefined,
+          withWorkspaceScope({ executionMode: "default" }),
+        );
+        return;
+      }
       if (confirmPlanInteraction(taskId, planHash)) return;
       send(
         t("message.plan.confirmPrompt", { taskId, planHash }),
@@ -552,6 +606,10 @@ export function ThreadShell({
     },
     [confirmPlanInteraction, send, t, withWorkspaceScope],
   );
+  const hasRunningSubagents = subagentActivities.some(
+    (activity) => activity.status === "running",
+  );
+  const canStopConversationWork = isStreaming || hasRunningSubagents;
 
   const handleModelPresetSelect = useCallback(
     async (presetName: string) => {
@@ -681,7 +739,7 @@ export function ThreadShell({
         <ThreadComposer
           onSend={handleThreadSend}
           disabled={!chatId}
-          isStreaming={isStreaming}
+          isStreaming={canStopConversationWork}
           placeholder={
             showHeroComposer
               ? t("thread.composer.placeholderHero")
@@ -769,6 +827,14 @@ export function ThreadShell({
       onJumpToPrompt={(promptId) => viewportRef.current?.jumpToUserPrompt(promptId)}
     />
   ) : undefined;
+  const traceAction = historyKey ? (
+    <TracePanel
+      sessionKey={historyKey}
+      token={token}
+      turnId={currentTraceTurnId}
+      live={isStreaming}
+    />
+  ) : undefined;
 
   return (
     <section ref={shellRef} className="relative flex min-h-0 flex-1 overflow-hidden">
@@ -785,7 +851,25 @@ export function ThreadShell({
             minimal={!session && !loading}
             promptNavigatorAction={promptNavigatorAction}
             sessionInfoAction={sessionInfoAction}
+            traceAction={traceAction}
           />
+        ) : null}
+        {latestPlan && historyKey ? (
+          <div
+            className="z-20 shrink-0 border-b border-border/60 bg-background px-4 py-2"
+            data-testid="conversation-plan-surface"
+          >
+            <div className="mx-auto w-full max-w-[49.5rem]">
+              <PlanProgressCard
+                plan={latestPlan}
+                subagentActivities={subagentActivities}
+                onExecute={handleExecutePlan}
+                onOpenPlan={handleOpenFilePreview}
+                collapsed={planCollapsed}
+                onCollapsedChange={handlePlanCollapsedChange}
+              />
+            </div>
+          </div>
         ) : null}
         <ThreadViewport
           ref={viewportRef}
@@ -801,7 +885,6 @@ export function ThreadShell({
           forkBoundaryMessageCount={forkBoundaryMessageCount}
           onOpenFilePreview={historyKey ? handleOpenFilePreview : undefined}
           onForkFromMessage={onForkChat ? handleForkFromMessage : undefined}
-          onExecutePlan={handleExecutePlan}
         />
       </div>
       {filePreviewPath && historyKey ? (

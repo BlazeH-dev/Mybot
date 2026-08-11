@@ -570,6 +570,46 @@ def test_policy_hard_deny_cannot_be_approved(tmp_path: Path) -> None:
     assert decision.hard_deny is True
 
 
+def test_policy_allows_declared_trusted_read_root_but_never_writes(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    skills = tmp_path / "builtin-skills"
+    workspace.mkdir()
+    skills.mkdir()
+    skill_file = skills / "SKILL.md"
+    skill_file.write_text("# Trusted skill\n", encoding="utf-8")
+    scope = build_workspace_scope(workspace, "restricted")
+    engine = PolicyEngine()
+    reader = ReadFileTool(
+        workspace=workspace,
+        allowed_dir=workspace,
+        extra_allowed_dirs=[skills],
+        restrict_to_workspace=True,
+    )
+    writer = WriteFileTool(
+        workspace=workspace,
+        allowed_dir=workspace,
+        extra_allowed_dirs=[skills],
+        restrict_to_workspace=True,
+    )
+
+    read = engine.evaluate(
+        tool=reader,
+        params={"path": str(skill_file)},
+        scope=scope,
+        sandbox_mode=SandboxMode.WORKSPACE_WRITE,
+    )
+    write = engine.evaluate(
+        tool=writer,
+        params={"path": str(skill_file), "content": "changed"},
+        scope=scope,
+        sandbox_mode=SandboxMode.WORKSPACE_WRITE,
+    )
+
+    assert read.action == "allow"
+    assert write.action == "deny"
+    assert write.hard_deny is True
+
+
 @pytest.mark.asyncio
 async def test_restricted_exec_uses_os_sandbox_by_default(tmp_path: Path) -> None:
     tool = ExecTool(working_dir=str(tmp_path), restrict_to_workspace=True)

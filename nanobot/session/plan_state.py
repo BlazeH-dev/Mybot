@@ -35,16 +35,25 @@ def plan_state_runtime_lines(metadata: Mapping[str, Any] | None) -> list[str]:
     if not isinstance(plan, dict):
         return []
     status = str(plan.get("status") or "")
-    if status not in {"awaiting_confirmation", "active"}:
+    if status not in {
+        "awaiting_confirmation",
+        "awaiting_revision_confirmation",
+        "active",
+    }:
         return []
 
     task_id = str(plan.get("task_id") or "unknown")
-    plan_hash = str(plan.get("plan_hash") or "")[:16]
+    plan_hash = str(plan.get("plan_hash") or "")
+    displayed_hash = (
+        plan_hash
+        if status in {"awaiting_confirmation", "awaiting_revision_confirmation"}
+        else plan_hash[:16]
+    )
     goal = str(plan.get("goal") or "").strip()
     if len(goal) > _MAX_GOAL_CHARS:
         goal = goal[:_MAX_GOAL_CHARS].rstrip() + "…"
 
-    lines = [f"Plan: {task_id} ({status}, hash={plan_hash})"]
+    lines = [f"Plan: {task_id} ({status}, hash={displayed_hash})"]
     if goal:
         lines.append(f"Plan goal: {goal}")
     steps = plan.get("steps")
@@ -61,11 +70,19 @@ def plan_state_runtime_lines(metadata: Mapping[str, Any] | None) -> list[str]:
             summaries.append(f"[{step_status}] {step_id}: {description}")
         if summaries:
             lines.append("Plan steps: " + " | ".join(summaries))
-    if status == "awaiting_confirmation":
+    if status in {"awaiting_confirmation", "awaiting_revision_confirmation"}:
         lines.append(
             "Plan is not confirmed. Show it to the user and wait; call plan(action='confirm') "
-            "only after explicit user confirmation."
+            f"with expected_plan_hash='{plan_hash}' only after explicit user confirmation."
         )
     else:
+        if isinstance(steps, list) and any(
+            isinstance(step, dict) and step.get("executor") == "child"
+            for step in steps
+        ):
+            lines.append(
+                "Child DAG nodes are dispatched by the Runtime scheduler. Do not call spawn directly "
+                "or manually mark child nodes running; use plan(action='get' or 'resume')."
+            )
         lines.append("Keep step state current with the plan tool and complete only after verification.")
     return lines

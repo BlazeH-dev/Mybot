@@ -151,3 +151,43 @@ pytest tests/runtime/ -q
 **resume 如何避免重复副作用？**
 
 本地 checkpoint 绑定 source/model/evaluator fingerprint；已完成 case 只有在远端必需 Score 齐全时复用，未知状态不自动重放，必要时进入人工 recovery。
+
+## 2026-08-11：Plan DAG Trace 与回归门
+
+- `PlanTool` 和 `AgentLoop` 发出 `mybot.plan.*` DAG 生命周期事件；完成后不再创建额外 Reviewer trace。
+- `tests/runtime/test_plan_dag.py` 覆盖 DAG cycle/layers、计划 Markdown、确定性 complete、child parallel dispatch、artifact tamper 和 orphan child recovery。
+- `tests/runtime/test_interactions_approvals.py` 覆盖参数绑定审批、recovery 回填和审批原因翻译键；真实 `SubagentManager` lifecycle 测试覆盖 completion callback 的 node/result 传递。
+- WebUI interaction 回归验证中文 HITL 展示与英文协议值提交相互独立；plan/artifact checksum 和节点终态仍由 Runtime 硬判定。
+
+## 2026-08-11：Subagent 用户可见 activity 投影
+
+- child 的脱敏 TraceHook/Langfuse observation 仍是诊断和评估真相源；新增 WebUI `subagent_activity` transcript 只服务用户查看实时执行过程。
+- activity 绑定 task/hash/node/child，记录 phase、iteration、elapsed、usage、reasoning、tool start/end 和终态；WebUI replay 合并为 refresh-safe snapshot。
+- 回归覆盖 child activity 不进入主消息、并行 child 独立聚合、工具阶段合并、终态恢复和 stale revision 过滤。
+
+## 2026-08-11：WebUI 本轮 Trace 面板
+
+- `AgentLoop` 将 WebUI 稳定 `webui_turn_id` 与 session key 传入 `TraceHook` / `LangfuseTraceHook`；本地每条 JSONL event 增加 `mybot.webui.turn.id`、`mybot.session.id`，Langfuse 写入同名 observation metadata，因此 UI 不再依赖时间猜测本轮。
+- `runtime/trace_reader.py` 是只读投影层：本地模式只扫描当前 session workspace 的 `.nanobot-runtime/trace/*.jsonl`，Langfuse 模式按 session 和 turn metadata 查询远端 trace/observation；两种真相源仍互斥，不复制远端正文到本地。
+- `/api/sessions/<key>/trace?turn_id=<id>` 要求 gateway API token，校验 session/turn 格式并使用当前 session workspace；返回 span tree、event、usage、duration、状态和可选 Langfuse deep link。
+- API 投影在已有 Trace/Langfuse masking 之外再次过滤 secret/password/api key/token，并统一遮蔽 content/prompt/completion/message/input/output/result 字符串；WebUI 不展示完整 prompt/response。
+- WebUI `TracePanel` 由聊天页右上角 Activity 图标打开；运行中每 1.5 秒刷新，历史轮次打开时读取最新 user turn id，展示本地或 Langfuse 来源、span/event、token、耗时和错误状态。
+- 设置页“系统 → 可观测性”提供 `observability.langfuse.enabled` 开关；设置响应仅投影 enabled、凭据是否完整和 base URL，密钥不返回浏览器。开启前必须已有 public/secret key，保存后以独立 `observability` section 标记引擎重启；重启后在 Langfuse 与本地 JSONL 两个互斥真相源之间切换。
+- 回归覆盖 session/turn 隔离、短文本二次脱敏、非法 turn id 拒绝、API URL 编码、面板加载和已有 ThreadShell 行为；定向后端 27 项、前端 55 项通过，Python/WebUI lint 与生产构建通过。
+
+## 2026-08-11：Office smoke prepare 状态提示
+
+- 评测 preflight 将“prepared 文件不存在”和“prepared 已存在但许可内容未上传”作为互斥状态。
+- 未准备的 profile 只提示先执行 prepare；只有读取到 `licensed_content_uploaded=false` 时才提示 licensed prepare，避免同一次 readiness 返回互相矛盾的两个原因。
+- 该修复只校准状态投影，不放宽 licensed content、Langfuse `captureContent`、模型凭据、LibreOffice 或 Dataset 完整性硬门。
+
+## 2026-08-11：prepare 下载有界恢复与阶段进度
+
+- 已缓存的 benchmark source 只有在 HEAD 等于 pinned revision、工作树干净且 LICENSE digest 匹配时才直接复用；满足条件时不再无条件 `git fetch`，避免 GitHub 不可达阻塞重复 prepare。
+- Hugging Face 官方 endpoint 使用有界连接、下载和子进程超时；单次连接/下载保持 10/120 秒超时，整批 snapshot 总时限为 2 小时，避免 release 多 GB 许可资产的正常传输被 smoke 级总时限中断。未显式配置 `HF_ENDPOINT` 时，官方源连续失败后自动回退 `https://hf-mirror.com`，仍按固定 dataset revision 下载并由后续 manifest digest/fingerprint 校验。
+- benchmark constraints 固定加入 `pandas==2.3.2`，满足上游 OCB `download_and_convert_files.py` 的 parquet manifest 读取依赖；依赖仍只安装在外部 benchmark venv。
+- Adobe 转换通过运行时 wrapper 向官方 SDK 注入 `ClientConfig(connect_timeout=30000, read_timeout=120000)`，对仍缺失的目标文件最多重试 3 次；不修改 pinned OCB checkout，也不把本地替代转换混入 benchmark。
+- Adobe 运行环境优先保留显式 `CHROMIUM_PATH`，否则查找 PATH 内的 Edge/Chrome/Chromium，并在 macOS 自动识别 `/Applications` 下的标准安装，确保 HTML 许可源仍使用上游规定的 Chromium→Adobe 转换链。
+- 许可源下载/Adobe 子进程将 `getaddrinfo` 结果中的 IPv4 候选排在 IPv6 之前，但不删除 IPv6 候选；这避免本机无路由的 IPv6 CloudFront 在 123 个 release 直接下载项上重复耗尽连接超时，仍保留 IPv6-only 源站的回退能力。
+- `prepare_stage` 进度覆盖 pinned source、benchmark venv、Dataset metadata、smoke manifest、licensed references、Langfuse Dataset、Cloud smoke 和最终 fingerprint；worker 将阶段投影到 Job `phase/current_variant`，页面不再把网络挂起伪装成无信息的 `preparing`。
+- 镜像只解决公共 OCB 资产传输，不改变 licensed upload、Adobe 转换、Langfuse Japan Cloud 或模型评测硬门。

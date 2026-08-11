@@ -1075,6 +1075,50 @@ async def test_send_progress_includes_agent_ui_blob() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_subagent_activity_uses_dedicated_event_and_transcript(
+    tmp_path, monkeypatch,
+) -> None:
+    from nanobot.webui.transcript import build_webui_thread_response, read_transcript_lines
+
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    bus = MagicMock()
+    channel = WebSocketChannel({"enabled": True, "allowFrom": ["*"]}, bus, gateway=_basic_handler(bus))
+    mock_ws = AsyncMock()
+    channel._attach(mock_ws, "chat-1")
+    activity = {
+        "event": "reasoning_delta",
+        "child_id": "child-1",
+        "label": "Research",
+        "parent_task_id": "task-1",
+        "plan_hash": "hash-1",
+        "node_id": "research",
+        "reasoning_delta": "Checking dependencies.",
+    }
+
+    await channel.send(OutboundMessage(
+        channel="websocket",
+        chat_id="chat-1",
+        content="",
+        metadata={
+            "_progress": True,
+            OUTBOUND_META_AGENT_UI: {"kind": "subagent_activity", "activity": activity},
+        },
+    ))
+
+    payload = json.loads(mock_ws.send.await_args.args[0])
+    assert payload == {
+        "event": "subagent_activity",
+        "chat_id": "chat-1",
+        "activity": activity,
+    }
+    assert read_transcript_lines("websocket:chat-1") == [payload]
+    replay = build_webui_thread_response("websocket:chat-1")
+    assert replay is not None
+    assert replay["messages"] == []
+    assert replay["subagent_activities"][0]["reasoning"] == "Checking dependencies."
+
+
+@pytest.mark.asyncio
 async def test_send_delta_removes_connection_on_connection_closed() -> None:
     bus = MagicMock()
     channel = WebSocketChannel({"enabled": True, "allowFrom": ["*"], "streaming": True}, bus, gateway=_basic_handler(bus))
@@ -1729,6 +1773,8 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
     config.agents.defaults.model = "openai/gpt-4o"
     config.agents.defaults.provider = "openai"
     config.providers.openai.api_key = "secret-key"
+    config.observability.langfuse.public_key = "pk-test"
+    config.observability.langfuse.secret_key = "sk-test"
     config.model_presets["deep"] = ModelPresetConfig(
         model="anthropic/claude-opus-4-5",
         provider="anthropic",
@@ -1791,7 +1837,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert body["web_search"]["max_results"] == 5
         assert body["web"]["fetch"]["use_jina_reader"] is True
         search_providers = {provider["name"]: provider for provider in body["web_search"]["providers"]}
-        assert search_providers["duckduckgo"]["credential"] == "none"
+        assert search_providers["bing"]["credential"] == "none"
         assert search_providers["volcengine"]["credential"] == "api_key"
         assert search_providers["searxng"]["credential"] == "base_url"
         assert body["image_generation"]["enabled"] is False
@@ -1816,6 +1862,11 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert body["advanced"]["webui_default_access_mode"] == "default"
         assert body["advanced"]["private_service_protection_enabled"] is True
         assert body["advanced"]["mcp_server_count"] == 0
+        assert body["observability"]["langfuse"] == {
+            "enabled": False,
+            "configured": True,
+            "base_url": "https://jp.cloud.langfuse.com",
+        }
         assert body["restart_required_sections"] == []
         assert "secret-key" not in settings.text
         assert "brave-secret" not in settings.text
@@ -1983,6 +2034,21 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert network_safety_body["advanced"]["webui_default_access_mode"] == "full"
         assert network_safety_body["advanced"]["private_service_protection_enabled"] is True
 
+        observability_updated = await _http_get(
+            "http://127.0.0.1:"
+            f"{port}/api/settings/observability/update?langfuse_enabled=true",
+            headers={"Authorization": "Bearer tok"},
+        )
+        assert observability_updated.status_code == 200
+        observability_body = observability_updated.json()
+        assert observability_body["requires_restart"] is True
+        assert observability_body["restart_required_sections"] == [
+            "browser",
+            "observability",
+            "runtime",
+        ]
+        assert observability_body["observability"]["langfuse"]["enabled"] is True
+
         image_updated = await _http_get(
             "http://127.0.0.1:"
             f"{port}/api/settings/image-generation/update?enabled=true"
@@ -1994,7 +2060,12 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert image_updated.status_code == 200
         image_body = image_updated.json()
         assert image_body["requires_restart"] is True
-        assert image_body["restart_required_sections"] == ["browser", "image", "runtime"]
+        assert image_body["restart_required_sections"] == [
+            "browser",
+            "image",
+            "observability",
+            "runtime",
+        ]
         assert image_body["image_generation"]["enabled"] is True
         assert image_body["image_generation"]["model"] == "openai/gpt-image-1"
         assert image_body["image_generation"]["default_aspect_ratio"] == "16:9"
@@ -2012,6 +2083,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert image_provider_updated.json()["restart_required_sections"] == [
             "browser",
             "image",
+            "observability",
             "runtime",
         ]
         assert "sk-or-next" not in image_provider_updated.text
@@ -2051,6 +2123,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert saved.tools.web.search.timeout == 45
         assert saved.tools.web.fetch.use_jina_reader is False
         assert saved.tools.webui_allow_local_service_access is False
+        assert saved.observability.langfuse.enabled is True
         assert saved.tools.image_generation.enabled is True
         assert saved.tools.image_generation.provider == "openrouter"
         assert saved.tools.image_generation.model == "openai/gpt-image-1"
@@ -3070,6 +3143,122 @@ def test_handle_file_preview_rejects_paths_outside_workspace(tmp_path) -> None:
     resp = gateway.http._handle_file_preview(req, enc)
 
     assert resp.status_code == 403
+
+
+def test_handle_file_preview_allows_checksum_bound_plan_markdown(tmp_path) -> None:
+    from hashlib import sha256
+    from urllib.parse import quote
+
+    from websockets.datastructures import Headers
+    from websockets.http11 import Request
+
+    workspace = tmp_path / "selected-workspace"
+    workspace.mkdir()
+    runtime_workspace = tmp_path / "runtime-workspace"
+    plan_path = (
+        runtime_workspace
+        / ".nanobot-runtime"
+            / "artifacts"
+            / "task-preview"
+            / "plan.md"
+    )
+    plan_path.parent.mkdir(parents=True)
+    content = "# Plan\n\n## Summary\n\nBound to this session.\n"
+    plan_path.write_text(content, encoding="utf-8")
+    checksum = sha256(content.encode()).hexdigest()
+
+    sessions = SessionManager(runtime_workspace)
+    key = "websocket:plan-preview"
+    session = sessions.get_or_create(key)
+    session.metadata["plan_state"] = {
+        "task_id": "task-preview",
+        "revision": 2,
+        "plan_hash": "plan-hash-r2",
+        "plan_markdown": {
+                "artifact_id": "plan_markdown",
+            "path": str(plan_path),
+            "revision": 2,
+            "plan_hash": "plan-hash-r2",
+            "checksum": checksum,
+        },
+    }
+    sessions.save(session)
+
+    gateway = _basic_handler(
+        MagicMock(),
+        workspace_path=workspace,
+        session_manager=sessions,
+    )
+    gateway.tokens.api_tokens["tok"] = time.monotonic() + 300.0
+    enc = quote(key, safe="")
+    req = Request(
+        f"/api/sessions/{enc}/file-preview?path={quote(str(plan_path), safe='')}",
+        Headers([("Authorization", "Bearer tok")]),
+    )
+
+    resp = gateway.http._handle_file_preview(req, enc)
+
+    assert resp.status_code == 200
+    body = json.loads(resp.body.decode())
+    assert body["path"] == str(plan_path)
+    assert body["language"] == "markdown"
+    assert body["content"] == content
+
+
+def test_handle_file_preview_rejects_tampered_plan_markdown(tmp_path) -> None:
+    from hashlib import sha256
+    from urllib.parse import quote
+
+    from websockets.datastructures import Headers
+    from websockets.http11 import Request
+
+    workspace = tmp_path / "selected-workspace"
+    workspace.mkdir()
+    runtime_workspace = tmp_path / "runtime-workspace"
+    plan_path = (
+        runtime_workspace
+        / ".nanobot-runtime"
+            / "artifacts"
+            / "task-preview"
+            / "plan.md"
+    )
+    plan_path.parent.mkdir(parents=True)
+    original = "# Original plan\n"
+    plan_path.write_text(original, encoding="utf-8")
+
+    sessions = SessionManager(runtime_workspace)
+    key = "websocket:tampered-plan-preview"
+    session = sessions.get_or_create(key)
+    session.metadata["plan_state"] = {
+        "task_id": "task-preview",
+        "revision": 1,
+        "plan_hash": "plan-hash-r1",
+        "plan_markdown": {
+                "artifact_id": "plan_markdown",
+            "path": str(plan_path),
+            "revision": 1,
+            "plan_hash": "plan-hash-r1",
+            "checksum": sha256(original.encode()).hexdigest(),
+        },
+    }
+    sessions.save(session)
+    plan_path.write_text("# Tampered plan\n", encoding="utf-8")
+
+    gateway = _basic_handler(
+        MagicMock(),
+        workspace_path=workspace,
+        session_manager=sessions,
+    )
+    gateway.tokens.api_tokens["tok"] = time.monotonic() + 300.0
+    enc = quote(key, safe="")
+    req = Request(
+        f"/api/sessions/{enc}/file-preview?path={quote(str(plan_path), safe='')}",
+        Headers([("Authorization", "Bearer tok")]),
+    )
+
+    resp = gateway.http._handle_file_preview(req, enc)
+
+    assert resp.status_code == 409
 
 
 def test_handle_webui_thread_get_backfills_legacy_missing_user_rows(

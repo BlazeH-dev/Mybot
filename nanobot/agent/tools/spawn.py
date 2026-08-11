@@ -62,6 +62,10 @@ class SpawnTool(Tool, ContextAware):
             "spawn_approved_plan_hash",
             default=None,
         )
+        self._plan_managed_children: ContextVar[bool] = ContextVar(
+            "spawn_plan_managed_children",
+            default=False,
+        )
 
     @classmethod
     def create(cls, ctx: Any) -> Tool:
@@ -89,6 +93,11 @@ class SpawnTool(Tool, ContextAware):
         self._parent_plan_hash.set(str(raw_plan_hash) if raw_plan_hash else None)
         self._parent_plan_status.set(str(raw_plan_status) if raw_plan_status else None)
         self._approved_plan_hash.set(str(raw_approved_hash) if raw_approved_hash else None)
+        self._plan_managed_children.set(
+            ctx.metadata.get("_runtime_plan_managed_children") is True
+            if isinstance(ctx.metadata, dict)
+            else False
+        )
 
     @property
     def name(self) -> str:
@@ -123,6 +132,11 @@ class SpawnTool(Tool, ContextAware):
             return (
                 "Error: policy_denied: spawn requires an active parent plan whose "
                 "approved_plan_hash matches the current plan_hash."
+            )
+        if self._plan_managed_children.get():
+            return (
+                "Error: policy_denied: child DAG nodes are dispatched by the PlanScheduler. "
+                "Use plan(action='get' or 'resume') instead of calling spawn directly."
             )
         running = self._manager.get_running_count()
         limit = self._manager.max_concurrent_subagents

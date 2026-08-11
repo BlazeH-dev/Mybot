@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import nanobot.evaluations.catalog as evaluation_catalog
 from nanobot.cli.benchmark import (
     BenchmarkError,
     _load_case_result,
@@ -74,6 +75,58 @@ def test_ci_preflight_is_offline_and_estimate_is_zero() -> None:
     assert result.ready is True
     assert result.checks["offline"] is True
     assert result.estimate["estimated_tokens"]["total"] == 0
+
+
+def test_office_run_preflight_distinguishes_missing_and_redacted_prepare(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeLangfuse:
+        enabled = True
+        capture_content = True
+
+        def resolved_public_key(self) -> str:
+            return "pk"
+
+        def resolved_secret_key(self) -> str:
+            return "sk"
+
+        def resolved_base_url(self) -> str:
+            return "https://jp.cloud.langfuse.com"
+
+    config = SimpleNamespace(
+        observability=SimpleNamespace(langfuse=FakeLangfuse()),
+        providers=SimpleNamespace(
+            openai=SimpleNamespace(api_key="openai-key", api_base="https://relay.example"),
+            deepseek=SimpleNamespace(api_key="deepseek-key", api_base="https://api.deepseek.com"),
+        ),
+        resolve_preset=lambda name: SimpleNamespace(
+            provider="deepseek" if name == "deepseek-v4-flash" else "openai"
+        ),
+    )
+    monkeypatch.setenv("NANOBOT_BENCHMARK_CACHE", str(tmp_path))
+    monkeypatch.setattr(evaluation_catalog, "load_config", lambda: config)
+    monkeypatch.setattr(evaluation_catalog, "resolve_config_env_vars", lambda value: value)
+    monkeypatch.setattr(
+        evaluation_catalog,
+        "_soffice_probe",
+        lambda _prepared: {"available": True, "path": "/soffice", "version": "test"},
+    )
+
+    request = EvaluationRequest(profile="office-smoke", action="run")
+    missing = EvaluationCatalog().preflight(request)
+
+    assert "Profile has not been prepared" in missing.blockers
+    assert "Prepared Dataset contains redacted content; run licensed prepare" not in missing.blockers
+
+    (tmp_path / "office-smoke.prepared.json").write_text(
+        json.dumps({"licensed_content_uploaded": False}),
+        encoding="utf-8",
+    )
+    redacted = EvaluationCatalog().preflight(request)
+
+    assert "Profile has not been prepared" not in redacted.blockers
+    assert "Prepared Dataset contains redacted content; run licensed prepare" in redacted.blockers
 
 
 class _FakeCatalog:
@@ -582,6 +635,22 @@ def test_progress_checkpoint_is_idempotent_from_persisted_offset(tmp_path: Path)
     assert job["remaining_cases"] == 1
     assert job["resumed_cases"] == 1
     assert len(job["cases"]) == 1
+
+
+def test_prepare_progress_projects_current_stage(tmp_path: Path) -> None:
+    progress = tmp_path / "job.progress.jsonl"
+    progress.write_text(json.dumps({
+        "event": "prepare_stage",
+        "stage": "download_dataset",
+        "label": "Download owner/dataset via mirror (1/3)",
+    }) + "\n", encoding="utf-8")
+    job: dict[str, object] = {"status": "preparing", "phase": "preparing", "cases": []}
+
+    _consume_progress(progress, 0, job)
+
+    assert job["status"] == "preparing"
+    assert job["phase"] == "download_dataset"
+    assert job["current_variant"] == "Download owner/dataset via mirror (1/3)"
 
 
 def test_case_rerun_progress_preserves_parent_case_total(tmp_path: Path) -> None:

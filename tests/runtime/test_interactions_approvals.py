@@ -55,6 +55,27 @@ class ApprovalProvider(LLMProvider):
         return "fake"
 
 
+class RevisionProvider(LLMProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+        self.messages: list[dict] = []
+        self.tool_names: list[str] = []
+
+    async def chat(self, messages, tools=None, model=None, **kwargs) -> LLMResponse:
+        self.calls += 1
+        self.messages = list(messages)
+        self.tool_names = [
+            item["function"]["name"]
+            for item in (tools or [])
+            if isinstance(item, dict) and isinstance(item.get("function"), dict)
+        ]
+        return LLMResponse(content="The revised plan is ready for confirmation.", finish_reason="stop")
+
+    def get_default_model(self) -> str:
+        return "fake"
+
+
 def test_request_user_input_schema_is_json_serializable() -> None:
     registry = ToolRegistry()
     registry.register(RequestUserInputTool())
@@ -154,12 +175,15 @@ def test_approval_is_bound_to_params_plan_and_one_shot(tmp_path: Path) -> None:
         child_id=None,
         target="git commit",
         risk="high",
-        reason="high risk",
+        reason="high-risk local command requires approval in Default Permission",
         sandbox_mode="workspace_write",
         chat_id="chat-1",
         command_hash="cmd-1",
     )
     request = approvals.request(binding, tool_call_id="call-1", turn_id="turn-1")
+    assert request.payload["reason_i18n_key"] == (
+        "thread.interaction.approvalReason.highRiskCommand"
+    )
     approved = manager.respond(
         request.request_id,
         expected_revision=request.revision,
@@ -283,6 +307,103 @@ def test_interaction_response_materializes_as_matching_tool_result(tmp_path: Pat
     assert loop.interactions.get(request.request_id).status == InteractionStatus.CONSUMED
 
 
+def test_plan_confirmation_materialization_keeps_full_plan_binding(tmp_path: Path) -> None:
+    sessions = SessionManager(tmp_path)
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=ApprovalProvider(),
+        workspace=tmp_path,
+        session_manager=sessions,
+    )
+    session = sessions.get_or_create("websocket:chat")
+    full_hash = "23fa9b635b973a366195b425cc515be7357c442bc90f4ccf65798ffcd15b2cd6"
+    request = loop.interactions.create(
+        kind=InteractionKind.PLAN_CONFIRMATION,
+        strategy=InteractionStrategy.REQUIRED,
+        task_id="task-revised",
+        plan_hash=full_hash,
+        payload={"chat_id": "chat"},
+    )
+    loop._set_runtime_checkpoint(session, {
+        "phase": "awaiting_plan_confirmation",
+        "assistant_message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call-plan",
+                "type": "function",
+                "function": {"name": "plan", "arguments": "{}"},
+            }],
+        },
+        "completed_tool_results": [{
+            "role": "tool",
+            "tool_call_id": "call-plan",
+            "name": "plan",
+            "content": "awaiting",
+        }],
+        "pending_tool_calls": [],
+        "interaction": request.as_dict(),
+    })
+    loop.interactions.respond(
+        request.request_id,
+        expected_revision=request.revision,
+        idempotency_key="confirm-revised-plan",
+        response={"approved": True},
+    )
+
+    assert loop._materialize_interaction_response(session, request.request_id)
+    checkpoint = session.metadata[loop._RUNTIME_CHECKPOINT_KEY]
+    resolution = json.loads(checkpoint["completed_tool_results"][0]["content"])
+    assert resolution["task_id"] == "task-revised"
+    assert resolution["plan_hash"] == full_hash
+    assert resolution["response"] == {"approved": True}
+
+
+def test_legacy_reflection_state_migrates_to_completed(tmp_path: Path) -> None:
+    sessions = SessionManager(tmp_path)
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=ApprovalProvider(),
+        workspace=tmp_path,
+        session_manager=sessions,
+    )
+    session = sessions.get_or_create("websocket:chat")
+    session.metadata["plan_state"] = {
+        "task_id": "task-review",
+        "status": "awaiting_reflection_decision",
+        "plan_hash": "plan-review",
+        "approved_plan_hash": "plan-review",
+        "steps": [{"id": "work", "status": "succeeded"}],
+        "reflection": {"verdict": "fail"},
+    }
+    request = loop.interactions.create(
+        kind=InteractionKind.REFLECTION_DECISION,
+        strategy=InteractionStrategy.REQUIRED,
+        task_id="task-review",
+        plan_hash="plan-review",
+    )
+    session.metadata[loop._RUNTIME_CHECKPOINT_KEY] = {
+        "phase": "awaiting_reflection_decision",
+        "completed_tool_results": [{
+            "role": "tool",
+            "tool_call_id": "call-plan",
+            "name": "plan",
+            "content": "awaiting",
+        }],
+        "pending_tool_calls": [],
+        "interaction": request.as_dict(),
+    }
+
+    assert loop._migrate_legacy_reflection_state(session)
+    assert session.metadata["plan_state"]["status"] == "completed"
+    assert "reflection" not in session.metadata["plan_state"]
+    assert loop.interactions.get(request.request_id).status == InteractionStatus.CANCELLED
+    checkpoint = session.metadata[loop._RUNTIME_CHECKPOINT_KEY]
+    assert checkpoint["phase"] == "tools_completed"
+    result = json.loads(checkpoint["completed_tool_results"][0]["content"])
+    assert result["verification"] == {"passed": True, "missing": []}
+
+
 @pytest.mark.asyncio
 async def test_ordinary_chat_cannot_bypass_required_interaction(tmp_path: Path) -> None:
     provider = ApprovalProvider()
@@ -326,3 +447,63 @@ async def test_ordinary_chat_cannot_bypass_required_interaction(tmp_path: Path) 
     assert provider.calls == 0
     assert loop.interactions.get(request.request_id).status == InteractionStatus.PENDING
     assert session.metadata.get(loop._RUNTIME_CHECKPOINT_KEY) is not None
+
+
+@pytest.mark.asyncio
+async def test_ordinary_chat_can_revise_pending_plan_confirmation(tmp_path: Path) -> None:
+    provider = RevisionProvider()
+    sessions = SessionManager(tmp_path)
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        session_manager=sessions,
+    )
+    session = sessions.get_or_create("websocket:chat")
+    session.metadata["plan_state"] = {
+        "task_id": "task-1",
+        "status": "awaiting_confirmation",
+        "plan_hash": "plan-1",
+        "approved_plan_hash": None,
+        "revision": 1,
+        "steps": [{"id": "one", "description": "Do it", "status": "ready"}],
+    }
+    request = loop.interactions.create(
+        kind=InteractionKind.PLAN_CONFIRMATION,
+        strategy=InteractionStrategy.REQUIRED,
+        task_id="task-1",
+        plan_hash="plan-1",
+        payload={"chat_id": "chat"},
+    )
+    loop._set_runtime_checkpoint(session, {
+        "phase": "awaiting_plan_confirmation",
+        "assistant_message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call-plan", "type": "function", "function": {"name": "plan"}}],
+        },
+        "completed_tool_results": [{
+            "role": "tool",
+            "tool_call_id": "call-plan",
+            "name": "plan",
+            "content": "awaiting",
+        }],
+        "pending_tool_calls": [],
+        "interaction": request.as_dict(),
+    })
+
+    response = await loop._process_message(InboundMessage(
+        channel="websocket",
+        sender_id="user",
+        chat_id="chat",
+        content="把第一步改成先检查依赖",
+    ))
+
+    assert response is not None
+    assert provider.calls == 1
+    assert "plan" in provider.tool_names
+    assert "write_file" not in provider.tool_names
+    assert "Plan-only revision mode" in provider.messages[-1]["content"]
+    assert "把第一步改成先检查依赖" in provider.messages[-1]["content"]
+    assert loop.interactions.get(request.request_id).status == InteractionStatus.CANCELLED
+    assert session.metadata.get(loop._RUNTIME_CHECKPOINT_KEY) is None

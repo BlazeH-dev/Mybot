@@ -36,7 +36,7 @@ _VOLCENGINE_DATE_RANGE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}
 
 class WebSearchConfig(Base):
     """Web search configuration."""
-    provider: str = "duckduckgo"
+    provider: str = "bing"
     api_key: str = ""
     base_url: str = ""
     max_results: int = 5
@@ -283,43 +283,40 @@ class WebSearchTool(Tool):
         """Resolve the backend that execute() will actually use."""
         self._refresh_config()
         provider = self.config.provider.strip().lower() or "brave"
+        if provider == "bing":
+            return "bing"
         if provider == "duckduckgo":
-            return "duckduckgo"
+            return "bing"
         if provider == "brave":
             api_key = self.config.api_key or os.environ.get("BRAVE_API_KEY", "")
-            return "brave" if api_key else "duckduckgo"
+            return "brave" if api_key else "bing"
         if provider == "tavily":
             api_key = self.config.api_key or os.environ.get("TAVILY_API_KEY", "")
-            return "tavily" if api_key else "duckduckgo"
+            return "tavily" if api_key else "bing"
         if provider == "searxng":
             base_url = (self.config.base_url or os.environ.get("SEARXNG_BASE_URL", "")).strip()
-            return "searxng" if base_url else "duckduckgo"
+            return "searxng" if base_url else "bing"
         if provider == "jina":
             api_key = self.config.api_key or os.environ.get("JINA_API_KEY", "")
-            return "jina" if api_key else "duckduckgo"
+            return "jina" if api_key else "bing"
         if provider == "kagi":
             api_key = self.config.api_key or os.environ.get("KAGI_API_KEY", "")
-            return "kagi" if api_key else "duckduckgo"
+            return "kagi" if api_key else "bing"
         if provider == "olostep":
             api_key = self.config.api_key or os.environ.get("OLOSTEP_API_KEY", "")
-            return "olostep" if api_key else "duckduckgo"
+            return "olostep" if api_key else "bing"
         if provider == "volcengine":
             api_key = (
                 self.config.api_key
                 or os.environ.get("VOLCENGINE_SEARCH_API_KEY", "")
                 or os.environ.get("WEB_SEARCH_API_KEY", "")
             )
-            return "volcengine" if api_key else "duckduckgo"
+            return "volcengine" if api_key else "bing"
         return provider
 
     @property
     def read_only(self) -> bool:
         return True
-
-    @property
-    def exclusive(self) -> bool:
-        """DuckDuckGo searches are serialized because ddgs is not concurrency-safe."""
-        return self._effective_provider() == "duckduckgo"
 
     async def execute(
         self,
@@ -336,6 +333,8 @@ class WebSearchTool(Tool):
 
         if provider == "olostep":
             return await self._search_olostep(query, n)
+        if provider in {"bing", "duckduckgo"}:
+            return await self._search_bing(query, n)
         if provider == "volcengine":
             return await self._search_volcengine(
                 query,
@@ -344,9 +343,7 @@ class WebSearchTool(Tool):
                 auth_level=kwargs.get("authLevel", kwargs.get("auth_level", auth_level)),
                 query_rewrite=kwargs.get("queryRewrite", kwargs.get("query_rewrite", query_rewrite)),
             )
-        if provider == "duckduckgo":
-            return await self._search_duckduckgo(query, n)
-        elif provider == "tavily":
+        if provider == "tavily":
             return await self._search_tavily(query, n)
         elif provider == "searxng":
             return await self._search_searxng(query, n)
@@ -366,8 +363,8 @@ class WebSearchTool(Tool):
             return "Error: olostep package not installed. Run: pip install olostep"
         api_key = self.config.api_key or os.environ.get("OLOSTEP_API_KEY", "")
         if not api_key:
-            logger.warning("OLOSTEP_API_KEY not set, falling back to DuckDuckGo")
-            return await self._search_duckduckgo(query, n)
+            logger.warning("OLOSTEP_API_KEY not set, falling back to Bing")
+            return await self._search_bing(query, n)
         try:
             async with AsyncOlostep(api_key=api_key) as client:
                 if self.proxy:
@@ -414,8 +411,8 @@ class WebSearchTool(Tool):
     async def _search_brave(self, query: str, n: int) -> str:
         api_key = self.config.api_key or os.environ.get("BRAVE_API_KEY", "")
         if not api_key:
-            logger.warning("BRAVE_API_KEY not set, falling back to DuckDuckGo")
-            return await self._search_duckduckgo(query, n)
+            logger.warning("BRAVE_API_KEY not set, falling back to Bing")
+            return await self._search_bing(query, n)
         try:
             headers = {
                 "Accept": "application/json",
@@ -454,8 +451,8 @@ class WebSearchTool(Tool):
     async def _search_tavily(self, query: str, n: int) -> str:
         api_key = self.config.api_key or os.environ.get("TAVILY_API_KEY", "")
         if not api_key:
-            logger.warning("TAVILY_API_KEY not set, falling back to DuckDuckGo")
-            return await self._search_duckduckgo(query, n)
+            logger.warning("TAVILY_API_KEY not set, falling back to Bing")
+            return await self._search_bing(query, n)
         try:
             async with httpx.AsyncClient(proxy=self.proxy) as client:
                 r = await client.post(
@@ -472,8 +469,8 @@ class WebSearchTool(Tool):
     async def _search_searxng(self, query: str, n: int) -> str:
         base_url = (self.config.base_url or os.environ.get("SEARXNG_BASE_URL", "")).strip()
         if not base_url:
-            logger.warning("SEARXNG_BASE_URL not set, falling back to DuckDuckGo")
-            return await self._search_duckduckgo(query, n)
+            logger.warning("SEARXNG_BASE_URL not set, falling back to Bing")
+            return await self._search_bing(query, n)
         endpoint = f"{base_url.rstrip('/')}/search"
         is_valid, error_msg = _validate_url(endpoint)
         if not is_valid:
@@ -494,8 +491,8 @@ class WebSearchTool(Tool):
     async def _search_jina(self, query: str, n: int) -> str:
         api_key = self.config.api_key or os.environ.get("JINA_API_KEY", "")
         if not api_key:
-            logger.warning("JINA_API_KEY not set, falling back to DuckDuckGo")
-            return await self._search_duckduckgo(query, n)
+            logger.warning("JINA_API_KEY not set, falling back to Bing")
+            return await self._search_bing(query, n)
         try:
             headers = {
                 "Accept": "application/json",
@@ -517,14 +514,14 @@ class WebSearchTool(Tool):
             ]
             return _format_results(query, items, n)
         except Exception as e:
-            logger.warning("Jina search failed ({}), falling back to DuckDuckGo", e)
-            return await self._search_duckduckgo(query, n)
+            logger.warning("Jina search failed ({}), falling back to Bing", e)
+            return await self._search_bing(query, n)
 
     async def _search_kagi(self, query: str, n: int) -> str:
         api_key = self.config.api_key or os.environ.get("KAGI_API_KEY", "")
         if not api_key:
-            logger.warning("KAGI_API_KEY not set, falling back to DuckDuckGo")
-            return await self._search_duckduckgo(query, n)
+            logger.warning("KAGI_API_KEY not set, falling back to Bing")
+            return await self._search_bing(query, n)
         try:
             async with httpx.AsyncClient(proxy=self.proxy) as client:
                 r = await client.post(
@@ -557,8 +554,8 @@ class WebSearchTool(Tool):
             or os.environ.get("WEB_SEARCH_API_KEY", "")
         )
         if not api_key:
-            logger.warning("VOLCENGINE_SEARCH_API_KEY/WEB_SEARCH_API_KEY not set, falling back to DuckDuckGo")
-            return await self._search_duckduckgo(query, n)
+            logger.warning("VOLCENGINE_SEARCH_API_KEY/WEB_SEARCH_API_KEY not set, falling back to Bing")
+            return await self._search_bing(query, n)
 
         try:
             normalized_time_range = _normalize_volcengine_time_range(time_range) if time_range else None
@@ -645,27 +642,57 @@ class WebSearchTool(Tool):
 
         return _format_results(query, items, n)
 
-    async def _search_duckduckgo(self, query: str, n: int) -> str:
+    async def _search_bing(self, query: str, n: int) -> str:
+        """Search Bing China directly without requiring an API key."""
         try:
-            # Note: duckduckgo_search is synchronous and does its own requests
-            # We run it in a thread to avoid blocking the loop
-            from ddgs import DDGS
-
-            ddgs = DDGS(timeout=10)
             raw = await asyncio.wait_for(
-                asyncio.to_thread(ddgs.text, query, max_results=n),
-                timeout=self.config.timeout,
+                self._search_bing_cn(query, n, float(self.config.timeout)),
+                timeout=float(self.config.timeout),
             )
-            if not raw:
-                return f"No results for: {query}"
-            items = [
-                {"title": r.get("title", ""), "url": r.get("href", ""), "content": r.get("body", "")}
-                for r in raw
-            ]
-            return _format_results(query, items, n)
+        except asyncio.TimeoutError:
+            return f"Error: Bing search timed out after {self.config.timeout}s"
         except Exception as e:
-            logger.warning("DuckDuckGo search failed: {}", e)
-            return f"Error: DuckDuckGo search failed ({e})"
+            logger.warning("Bing search failed ({}): {}", type(e).__name__, e)
+            return f"Error: Bing search failed ({type(e).__name__}): {e}"
+        if not raw:
+            return f"No results for: {query}"
+        items = [
+            {"title": r.get("title", ""), "url": r.get("href", ""), "content": r.get("body", "")}
+            for r in raw
+        ]
+        return _format_results(query, items, n)
+
+    async def _search_bing_cn(self, query: str, n: int, timeout: float) -> list[dict[str, str]]:
+        """Search Bing China and parse result titles, URLs, and snippets."""
+        from lxml import html as lxml_html
+
+        async with httpx.AsyncClient(proxy=self.proxy, follow_redirects=True) as client:
+            response = await client.get(
+                "https://cn.bing.com/search",
+                params={"q": query, "count": n},
+                headers={"User-Agent": self.user_agent},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+
+        document = lxml_html.fromstring(response.text)
+        items: list[dict[str, str]] = []
+        result_nodes = document.xpath(
+            "//li[contains(concat(' ', normalize-space(@class), ' '), ' b_algo ')]"
+        )
+        for node in result_nodes[:n]:
+            links = node.xpath(".//h2/a[@href]")
+            if not links:
+                continue
+            link = links[0]
+            title = _normalize("".join(link.xpath(".//text()")))
+            url = str(link.get("href") or "")
+            snippet = _normalize(
+                " ".join(node.xpath(".//div[contains(@class, 'b_caption')]//text()"))
+            )
+            if title and url:
+                items.append({"title": title, "href": url, "body": snippet})
+        return items
 
 
 @tool_parameters(

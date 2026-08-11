@@ -108,6 +108,35 @@ class TestSpawn:
         assert "id:" in result
 
     @pytest.mark.asyncio
+    async def test_completion_callback_receives_final_node_result(self, tmp_path):
+        sm = _manager(tmp_path)
+        sm.runner.run = AsyncMock(return_value=AgentRunResult(
+            final_content="node complete", messages=[], stop_reason="completed",
+        ))
+        completed: list[SubagentStatus] = []
+
+        async def _completed(status: SubagentStatus) -> None:
+            completed.append(status)
+
+        task_id = await sm.spawn(
+            "execute node",
+            parent_task_id="parent-task",
+            parent_plan_hash="plan-hash",
+            node_id="node-a",
+            completion_callback=_completed,
+            return_task_id=True,
+        )
+        assert task_id in sm.get_running_task_ids()
+        await _drain_subagent_tasks(sm)
+
+        assert len(completed) == 1
+        assert completed[0].task_id == task_id
+        assert completed[0].node_id == "node-a"
+        assert completed[0].parent_task_id == "parent-task"
+        assert completed[0].phase == "done"
+        assert completed[0].final_result == "node complete"
+
+    @pytest.mark.asyncio
     async def test_creates_task_in_running_tasks(self, tmp_path):
         sm = _manager(tmp_path)
         block = asyncio.Event()
@@ -121,6 +150,24 @@ class TestSpawn:
 
         block.set()
         await _drain_subagent_tasks(sm)
+
+    @pytest.mark.asyncio
+    async def test_direct_child_limit_is_concurrent_not_lifetime_total(self, tmp_path):
+        sm = _manager(tmp_path, max_concurrent_subagents=5)
+        sm.runner.run = AsyncMock(return_value=AgentRunResult(
+            final_content="done", messages=[], stop_reason="completed",
+        ))
+
+        for index in range(7):
+            result = await sm.spawn(
+                f"task-{index}",
+                parent_task_id="one-plan",
+                return_task_id=True,
+            )
+            assert len(result) == 8
+            await _drain_subagent_tasks(sm)
+
+        assert sm._spawned_by_parent == {}
         assert len(sm._running_tasks) == 0
 
     @pytest.mark.asyncio
@@ -221,9 +268,12 @@ class TestRunSubagent:
     @pytest.mark.asyncio
     async def test_successful_run(self, tmp_path):
         sm = _manager(tmp_path)
-        sm.runner.run = AsyncMock(return_value=AgentRunResult(
-            final_content="Task done!", messages=[], stop_reason="completed",
-        ))
+        async def run(spec):
+            assert spec.fail_on_tool_error is False
+            return AgentRunResult(
+                final_content="Task done!", messages=[], stop_reason="completed",
+            )
+        sm.runner.run = AsyncMock(side_effect=run)
         with patch.object(sm, "_announce_result", new_callable=AsyncMock) as mock_announce:
             await sm._run_subagent(
                 "t1", "do task", "label",
@@ -247,6 +297,45 @@ class TestRunSubagent:
                 {"channel": "cli", "chat_id": "direct"}, status,
             )
             assert mock_announce.call_args.args[-2] == "error"
+
+    @pytest.mark.asyncio
+    async def test_normal_completion_with_unresolved_tool_error_still_fails(self, tmp_path):
+        sm = _manager(tmp_path)
+        sm.runner.run = AsyncMock(return_value=AgentRunResult(
+            final_content="I could not read the file.", messages=[], stop_reason="completed",
+            tool_events=[{"name": "read_file", "status": "error", "detail": "not found"}],
+        ))
+        status = SubagentStatus(
+            task_id="t1", label="label", task_description="do task", started_at=time.monotonic(),
+        )
+        with patch.object(sm, "_announce_result", new_callable=AsyncMock) as mock_announce:
+            await sm._run_subagent(
+                "t1", "do task", "label",
+                {"channel": "cli", "chat_id": "direct"}, status,
+            )
+            assert status.stop_reason == "tool_error"
+            assert mock_announce.call_args.args[-2] == "error"
+
+    @pytest.mark.asyncio
+    async def test_tool_error_followed_by_successful_tool_call_recovers(self, tmp_path):
+        sm = _manager(tmp_path)
+        sm.runner.run = AsyncMock(return_value=AgentRunResult(
+            final_content="Task done through another path.", messages=[], stop_reason="completed",
+            tool_events=[
+                {"name": "read_file", "status": "error", "detail": "not found"},
+                {"name": "list_dir", "status": "ok", "detail": "found replacement"},
+            ],
+        ))
+        status = SubagentStatus(
+            task_id="t1", label="label", task_description="do task", started_at=time.monotonic(),
+        )
+        with patch.object(sm, "_announce_result", new_callable=AsyncMock) as mock_announce:
+            await sm._run_subagent(
+                "t1", "do task", "label",
+                {"channel": "cli", "chat_id": "direct"}, status,
+            )
+            assert status.stop_reason == "completed"
+            assert mock_announce.call_args.args[-2] == "ok"
 
     @pytest.mark.asyncio
     async def test_exception_run(self, tmp_path):
@@ -564,3 +653,42 @@ class TestSubagentHook:
         ctx = _make_hook_context(error="something broke")
         await hook.after_iteration(ctx)
         assert status.error == "something broke"
+
+    @pytest.mark.asyncio
+    async def test_publishes_reasoning_and_tool_lifecycle(self):
+        emitted: list[dict] = []
+
+        async def on_activity(**payload):
+            emitted.append(payload)
+
+        status = SubagentStatus(
+            task_id="t1", label="test", task_description="do", started_at=time.monotonic(),
+        )
+        hook = _SubagentHook("t1", status, on_activity)
+        tool_call = MagicMock()
+        tool_call.id = "call-1"
+        tool_call.name = "read_file"
+        tool_call.arguments = {"path": "notes.md"}
+        ctx = _make_hook_context(
+            iteration=2,
+            tool_calls=[tool_call],
+            tool_results=["contents"],
+            tool_events=[{"name": "read_file", "status": "ok", "detail": ""}],
+            usage={"prompt_tokens": 10},
+        )
+
+        await hook.before_iteration(ctx)
+        await hook.emit_reasoning("Inspecting the file.")
+        await hook.emit_reasoning_end()
+        await hook.before_execute_tools(ctx)
+        await hook.after_iteration(ctx)
+
+        assert [item["event"] for item in emitted] == [
+            "iteration",
+            "reasoning_delta",
+            "reasoning_end",
+            "tool_events",
+            "tool_events",
+        ]
+        assert emitted[3]["tool_events"][0]["phase"] == "start"
+        assert emitted[4]["tool_events"][0]["phase"] == "end"

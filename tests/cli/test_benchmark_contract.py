@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from contextlib import contextmanager
@@ -17,10 +18,12 @@ from nanobot.cli.benchmark import (
     BenchmarkError,
     _case_manifest_digests,
     _case_manifest_map,
+    _clone_at_revision,
     _cloud_smoke,
     _dataset_row_payload,
     _deterministic_stratified_rows,
     _download_hf_snapshot,
+    _download_ocb_references,
     _enqueue_review_items,
     _ensure_experiment_complete,
     _flush_benchmark_runtime,
@@ -90,6 +93,15 @@ def test_profiles_pin_public_revisions_and_estimate_tokens() -> None:
         "judge_output": 6000,
         "total": 146000,
     }
+
+
+def test_benchmark_constraints_include_ocb_manifest_reader() -> None:
+    constraints = (Path(__file__).parents[2] / "benchmarks" / "office" / "constraints.txt").read_text(
+        encoding="utf-8"
+    )
+
+    assert "pyarrow==23.0.1" in constraints
+    assert "pandas==2.3.2" in constraints
 
 
 def test_cloud_smoke_waits_for_delayed_trace_ingestion(monkeypatch) -> None:
@@ -164,11 +176,11 @@ def test_hf_snapshot_download_retries_and_deduplicates_patterns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[list[str], dict[str, str] | None]] = []
+    calls: list[tuple[list[str], dict[str, str] | None, float | None]] = []
 
-    def fake_run(command: list[str], *, cwd=None, env=None) -> str:
-        calls.append((command, env))
-        if len(calls) == 1:
+    def fake_run(command: list[str], *, cwd=None, env=None, timeout_seconds=None) -> str:
+        calls.append((command, env, timeout_seconds))
+        if len(calls) <= 3:
             raise BenchmarkError("connection interrupted")
         return str(tmp_path / "dataset")
 
@@ -183,10 +195,93 @@ def test_hf_snapshot_download_retries_and_deduplicates_patterns(
     )
 
     assert result == (tmp_path / "dataset").resolve()
-    assert len(calls) == 2
+    assert len(calls) == 4
     assert calls[0][0].count("reference_files/example.docx") == 1
     assert calls[0][1]["HF_HUB_DISABLE_XET"] == "1"
+    assert calls[0][1]["HF_ENDPOINT"] == "https://huggingface.co"
+    assert calls[3][1]["HF_ENDPOINT"] == "https://hf-mirror.com"
+    assert calls[0][1]["HF_HUB_ETAG_TIMEOUT"] == "10"
+    assert calls[0][1]["HF_HUB_DOWNLOAD_TIMEOUT"] == "120"
+    assert calls[0][2] == 7_200
     assert "max_workers=1" in calls[0][0][2]
+
+
+def test_pinned_clean_source_checkout_is_reused_without_network(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision = "a" * 40
+    target = tmp_path / "sources" / "ocb"
+    (target / ".git").mkdir(parents=True)
+    license_path = target / "LICENSE"
+    license_path.write_text("license", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], *, cwd=None, env=None, timeout_seconds=None) -> str:
+        calls.append(command)
+        if command[1:3] == ["rev-parse", "HEAD"]:
+            return revision
+        if command[1:3] == ["status", "--porcelain"]:
+            return ""
+        raise AssertionError(f"unexpected network or checkout command: {command}")
+
+    monkeypatch.setattr("nanobot.cli.benchmark._run", fake_run)
+
+    result = _clone_at_revision(
+        "ocb",
+        {
+            "url": "https://github.com/example/ocb",
+            "revision": revision,
+            "license_sha256": hashlib.sha256(b"license").hexdigest(),
+        },
+        tmp_path,
+    )
+
+    assert result == target
+    assert calls == [["git", "rev-parse", "HEAD"], ["git", "status", "--porcelain"]]
+
+
+def test_ocb_reference_conversion_uses_bounded_adobe_client_and_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, str] | None, float | None]] = []
+    output_root = tmp_path / "data" / "reference_files"
+    output_root.mkdir(parents=True)
+    rows = [{
+        "input": {
+            "reference_paths": ["/cache/first.pptx", "/cache/second.pptx"],
+            "reference_sha256": [None, None],
+        },
+    }]
+
+    def fake_run(command: list[str], *, cwd=None, env=None, timeout_seconds=None) -> str:
+        calls.append((command, env, timeout_seconds))
+        if len(calls) == 1:
+            (output_root / "first.pptx").write_bytes(b"x" * 2048)
+        else:
+            (output_root / "second.pptx").write_bytes(b"y" * 2048)
+        return ""
+
+    monkeypatch.setattr("nanobot.cli.benchmark._run", fake_run)
+    monkeypatch.setattr("nanobot.cli.benchmark.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "nanobot.cli.benchmark.adobe_pdf_services_env", lambda: {"SAFE": "1"}
+    )
+
+    _download_ocb_references(
+        Path(sys.executable),
+        tmp_path / "source",
+        tmp_path / "data",
+        rows,
+    )
+
+    assert len(calls) == 2
+    assert "ClientConfig(connect_timeout=30000, read_timeout=120000)" in calls[0][0][2]
+    assert "item[0] != socket.AF_INET" in calls[0][0][2]
+    assert calls[0][1] == {"SAFE": "1"}
+    assert calls[0][2] == 480.0
+    assert calls[1][0][-3] == "second.pptx"
 
 
 def test_missing_ocb_references_are_reported_without_local_paths() -> None:

@@ -16,6 +16,7 @@ interface ThreadHeaderProps {
   minimal?: boolean;
   promptNavigatorAction?: ReactNode;
   sessionInfoAction?: ReactNode;
+  traceAction?: ReactNode;
 }
 
 export function ThreadHeader({
@@ -29,6 +30,7 @@ export function ThreadHeader({
   minimal = false,
   promptNavigatorAction,
   sessionInfoAction,
+  traceAction,
 }: ThreadHeaderProps) {
   const { t } = useTranslation();
 
@@ -63,6 +65,7 @@ export function ThreadHeader({
       <div className="ml-auto flex shrink-0 items-center gap-1">
         {sessionInfoAction}
         {promptNavigatorAction}
+        {traceAction}
         {!hideThemeButton ? (
           <ThemeButton
             theme={theme}

@@ -227,6 +227,20 @@ class ArtifactStore:
         path = Path(record.path)
         return path.is_file() and sha256_file(path) == record.checksum
 
+    def remove(self, task_id: str, artifact_ids: set[str] | list[str] | tuple[str, ...]) -> list[ArtifactRecord]:
+        """Remove exact task-local artifact records without deleting their files."""
+        selected = {str(artifact_id) for artifact_id in artifact_ids}
+        if not selected:
+            return []
+        rows = self.list(task_id)
+        removed = [row for row in rows if row.artifact_id in selected]
+        if removed:
+            self._write_index(
+                task_id,
+                [row for row in rows if row.artifact_id not in selected],
+            )
+        return removed
+
     def _upsert(self, record: ArtifactRecord) -> ArtifactRecord:
         rows = self.list(record.task_id)
         for index, existing in enumerate(rows):

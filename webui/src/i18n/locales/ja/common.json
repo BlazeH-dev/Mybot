@@ -102,6 +102,7 @@
       "mcp": "MCP サービス",
       "apps": "アプリ",
       "nativeHost": "ネイティブホスト",
+      "observability": "可観測性",
       "hostSafety": "アプリの安全性",
       "voiceInput": "音声入力"
     },
@@ -152,7 +153,8 @@
       "transcriptionProviderStatus": "プロバイダー状態",
       "transcriptionModel": "モデル",
       "transcriptionLanguage": "言語",
-      "voiceLimits": "制限"
+      "voiceLimits": "制限",
+      "langfuseTrace": "トレースを Langfuse に送信"
     },
     "help": {
       "theme": "ライト表示とダーク表示を切り替えます。",
@@ -196,7 +198,10 @@
       "transcriptionProvider": "プロバイダー設定にある対応する認証情報を使います。",
       "transcriptionProviderStatus": "APIキーは文字起こし設定ではなくプロバイダー側に保存されます。",
       "transcriptionModel": "プロバイダーがカスタムモデルIDを必要としない限り、解決済みのデフォルトのままにします。",
-      "transcriptionLanguage": "en、zh、ja、ko などの任意の ISO-639 ヒント。"
+      "transcriptionLanguage": "en、zh、ja、ko などの任意の ISO-639 ヒント。",
+      "langfuseEnabled": "再起動後、新しい会話のトレースを Langfuse に送信します。",
+      "langfuseDisabled": "再起動後、会話のトレースをローカル JSONL ファイルに保存します。",
+      "langfuseNotConfigured": "先に config.json で Langfuse の公開キーと秘密キーを設定してください。"
     },
     "values": {
       "light": "ライト",
@@ -280,7 +285,7 @@
         "selectProvider": "provider を選択",
         "credentials": "認証情報",
         "noCredentialRequired": "key は不要",
-        "noCredentialHelp": "DuckDuckGo は API key を保存せずに使えます。",
+        "noCredentialHelp": "Bing は API key を保存せずに使えます。",
         "apiKeyHelp": "config に保存され、保存後はマスク表示されます。",
         "baseUrl": "Base URL",
         "baseUrlHelp": "SearXNG には自分のインスタンス URL が必要です。",
@@ -585,6 +590,30 @@
   },
   "thread": {
     "loadingConversation": "会話を読み込み中…",
+    "interaction": {
+      "approvalTitle": "承認が必要です",
+      "questionTitle": "入力が必要です",
+      "actionRequired": "操作が必要です",
+      "approveOnce": "今回のみ承認",
+      "deny": "拒否",
+      "answerPlaceholder": "回答を入力",
+      "continue": "続行",
+      "approvalReason": {
+        "externalSideEffect": "外部への影響があるため、このパラメータでの承認が必要です。",
+        "existingFileWrite": "デフォルト権限では、既存のローカルファイルの変更に承認が必要です。",
+        "highRiskCommand": "デフォルト権限では、高リスクのローカルコマンドに承認が必要です。"
+      },
+      "recovery": {
+        "header": "復旧",
+        "question": "中断された処理の結果が不明です。対象を確認してから、再試行、完了として記録、またはキャンセルを選択してください。",
+        "retry": "再試行",
+        "retryDescription": "対象を確認した後にのみ再試行します。",
+        "markCompleted": "完了として記録",
+        "markCompletedDescription": "副作用を繰り返しません。",
+        "cancel": "キャンセル",
+        "cancelDescription": "この復旧を停止します。"
+      }
+    },
     "empty": {
       "greetings": {
         "workOn": "一緒に何に取り組みましょうか？",
@@ -652,6 +681,22 @@
       "settings": "設定を開く",
       "sessionInfo": "セッション詳細"
     },
+    "trace": {
+      "open": "現在のターンのトレースを表示",
+      "title": "ターントレース",
+      "sourceLocal": "ローカルの編集済み JSONL",
+      "sourceLangfuse": "Langfuse オブザベーション",
+      "refresh": "トレースを更新",
+      "openExternal": "Langfuse で開く",
+      "spans": "スパン",
+      "tokens": "トークン",
+      "duration": "所要時間",
+      "eventCount": "{{count}} 件のイベント",
+      "noTurn": "メッセージを送信すると、このターンのトレースが作成されます。",
+      "loading": "トレースを読み込み中...",
+      "empty": "このターンのトレースはまだありません。",
+      "loadFailed": "トレースソースを読み込めませんでした。"
+    },
     "sessionInfo": {
       "title": "セッション",
       "untitled": "無題のチャット",
@@ -705,6 +750,7 @@
         "drag": "ドラッグして並べ替え"
       },
       "attachImage": "画像を添付",
+      "attachFile": "ファイルを添付",
       "imageMode": {
         "label": "画像生成",
         "toggle": "画像生成モードを切り替え",
@@ -814,6 +860,7 @@
       "imageRejected": {
         "unsupported_type": "対応していないファイル形式です",
         "too_many_images": "1 メッセージにつき最大 {{max}} 枚です",
+        "too_many_files": "1 メッセージにつき最大 {{max}} ファイルです",
         "magic_mismatch": "画像ファイルではないようです",
         "decode_failed": "この画像をデコードできません",
         "too_large": "画像が大きすぎます。小さいものを選んでください",
@@ -826,8 +873,10 @@
         "mcpGroup": "MCP サービス",
         "cliBadge": "CLI",
         "mcpBadge": "MCP",
+        "skillBadge": "Skill",
         "cliDescription": "@{{name}} をローカル CLI アプリとして使用",
-        "mcpDescription": "@{{name}} を MCP サーバーとして使用"
+        "mcpDescription": "@{{name}} を MCP サーバーとして使用",
+        "skillDescription": "このターンを Skill {{name}} にルーティング"
       },
       "workspace": {
         "accessAria": "Workspace access mode",
@@ -853,10 +902,32 @@
       "title": "計画",
       "execute": "計画を実行",
       "starting": "開始中…",
+      "resume": "計画を再開",
+      "resuming": "再開中…",
+      "openDocument": "View full plan",
+      "hide": "計画を折りたたむ",
+      "show": "計画を表示",
+      "openSubagents": "View subagents",
+      "subagentsRunning": "{{count}} subagents running",
+      "subagentPanel": {
+        "title": "Subagent execution",
+        "description": "Live child-agent reasoning, tool activity, status, and results.",
+        "waiting": "Child steps are waiting to be dispatched.",
+        "iteration": "Iteration",
+        "reasoning": "Reasoning",
+        "noReasoning": "No reasoning has been emitted yet.",
+        "tools": "Tool activity",
+        "noTools": "No tools used yet.",
+        "result": "Result"
+      },
+      "batch": "Batch {{index}}",
+      "dependsOn": "Depends on",
       "confirmPrompt": "計画 {{taskId}}（ハッシュ {{planHash}}）を確認しました。今すぐ実行し、各ステップを更新して、検証後にのみ完了してください。",
+      "resumePrompt": "確認済み計画 {{taskId}} を現在の完全なハッシュ {{planHash}} で再開します。まず plan(action='resume', task_id='{{taskId}}', expected_plan_hash='{{planHash}}') を呼び出し、その後 ready ノードを続行してください。状態機械を回避したり、実行と検証なしに failed ノードを succeeded にしないでください。",
       "status": {
         "creating": "作成中",
         "awaiting_confirmation": "準備完了",
+        "awaiting_revision_confirmation": "Revision ready",
         "active": "実行中",
         "completed": "完了"
       }

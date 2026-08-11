@@ -142,6 +142,7 @@ async def test_spawn_tool_rejects_when_at_concurrency_limit(tmp_path):
         workspace=tmp_path,
         bus=bus,
         max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        max_concurrent_subagents=1,
     )
     mgr._announce_result = AsyncMock()
 
@@ -178,7 +179,7 @@ async def test_spawn_tool_rejects_when_at_concurrency_limit(tmp_path):
     result = await tool.execute(task="first task")
     assert "started" in result
 
-    # Second spawn should be rejected (default limit is 1)
+    # Second spawn should be rejected by the explicit limit.
     result = await tool.execute(task="second task")
     assert "Cannot spawn subagent" in result
     assert "concurrency limit reached" in result
@@ -187,6 +188,42 @@ async def test_spawn_tool_rejects_when_at_concurrency_limit(tmp_path):
     release.set()
     # Allow cleanup
     await asyncio.gather(*mgr._running_tasks.values(), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_defers_managed_child_nodes_to_plan_scheduler(tmp_path):
+    from nanobot.agent.subagent import SubagentManager
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.agent.tools.spawn import SpawnTool
+    from nanobot.bus.queue import MessageBus
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=MessageBus(),
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    )
+    tool = SpawnTool(manager)
+    tool.set_context(RequestContext(
+        channel="websocket",
+        chat_id="chat",
+        session_key="websocket:chat",
+        metadata={
+            "_runtime_task_id": "task-1",
+            "_runtime_plan_hash": "hash-1",
+            "_runtime_plan_status": "active",
+            "_runtime_approved_plan_hash": "hash-1",
+            "_runtime_plan_managed_children": True,
+        },
+    ))
+
+    result = await tool.execute(task="duplicate scheduler work")
+
+    assert "policy_denied" in result
+    assert "PlanScheduler" in result
+    assert manager.get_running_count() == 0
 
 
 def test_subagent_default_max_concurrent_matches_agent_defaults(tmp_path):
@@ -289,10 +326,9 @@ async def test_agent_loop_syncs_updated_max_iterations_before_run(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_drain_pending_blocks_while_subagents_running(tmp_path):
-    """_drain_pending should block when no messages are available but sub-agents are still running."""
+async def test_drain_pending_does_not_block_while_subagents_run_in_background(tmp_path):
+    """The parent Runner must not wait in the foreground for background children."""
     from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.events import InboundMessage
     from nanobot.bus.queue import MessageBus
     from nanobot.session.manager import Session
 
@@ -302,7 +338,7 @@ async def test_drain_pending_blocks_while_subagents_running(tmp_path):
 
     loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
 
-    pending_queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
+    pending_queue: asyncio.Queue = asyncio.Queue()
     session = Session(key="test:drain-block")
     injection_callback = None
 
@@ -311,9 +347,6 @@ async def test_drain_pending_blocks_while_subagents_running(tmp_path):
         nonlocal injection_callback
         injection_callback = spec.injection_callback
 
-        # Simulate: first call to injection_callback should block because
-        # sub-agents are running and no messages are in the queue yet.
-        # We'll resolve this from a concurrent task.
         return SimpleNamespace(
             stop_reason="done",
             final_content="done",
@@ -346,31 +379,8 @@ async def test_drain_pending_blocks_while_subagents_running(tmp_path):
 
     assert injection_callback is not None
 
-    # Now test the callback directly
-    # With sub-agents running and an empty queue, it should block
-    drain_task = asyncio.create_task(injection_callback())
-
-    # Let the task enter the blocking queue wait.
-    await asyncio.sleep(0)
-
-    # Should still be running (blocked on pending_queue.get())
-    assert not drain_task.done(), "drain should block while sub-agents are running"
-
-    # Now put a message in the queue (simulating sub-agent completion)
-    await pending_queue.put(InboundMessage(
-        sender_id="subagent",
-        channel="test",
-        chat_id="c1",
-        content="Sub-agent result",
-        media=None,
-        metadata={},
-    ))
-
-    # Should unblock and return results
-    results = await asyncio.wait_for(drain_task, timeout=2.0)
-    assert len(results) >= 1
-    assert results[0]["role"] == "user"
-    assert "Sub-agent result" in str(results[0]["content"])
+    results = await asyncio.wait_for(injection_callback(), timeout=0.1)
+    assert results == []
 
     # Cleanup
     hang_task.cancel()

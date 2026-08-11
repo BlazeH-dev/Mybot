@@ -9,6 +9,7 @@ from nanobot.webui.transcript import (
     build_webui_thread_response,
     fork_transcript_before_user_index,
     read_transcript_lines,
+    replay_transcript_to_subagent_activities,
     replay_transcript_to_ui_messages,
     write_session_messages_as_transcript,
 )
@@ -964,3 +965,64 @@ def test_build_response_schema(monkeypatch, tmp_path) -> None:
     assert out["schemaVersion"] == WEBUI_TRANSCRIPT_SCHEMA_VERSION
     assert out["sessionKey"] == key
     assert len(out["messages"]) == 1
+
+
+def test_replay_subagent_activities_merges_parallel_children_without_main_messages() -> None:
+    lines = [
+        {
+            "event": "subagent_activity",
+            "activity": {
+                "event": "started",
+                "child_id": "child-a",
+                "label": "A",
+                "parent_task_id": "task-1",
+                "plan_hash": "hash-1",
+                "node_id": "node-a",
+            },
+        },
+        {
+            "event": "subagent_activity",
+            "activity": {
+                "event": "started",
+                "child_id": "child-b",
+                "label": "B",
+                "parent_task_id": "task-1",
+                "plan_hash": "hash-1",
+                "node_id": "node-b",
+            },
+        },
+        {
+            "event": "subagent_activity",
+            "activity": {
+                "event": "reasoning_delta",
+                "child_id": "child-a",
+                "reasoning_delta": "first ",
+            },
+        },
+        {
+            "event": "subagent_activity",
+            "activity": {
+                "event": "reasoning_delta",
+                "child_id": "child-a",
+                "reasoning_delta": "second",
+                "tool_events": [{"call_id": "call-1", "name": "read_file", "phase": "start"}],
+            },
+        },
+        {
+            "event": "subagent_activity",
+            "activity": {
+                "event": "completed",
+                "child_id": "child-a",
+                "tool_events": [{"call_id": "call-1", "name": "read_file", "phase": "end"}],
+                "final_result": "done",
+            },
+        },
+    ]
+
+    assert replay_transcript_to_ui_messages(lines) == []
+    activities = replay_transcript_to_subagent_activities(lines)
+    assert [item["child_id"] for item in activities] == ["child-a", "child-b"]
+    assert activities[0]["reasoning"] == "first second"
+    assert activities[0]["tool_events"][0]["phase"] == "end"
+    assert activities[0]["status"] == "completed"
+    assert activities[1]["status"] == "running"

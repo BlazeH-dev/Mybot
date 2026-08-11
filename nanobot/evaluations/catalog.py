@@ -306,7 +306,7 @@ class OfficeEvaluationAdapter:
         if not soffice["available"]:
             blockers.append("Stable LibreOffice is unavailable")
         if request.action == "run":
-            if not checks["licensed_content_uploaded"]:
+            if prepared is not None and not checks["licensed_content_uploaded"]:
                 blockers.append("Prepared Dataset contains redacted content; run licensed prepare")
             if not langfuse.capture_content:
                 blockers.append("captureContent must be enabled for a licensed benchmark run")

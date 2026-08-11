@@ -30,7 +30,11 @@ from nanobot.evaluations.catalog import (
 from nanobot.evaluations.jobs import EvaluationJobService
 from nanobot.evaluations.results import LangfuseEvaluationReader
 from nanobot.utils.subagent_channel_display import scrub_subagent_messages_for_channel
-from nanobot.webui.file_preview import WebUIFilePreviewError, file_preview_payload
+from nanobot.webui.file_preview import (
+    WebUIFilePreviewError,
+    file_preview_payload,
+    session_plan_preview_files,
+)
 from nanobot.webui.gateway_tokens import GatewayTokenStore, token_response_payload
 from nanobot.webui.http_utils import (
     case_insensitive_header as _case_insensitive_header,
@@ -231,6 +235,10 @@ class GatewayHTTPHandler:
             return response
 
         # Session routes
+        response = await self._dispatch_trace_route(request, got)
+        if response is not None:
+            return response
+
         response = self._dispatch_session_routes(request, got)
         if response is not None:
             return response
@@ -575,6 +583,35 @@ class GatewayHTTPHandler:
 
     # -- Session routes -----------------------------------------------------
 
+    async def _dispatch_trace_route(self, request: WsRequest, got: str) -> Response | None:
+        match = re.match(r"^/api/sessions/([^/]+)/trace$", got)
+        if match is None:
+            return None
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(match.group(1))
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+        turn_id = _query_first(_parse_query(request.path), "turn_id")
+        if not isinstance(turn_id, str) or re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", turn_id) is None:
+            return _http_error(400, "invalid turn id")
+        scope = self.workspaces.scope_for_session_key(decoded_key)
+        try:
+            from nanobot.runtime.trace_reader import read_turn_trace
+
+            payload = await asyncio.to_thread(
+                read_turn_trace,
+                scope.project_path,
+                decoded_key,
+                turn_id,
+            )
+        except Exception as exc:
+            self._log.warning("trace read failed for {}: {}", decoded_key, exc)
+            return _http_error(502, "trace source unavailable")
+        return _http_json_response(payload)
+
     def _dispatch_session_routes(self, request: WsRequest, got: str) -> Response | None:
         m = re.match(r"^/api/sessions/([^/]+)/messages$", got)
         if m:
@@ -679,10 +716,16 @@ class GatewayHTTPHandler:
         if not _is_websocket_channel_session_key(decoded_key):
             return _http_error(404, "session not found")
         path = _query_first(_parse_query(request.path), "path")
+        session_data = (
+            self.session_manager.read_session_file(decoded_key)
+            if self.session_manager is not None
+            else None
+        )
         try:
             payload = file_preview_payload(
                 path,
                 scope=self.workspaces.scope_for_session_key(decoded_key),
+                trusted_files=session_plan_preview_files(session_data),
             )
         except WebUIFilePreviewError as e:
             return _http_error(e.status, e.message)

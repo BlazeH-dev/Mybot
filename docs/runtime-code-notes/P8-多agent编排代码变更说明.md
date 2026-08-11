@@ -15,13 +15,13 @@ nanobot 原本已有 SpawnTool/SubagentManager，可以后台启动子 Agent。�
 - child 失败、被取消或死循环时，父 Agent误报成功。
 - 多 Agent 看起来更快，但实际 token 和成本更高。
 
-P8 没有引入 LangGraph/DAG 引擎，而是在现有 spawn/subagent 上补硬约束、隔离、HITL 和测量。
+P8 不依赖外部图框架，但已经引入 Runtime 自有 `PlanScheduler`，在现有 subagent 上补 DAG 调度、硬约束、隔离、HITL、恢复和测量。
 
 ## 一句话架构
 
 ```text
 父 Agent 拥有任务计划和最终责任
-  -> 只有 active + hash-bound plan 才能 spawn
+  -> active + hash-bound plan 的 child 节点由 PlanScheduler 自动派发
   -> child 只拿目标文本和自己的 restricted artifact root
   -> child 使用独立工具表、FileStates、Policy/HITL 和 trace span
   -> child 结果通过 MessageBus 回到父 session
@@ -62,18 +62,18 @@ approved_plan_hash == plan_hash
 
 ### 全局并发限制
 
-`max_concurrent_subagents` 来自 AgentDefaults，默认值是 1，可配置。SpawnTool 在启动前检查当前正在运行的 child 数量。
+`max_concurrent_subagents` 来自 AgentDefaults，默认值和配置上限均为 5。SpawnTool、PlanScheduler 和 SubagentManager 启动入口都会检查当前正在运行的 child 数量。
 
 ### 每父任务 direct child 上限
 
-`SubagentManager.max_direct_children = 5`。`_spawned_by_parent` 记录某父任务已经派生的累计数量，第 6 个直接 child 被拒绝。
+`SubagentManager.max_direct_children = 5`。`_spawned_by_parent` 记录某父任务当前仍在运行的直接 child；child cleanup 会释放计数，同一时刻第 6 个直接 child 被拒绝。
 
 这两个限制不同：
 
-- concurrency 控制同一时刻系统负载。
-- direct child cap 控制一个父任务的总扇出和复杂度。
+- concurrency 控制 Runtime 同一时刻的总负载。
+- direct child cap 控制一个父任务同一时刻的扇出。
 
-当前 direct child 计数不会因 child 完成而减回，因此语义是“一个父任务最多创建 5 个 direct child”，不是“同时最多 5 个”。
+两者当前上限都是 5，但作用域不同。已完成 child 会释放槽位，所以一个长 DAG 可以在多个批次中累计执行超过 5 个节点。
 
 ## 3. 为什么禁止嵌套 spawn
 
@@ -196,7 +196,7 @@ max_tool_calls = None
 ### 仍保留的安全熔断
 
 - 全局并发限制。
-- 每父任务最多 5 个 direct child。
+- 每父任务同一时刻最多 5 个 direct child，完成后释放槽位。
 - 禁止嵌套。
 - 用户/会话取消。
 - 网关关闭时 task 取消。
@@ -227,9 +227,26 @@ subagent_task_id = child id
 session_key_override = 父 session key
 ```
 
-`session_key_override` 保证结果注入原父 session 的 pending queue，而不是作为一个竞争性的独立用户任务启动。
+`session_key_override` 保证结果回到原父 session。父 Runner 仍在当前迭代时结果进入 pending queue；父 Runner 已结束时，由 session lock 串行启动后续处理，不会跨会话竞争。
 
 announcement 包含 label、原 task、成功/失败状态和 result。父 Agent随后负责汇总，不让 child 直接代表最终用户回复。
+
+## 9.1 Child activity 怎样独立展示
+
+`_SubagentHook` 现在把 child 生命周期转换为结构化 activity：
+
+```text
+started / iteration / checkpoint
+reasoning_delta / reasoning_end
+tool_events(start|end|error)
+completed / failed / cancelled
+```
+
+`SubagentManager._publish_activity()` 为每条事件附加 parent task、plan hash、node id、child id、phase、iteration、elapsed、usage 和终态结果。WebSocket 将 `agent_ui.kind=subagent_activity` 转成独立 `subagent_activity` frame，并直接追加到 WebUI transcript；它不会走普通 progress/reasoning 消息路径。
+
+前端 `useNanobotStream` 使用独立 `subagentActivities` reducer，`messages` 不发生变化。`build_webui_thread_response()` 从 append-only transcript 合并 reasoning chunk 和同 call id 的 tool start/end，刷新后仍可恢复。计划卡片只选择当前 task/hash 的 activity，避免 revision 修订后显示旧 child。
+
+桌面 Plan 面板使用固定 52rem 右侧 Sheet：左栏选择 child，右栏显示 reasoning、工具时间线、phase、iteration、elapsed、usage、result/error。没有新增移动端布局、断点或测试。
 
 ## 10. Artifact 集成的真实边界
 
@@ -282,13 +299,28 @@ child TraceHook 使用父 trace id、新 span id 和 parent span id，记录模�
 3. `gather(return_exceptions=True)` 等待清理。
 4. child 捕获 `CancelledError`，更新状态并写 trace。
 
-background task 完成后 callback 会从 running/status/session maps 中清除引用，避免状态表无限增长。每父任务累计 direct child 计数用于硬上限，不随完成清零。
+`AgentLoop._cancel_active_tasks()` 会并发启动 child cancellation 和主任务 cancellation，避免先等待主任务清理后才停止 child。background task 完成后 callback 会从 running/status/session maps 中清除引用，同时释放父任务 direct-child 槽位；已发布的用户可见 activity 已进入 transcript，不依赖内存 status map。
 
-## 为什么不直接使用工作流图引擎
+## 13. 后台 DAG 执行与重复派发保护
+
+`AgentLoop._drain_pending()` 只读取已经到达的消息，不再因 session 中仍有 child 而最多等待 300 秒。child 完成后仍通过 `session_key_override` 回到父 session；PlanScheduler completion callback 独立更新节点、artifact 和下游 ready 状态。
+
+WebUI 输入区把 `main turn running` 与 `subagentActivities` 中存在 running child 合并为会话工作状态。因此主 Agent 已结束前台回复、child 仍在后台运行时，用户仍可点击同一个停止按钮；控制路径继续发送 `/stop`，不增加单 child 控制协议。
+
+为防止主模型和 Scheduler 同时编排同一个节点：
+
+- active plan 含 `executor=child` 时，RequestContext 标记 `_runtime_plan_managed_children=true`，SpawnTool 硬拒绝直接 spawn。
+- `plan(update_step, status=running)` 对已有 `child_id` 的 running child 幂等，不创建第二个 child。
+- running child 缺少 `child_id` 时先恢复为 ready，再由 Scheduler 创建受 task/hash/node 绑定的新 child。
+- `plan(resume)` 在重试 failed 节点前先与 `get_running_task_ids()` 对账，避免模型猜测非法状态转换。
+
+相关回归位于 `tests/agent/tools/test_subagent_tools.py`、`tests/agent/test_subagent_lifecycle.py`、`tests/agent/test_task_cancel.py`、`tests/runtime/test_plan_dag.py` 和 `webui/src/tests/thread-shell.test.tsx`。
+
+## 为什么不引入外部工作流图框架
 
 当前需求只有一层独立子任务，并且最重要的是权限、隔离、HITL、恢复和测量。引入图引擎会同时引入节点状态、边条件、调度器和另一套 checkpoint 真相源。
 
-P8 选择复用已有 SpawnTool/AgentRunner/MessageBus，把治理补齐。只有未来出现真实多层依赖图和复杂重试需求，才值得评估专用工作流引擎。
+P8 选择复用已有 AgentRunner/MessageBus，并用轻量 `PlanScheduler` 维护当前单层 DAG、状态转换和恢复。只有未来出现多层动态分支、复杂条件边或分布式调度需求，才值得评估外部工作流框架。
 
 ## 验证与证据
 
@@ -296,7 +328,7 @@ P8 选择复用已有 SpawnTool/AgentRunner/MessageBus，把治理补齐。只�
 
 - spawn schema 不暴露 token/time/tool quota。
 - child AgentRunSpec 的 budget 字段为 None。
-- 第 6 个 direct child 被拒。
+- 同时运行的第 6 个 direct child 被拒，完成后可继续派发后续节点。
 - 缺 active/hash-bound parent plan 被拒。
 - child question 路由父 chat并恢复同一 tool call。
 - child 没有总 lifecycle timeout，仍可取消。
@@ -320,13 +352,13 @@ P8 选择复用已有 SpawnTool/AgentRunner/MessageBus，把治理补齐。只�
 
 ### 30 秒回答
 
-> P8 没有重做图工作流，而是在 nanobot 现有 SpawnTool/SubagentManager 上补治理。只有 active 且 approved hash 等于当前 plan hash 的父任务能 spawn；每个父任务最多 5 个 direct child，child 工具表没有 spawn。child 固定写自己的 artifact root，使用 restricted scope、独立 FileStates 和 child-bound approval；业务问题回到父 chat，父子 trace 关联。后来我取消了父 Agent 估算的 token/总时长/tool 配额，只保留取消、单次 LLM timeout、数量限制和 200 轮循环熔断，避免误杀正常长任务。
+> P8 用 Runtime 自有 PlanScheduler 在 nanobot 现有 SubagentManager 上做 DAG 编排和治理。active 且 hash-bound 的 child 节点由 Scheduler 自动派发，同一时刻最多 5 个，完成后释放槽位，child 工具表没有 spawn。child 固定写自己的 artifact root，使用 restricted scope、独立 FileStates 和 child-bound approval；主 Runner 不前台等待，业务问题和结果回到父 session，父子 trace 关联。工作量不由父 Agent 估算 token/总时长/tool 配额，只保留会话级联取消、单次 LLM timeout、并发限制和 200 轮循环熔断。
 
 ### 高频追问
 
 **为什么既有 concurrency limit 又有 5-child limit？**
 
-并发限制控制瞬时资源，direct child limit 控制单个任务的总扇出和治理复杂度。当前默认并发 1，但一个父任务累计最多创建 5 个 child。
+全局并发限制控制 Runtime 瞬时资源，direct child limit 控制单个父任务的瞬时扇出。两者当前都是 5；完成后释放槽位，因此累计节点数可以超过 5。
 
 **如何保证 child 不能扩大父权限？**
 
@@ -353,3 +385,25 @@ child 无论父模式如何都使用 restricted WorkspaceScope，project path �
 5. child 权限、FileStates、approval 怎样隔离？
 6. 为什么取消工作量 quota 仍然有安全熔断？
 7. 当前 artifact/checkpoint 集成有哪些真实边界？
+
+## 2026-08-10：DAG Child Dispatch 与 Completion Callback
+
+- `PlanTool._dispatch_ready_children()` 按当前并发余量派发 ready child node，并把 parent task/hash/node id 传给 `SubagentManager`。
+- `SubagentStatus` 新增 `node_id/final_result`；`spawn()` 新增 `completion_callback/return_task_id`，真实 lifecycle 测试确认 callback 在任务终态收到完整状态。
+- callback 扫描 child artifact root 并按 node metadata 登记 ArtifactStore，然后原子更新 plan node；若 active hash 已变化，仅记录 stale completion trace，不污染新 revision。
+- `PlanScheduler.refresh()` 只阻塞失败节点的后继，独立分支仍可继续；recovery 将失联 child 转 uncertain，禁止静默重复执行。
+- 计划卡片按 topological batch 展示 executor/dependency/status，前端只面向桌面网页。
+
+## 2026-08-11：Child Cancel 与显式重派
+
+- child completion callback 将 `stop_reason=cancelled` 分类为 interrupted ready，而不是普通 failed；清除旧 child/result/error 绑定，记录 interruption trace，且取消回调不调用后续自动 dispatch。
+- 用户点击 active 计划卡片“继续执行”后，PlanTool `resume` 才按当前并发余量重派 ready child；真实 failed child 也遵守同一显式重试边界。
+- 回归覆盖 cancelled child 不自动重派、failed child resume 创建新 child，以及模型误用 `in_progress` 时仍走安全重试路径。
+
+## 2026-08-11：可恢复工具错误与终态判定
+
+- `SubagentManager` 构造 child `AgentRunSpec` 时设置 `fail_on_tool_error=False`，Runner 把单次工具错误和纠正提示交还模型继续迭代。
+- Runner workspace violation marker 增加 PolicyEngine 的精确文案 `path resolves outside the current workspace`，继续受重复路径违规熔断约束。
+- `_has_unresolved_tool_error()` 从后向前读取最后一个 `ok|error` 工具事件：最后为 error 时把有效 stop reason 设为 `tool_error`，防止“无法完成”的说明文字被误标成功；错误后有成功工具调用且正常结束时允许成功。
+- P3 可信只读根目录修复 builtin Skill 读取，无需扩大 child workspace、写权限或工具表。
+- lifecycle 回归覆盖 child spec 不立即失败、未解决错误失败、后续成功工具恢复，以及原有 max-iteration/cancel/interaction 行为。

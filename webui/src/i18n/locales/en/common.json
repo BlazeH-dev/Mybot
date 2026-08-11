@@ -123,6 +123,7 @@
       "capabilities": "Capabilities",
       "apps": "Apps",
       "nativeHost": "Native host",
+      "observability": "Observability",
       "hostSafety": "App safety",
       "voiceInput": "Voice input"
     },
@@ -205,7 +206,8 @@
       "transcriptionProviderStatus": "Provider status",
       "transcriptionModel": "Model",
       "transcriptionLanguage": "Language",
-      "voiceLimits": "Limits"
+      "voiceLimits": "Limits",
+      "langfuseTrace": "Send traces to Langfuse"
     },
     "help": {
       "theme": "Switch between light and dark appearance.",
@@ -249,7 +251,10 @@
       "transcriptionProvider": "Uses the matching provider credentials from Providers.",
       "transcriptionProviderStatus": "API keys stay under providers, not in transcription settings.",
       "transcriptionModel": "Leave as the resolved default unless your provider needs a custom model id.",
-      "transcriptionLanguage": "Optional ISO-639 hint such as en, zh, ja, or ko."
+      "transcriptionLanguage": "Optional ISO-639 hint such as en, zh, ja, or ko.",
+      "langfuseEnabled": "New conversation traces are sent to Langfuse after restart.",
+      "langfuseDisabled": "Conversation traces stay in local JSONL files after restart.",
+      "langfuseNotConfigured": "Configure the Langfuse public and secret keys in config.json first."
     },
     "timezone": {
       "select": "Select timezone",
@@ -422,7 +427,7 @@
         "selectProvider": "Select provider",
         "credentials": "Credentials",
         "noCredentialRequired": "No key required",
-        "noCredentialHelp": "DuckDuckGo works without a saved API key.",
+        "noCredentialHelp": "Bing works without a saved API key.",
         "apiKeyHelp": "Stored in config and masked after saving.",
         "baseUrl": "Base URL",
         "baseUrlHelp": "SearXNG needs the URL of your own instance.",
@@ -606,6 +611,30 @@
   },
   "thread": {
     "loadingConversation": "Loading conversation…",
+    "interaction": {
+      "approvalTitle": "Approval required",
+      "questionTitle": "Your input is required",
+      "actionRequired": "Action required",
+      "approveOnce": "Approve once",
+      "deny": "Deny",
+      "answerPlaceholder": "Type your answer",
+      "continue": "Continue",
+      "approvalReason": {
+        "externalSideEffect": "An external side effect requires approval for these exact parameters.",
+        "existingFileWrite": "Modifying an existing local file requires approval in Default Permission.",
+        "highRiskCommand": "A high-risk local command requires approval in Default Permission."
+      },
+      "recovery": {
+        "header": "Recovery",
+        "question": "Interrupted work has an uncertain outcome. Check the target, then choose whether to retry, mark it completed, or cancel the affected step.",
+        "retry": "Retry",
+        "retryDescription": "Retry only after checking the target.",
+        "markCompleted": "Mark completed",
+        "markCompletedDescription": "Do not repeat the side effect.",
+        "cancel": "Cancel",
+        "cancelDescription": "Stop this recovery."
+      }
+    },
     "empty": {
       "greetings": {
         "workOn": "What should we work on?",
@@ -672,6 +701,22 @@
       "toggleTheme": "Toggle theme from header",
       "settings": "Open settings",
       "sessionInfo": "Session details"
+    },
+    "trace": {
+      "open": "View current turn trace",
+      "title": "Turn trace",
+      "sourceLocal": "Local redacted JSONL",
+      "sourceLangfuse": "Langfuse observations",
+      "refresh": "Refresh trace",
+      "openExternal": "Open in Langfuse",
+      "spans": "Spans",
+      "tokens": "Tokens",
+      "duration": "Duration",
+      "eventCount": "{{count}} events",
+      "noTurn": "Send a message to create a trace for this turn.",
+      "loading": "Loading trace...",
+      "empty": "No trace is available for this turn yet.",
+      "loadFailed": "The trace source could not be loaded."
     },
     "sessionInfo": {
       "title": "Session",
@@ -878,10 +923,32 @@
       "title": "Plan",
       "execute": "Execute plan",
       "starting": "Starting…",
+      "resume": "Resume plan",
+      "resuming": "Resuming…",
+      "openDocument": "View full plan",
+      "hide": "Hide plan",
+      "show": "Show plan",
+      "openSubagents": "View subagents",
+      "subagentsRunning": "{{count}} subagents running",
+      "subagentPanel": {
+        "title": "Subagent execution",
+        "description": "Live child-agent reasoning, tool activity, status, and results.",
+        "waiting": "Child steps are waiting to be dispatched.",
+        "iteration": "Iteration",
+        "reasoning": "Reasoning",
+        "noReasoning": "No reasoning has been emitted yet.",
+        "tools": "Tool activity",
+        "noTools": "No tools used yet.",
+        "result": "Result"
+      },
+      "batch": "Batch {{index}}",
+      "dependsOn": "Depends on",
       "confirmPrompt": "I confirm plan {{taskId}} with hash {{planHash}}. Execute it now, keep every step updated in the plan tool, and complete it only after verification.",
+      "resumePrompt": "Resume confirmed plan {{taskId}} with full current hash {{planHash}}. First call plan(action='resume', task_id='{{taskId}}', expected_plan_hash='{{planHash}}'), then continue its ready nodes. Do not bypass the state machine or mark failed nodes succeeded without execution and verification.",
       "status": {
         "creating": "Creating",
         "awaiting_confirmation": "Ready",
+        "awaiting_revision_confirmation": "Revision ready",
         "active": "In progress",
         "completed": "Completed"
       }

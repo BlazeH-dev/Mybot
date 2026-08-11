@@ -5,7 +5,8 @@ export type InteractionKind =
   | "question"
   | "approval"
   | "plan_confirmation"
-  | "recovery_decision";
+  | "recovery_decision"
+  | "reflection_decision";
 export type InteractionStrategy = "required" | "auto_resolve" | "expire_and_deny";
 export type InteractionStatus =
   | "pending"
@@ -21,12 +22,16 @@ export type InteractionStatus =
 export interface InteractionQuestionOption {
   label: string;
   description: string;
+  label_i18n_key?: string;
+  description_i18n_key?: string;
 }
 
 export interface InteractionQuestion {
   id: string;
   question: string;
   header: string;
+  question_i18n_key?: string;
+  header_i18n_key?: string;
   options?: InteractionQuestionOption[] | null;
   multiple?: boolean | null;
 }
@@ -247,6 +252,50 @@ export interface ToolProgressEvent {
   error?: unknown;
   files?: unknown[];
   embeds?: unknown[];
+}
+
+export type SubagentActivityStatus = "running" | "completed" | "failed" | "cancelled";
+
+export interface SubagentActivity {
+  childId: string;
+  label: string;
+  taskDescription: string;
+  parentTaskId?: string | null;
+  planHash?: string | null;
+  nodeId?: string | null;
+  status: SubagentActivityStatus;
+  phase: string;
+  iteration: number;
+  elapsedMs: number;
+  reasoning: string;
+  reasoningStreaming: boolean;
+  toolEvents: ToolProgressEvent[];
+  usage: Record<string, number>;
+  finalResult?: string | null;
+  error?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface SubagentActivityPayload {
+  event?: string;
+  child_id: string;
+  label?: string;
+  task_description?: string;
+  parent_task_id?: string | null;
+  plan_hash?: string | null;
+  node_id?: string | null;
+  status?: SubagentActivityStatus;
+  phase?: string;
+  iteration?: number;
+  elapsed_ms?: number;
+  reasoning?: string;
+  reasoning_delta?: string;
+  reasoning_streaming?: boolean;
+  tool_events?: ToolProgressEvent[];
+  usage?: Record<string, number>;
+  final_result?: string | null;
+  error?: string | null;
+  updated_at?: string | null;
 }
 
 export interface UIFileEdit {
@@ -516,6 +565,13 @@ export interface SettingsPayload {
     };
     unified_session: boolean;
   };
+  observability?: {
+    langfuse: {
+      enabled: boolean;
+      configured: boolean;
+      base_url: string;
+    };
+  };
   usage?: {
     days: Array<{
       date: string;
@@ -575,7 +631,7 @@ export interface SettingsPayload {
     exec_path_append_set: boolean;
   };
   requires_restart: boolean;
-  restart_required_sections?: Array<"runtime" | "browser" | "image">;
+  restart_required_sections?: Array<"runtime" | "browser" | "image" | "observability">;
 }
 
 export interface AppPackageRef {
@@ -780,6 +836,10 @@ export interface WebSearchSettingsUpdate {
 export interface NetworkSafetySettingsUpdate {
   webuiAllowLocalServiceAccess: boolean;
   webuiDefaultAccessMode: WebuiDefaultAccessMode;
+}
+
+export interface ObservabilitySettingsUpdate {
+  langfuseEnabled: boolean;
 }
 
 export interface ImageGenerationSettingsUpdate {
@@ -1023,6 +1083,7 @@ export type InboundEvent =
   | { event: "attached"; chat_id: string }
   | { event: "interaction_request"; chat_id: string; interaction: InteractionRequestPayload }
   | { event: "interaction_updated"; chat_id: string; interaction: InteractionRequestPayload }
+  | { event: "subagent_activity"; chat_id: string; activity: SubagentActivityPayload }
   | ({
       event: "message";
       chat_id: string;
@@ -1152,8 +1213,43 @@ export interface WebuiThreadPersistedPayload {
   sessionKey?: string;
   savedAt?: string;
   messages: UIMessage[];
+  subagent_activities?: SubagentActivityPayload[];
   fork_boundary_message_count?: number;
   workspace_scope?: WorkspaceScopePayload;
+}
+
+export interface TraceEventPayload {
+  timestamp?: string | null;
+  name: string;
+  attributes: Record<string, unknown>;
+}
+
+export interface TraceSpanPayload {
+  span_id: string;
+  parent_span_id?: string | null;
+  actor?: string | null;
+  name: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  duration_ms?: number | null;
+  status: "running" | "completed" | "error" | string;
+  attributes: Record<string, unknown>;
+  events: TraceEventPayload[];
+}
+
+export interface TurnTracePayload {
+  available: boolean;
+  source: "local" | "langfuse" | string;
+  session_key: string;
+  turn_id: string;
+  trace_id?: string | null;
+  trace_url?: string | null;
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  };
+  spans: TraceSpanPayload[];
 }
 
 export interface FilePreviewPayload {

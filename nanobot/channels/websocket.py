@@ -1181,6 +1181,19 @@ class WebSocketChannel(BaseChannel):
             )
             return
         agent_ui = msg.metadata.get(OUTBOUND_META_AGENT_UI)
+        if isinstance(agent_ui, dict) and agent_ui.get("kind") == "subagent_activity":
+            activity = agent_ui.get("activity")
+            if isinstance(activity, dict):
+                payload = {
+                    "event": "subagent_activity",
+                    "chat_id": msg.chat_id,
+                    "activity": activity,
+                }
+                self._transcripts.append(msg.chat_id, payload)
+                raw = json.dumps(payload, ensure_ascii=False)
+                for connection in conns:
+                    await self._safe_send_to(connection, raw, label=" subagent activity ")
+            return
         if isinstance(agent_ui, dict) and agent_ui.get("kind") == "interaction_request":
             interaction = agent_ui.get("interaction")
             if isinstance(interaction, dict):

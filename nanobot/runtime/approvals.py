@@ -22,6 +22,19 @@ def normalized_params_hash(params: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+_REASON_I18N_KEYS = {
+    "external side effect requires parameter-bound approval": (
+        "thread.interaction.approvalReason.externalSideEffect"
+    ),
+    "modifying an existing local file requires approval in Default Permission": (
+        "thread.interaction.approvalReason.existingFileWrite"
+    ),
+    "high-risk local command requires approval in Default Permission": (
+        "thread.interaction.approvalReason.highRiskCommand"
+    ),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class ApprovalBinding:
     tool_name: str
@@ -91,7 +104,11 @@ class ApprovalManager:
                 "tool_name": binding.tool_name,
                 "params_hash": binding.normalized_params_hash,
             },
-            payload={"binding": binding.as_dict(), "chat_id": binding.chat_id},
+            payload={
+                "binding": binding.as_dict(),
+                "chat_id": binding.chat_id,
+                "reason_i18n_key": _REASON_I18N_KEYS.get(binding.reason),
+            },
             expires_at=expires.isoformat(),
         )
 

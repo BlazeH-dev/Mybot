@@ -327,6 +327,51 @@ describe("useSessions", () => {
     expect(result.current.messages[0]!.reasoning).toBe("hidden but persisted reasoning");
   });
 
+  it("hydrates persisted subagent activity outside the main message timeline", async () => {
+    vi.mocked(api.fetchWebuiThread).mockResolvedValue({
+      schemaVersion: 3,
+      messages: [
+        { id: "a1", role: "assistant", content: "Parent progress", createdAt: 1 },
+      ],
+      subagent_activities: [{
+        event: "completed",
+        child_id: "child-1",
+        label: "Research worker",
+        task_description: "Inspect the runtime",
+        parent_task_id: "task-1",
+        plan_hash: "hash-r2",
+        node_id: "research",
+        phase: "done",
+        iteration: 2,
+        elapsed_ms: 4100,
+        reasoning: "Checked scheduler state.",
+        tool_events: [{ call_id: "call-1", name: "read_file", phase: "end" }],
+        usage: { prompt_tokens: 12 },
+        final_result: "Research complete",
+      }],
+    });
+
+    const { result } = renderHook(() => useSessionHistory("websocket:chat-subagent"), {
+      wrapper: wrap(fakeClient()),
+    });
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0]!.content).toBe("Parent progress");
+    expect(result.current.subagentActivities).toEqual([
+      expect.objectContaining({
+        childId: "child-1",
+        parentTaskId: "task-1",
+        planHash: "hash-r2",
+        nodeId: "research",
+        status: "completed",
+        reasoning: "Checked scheduler state.",
+        finalResult: "Research complete",
+      }),
+    ]);
+  });
+
   it("accepts transcript rows produced by the server replay reducer", async () => {
     vi.mocked(api.fetchWebuiThread).mockResolvedValue({
       schemaVersion: 3,

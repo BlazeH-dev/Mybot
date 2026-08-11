@@ -102,6 +102,7 @@
       "mcp": "Services MCP",
       "apps": "Applications",
       "nativeHost": "Hôte natif",
+      "observability": "Observabilite",
       "hostSafety": "Sécurité de l’app",
       "voiceInput": "Saisie vocale"
     },
@@ -152,7 +153,8 @@
       "transcriptionProviderStatus": "Etat du fournisseur",
       "transcriptionModel": "Modele",
       "transcriptionLanguage": "Langue",
-      "voiceLimits": "Limites"
+      "voiceLimits": "Limites",
+      "langfuseTrace": "Envoyer les traces a Langfuse"
     },
     "help": {
       "theme": "Basculer entre l’apparence claire et sombre.",
@@ -196,7 +198,10 @@
       "transcriptionProvider": "Utilise les identifiants du fournisseur correspondant dans Fournisseurs.",
       "transcriptionProviderStatus": "Les cles API restent dans les fournisseurs, pas dans les reglages de transcription.",
       "transcriptionModel": "Laissez le modele resolu par defaut sauf si votre fournisseur exige un id personnalise.",
-      "transcriptionLanguage": "Indice ISO-639 facultatif, comme en, zh, ja ou ko."
+      "transcriptionLanguage": "Indice ISO-639 facultatif, comme en, zh, ja ou ko.",
+      "langfuseEnabled": "Les traces des nouvelles conversations seront envoyees a Langfuse apres redemarrage.",
+      "langfuseDisabled": "Les traces resteront dans des fichiers JSONL locaux apres redemarrage.",
+      "langfuseNotConfigured": "Configurez d'abord les cles publique et secrete Langfuse dans config.json."
     },
     "values": {
       "light": "Clair",
@@ -280,7 +285,7 @@
         "selectProvider": "Choisir un fournisseur",
         "credentials": "Identifiants",
         "noCredentialRequired": "Aucune key requise",
-        "noCredentialHelp": "DuckDuckGo fonctionne sans API key enregistrée.",
+        "noCredentialHelp": "Bing fonctionne sans API key enregistrée.",
         "apiKeyHelp": "Enregistrée dans la config et masquée après l'enregistrement.",
         "baseUrl": "Base URL",
         "baseUrlHelp": "SearXNG nécessite l'URL de votre propre instance.",
@@ -585,6 +590,30 @@
   },
   "thread": {
     "loadingConversation": "Chargement de la conversation…",
+    "interaction": {
+      "approvalTitle": "Approbation requise",
+      "questionTitle": "Votre réponse est requise",
+      "actionRequired": "Action requise",
+      "approveOnce": "Approuver une fois",
+      "deny": "Refuser",
+      "answerPlaceholder": "Saisissez votre réponse",
+      "continue": "Continuer",
+      "approvalReason": {
+        "externalSideEffect": "Un effet externe nécessite une approbation pour ces paramètres précis.",
+        "existingFileWrite": "La modification d’un fichier local existant nécessite une approbation avec les permissions par défaut.",
+        "highRiskCommand": "Une commande locale à haut risque nécessite une approbation avec les permissions par défaut."
+      },
+      "recovery": {
+        "header": "Récupération",
+        "question": "Le résultat du travail interrompu est incertain. Vérifiez la cible, puis choisissez de réessayer, de marquer l’étape comme terminée ou de l’annuler.",
+        "retry": "Réessayer",
+        "retryDescription": "Réessayez uniquement après avoir vérifié la cible.",
+        "markCompleted": "Marquer comme terminé",
+        "markCompletedDescription": "Ne répétez pas l’effet externe.",
+        "cancel": "Annuler",
+        "cancelDescription": "Arrêter cette récupération."
+      }
+    },
     "empty": {
       "greetings": {
         "workOn": "Sur quoi travaillons-nous ensemble ?",
@@ -652,6 +681,22 @@
       "settings": "Ouvrir les paramètres",
       "sessionInfo": "Détails de la session"
     },
+    "trace": {
+      "open": "Afficher la trace du tour actuel",
+      "title": "Trace du tour",
+      "sourceLocal": "JSONL local expurgé",
+      "sourceLangfuse": "Observations Langfuse",
+      "refresh": "Actualiser la trace",
+      "openExternal": "Ouvrir dans Langfuse",
+      "spans": "Spans",
+      "tokens": "Tokens",
+      "duration": "Durée",
+      "eventCount": "{{count}} événements",
+      "noTurn": "Envoyez un message pour créer une trace pour ce tour.",
+      "loading": "Chargement de la trace...",
+      "empty": "Aucune trace n'est encore disponible pour ce tour.",
+      "loadFailed": "La source de trace n'a pas pu être chargée."
+    },
     "sessionInfo": {
       "title": "Session",
       "untitled": "Chat sans titre",
@@ -705,6 +750,7 @@
         "drag": "Faire glisser pour réordonner"
       },
       "attachImage": "Joindre une image",
+      "attachFile": "Joindre des fichiers",
       "imageMode": {
         "label": "Génération d’image",
         "toggle": "Activer ou désactiver le mode génération d’image",
@@ -814,6 +860,7 @@
       "imageRejected": {
         "unsupported_type": "Type de fichier non pris en charge",
         "too_many_images": "Maximum {{max}} images par message",
+        "too_many_files": "Maximum {{max}} fichiers par message",
         "magic_mismatch": "Ce fichier n'est pas une image",
         "decode_failed": "Impossible de décoder cette image",
         "too_large": "Image trop grande — essayez-en une plus petite",
@@ -826,8 +873,10 @@
         "mcpGroup": "Services MCP",
         "cliBadge": "CLI",
         "mcpBadge": "MCP",
+        "skillBadge": "Skill",
         "cliDescription": "Utiliser @{{name}} comme app CLI locale",
-        "mcpDescription": "Utiliser @{{name}} comme serveur MCP"
+        "mcpDescription": "Utiliser @{{name}} comme serveur MCP",
+        "skillDescription": "Acheminer ce tour via le Skill {{name}}"
       },
       "workspace": {
         "accessAria": "Workspace access mode",
@@ -853,10 +902,32 @@
       "title": "Plan",
       "execute": "Exécuter le plan",
       "starting": "Démarrage…",
+      "resume": "Reprendre le plan",
+      "resuming": "Reprise…",
+      "openDocument": "View full plan",
+      "hide": "Masquer le plan",
+      "show": "Afficher le plan",
+      "openSubagents": "View subagents",
+      "subagentsRunning": "{{count}} subagents running",
+      "subagentPanel": {
+        "title": "Subagent execution",
+        "description": "Live child-agent reasoning, tool activity, status, and results.",
+        "waiting": "Child steps are waiting to be dispatched.",
+        "iteration": "Iteration",
+        "reasoning": "Reasoning",
+        "noReasoning": "No reasoning has been emitted yet.",
+        "tools": "Tool activity",
+        "noTools": "No tools used yet.",
+        "result": "Result"
+      },
+      "batch": "Batch {{index}}",
+      "dependsOn": "Depends on",
       "confirmPrompt": "Je confirme le plan {{taskId}} avec le hash {{planHash}}. Exécutez-le maintenant, mettez chaque étape à jour et terminez uniquement après vérification.",
+      "resumePrompt": "Reprenez le plan confirmé {{taskId}} avec le hash complet actuel {{planHash}}. Appelez d'abord plan(action='resume', task_id='{{taskId}}', expected_plan_hash='{{planHash}}'), puis continuez les nœuds ready. Ne contournez pas la machine d'état et ne marquez pas les nœuds failed comme succeeded sans exécution ni vérification.",
       "status": {
         "creating": "Création",
         "awaiting_confirmation": "Prêt",
+        "awaiting_revision_confirmation": "Revision ready",
         "active": "En cours",
         "completed": "Terminé"
       }

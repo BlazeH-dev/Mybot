@@ -15,9 +15,13 @@ function InteractionRequestCard({
   const { t } = useTranslation();
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
   const binding = interaction.payload?.binding as Record<string, unknown> | undefined;
-  const reason = typeof binding?.reason === "string"
+  const rawReason = typeof binding?.reason === "string"
     ? binding.reason
     : t("thread.interaction.actionRequired", { defaultValue: "Action required" });
+  const reasonKey = interaction.payload?.reason_i18n_key;
+  const reason = typeof reasonKey === "string"
+    ? t(reasonKey, { defaultValue: rawReason })
+    : rawReason;
   const target = typeof binding?.target === "string" ? binding.target : undefined;
   const questions = interaction.questions?.length
     ? interaction.questions
@@ -87,8 +91,16 @@ function InteractionRequestCard({
               {questions.map((question) => (
                 <div key={question.id} className="space-y-2">
                   <div>
-                    <div className="text-xs font-medium">{question.header}</div>
-                    <div className="text-xs text-muted-foreground">{question.question}</div>
+                    <div className="text-xs font-medium">
+                      {question.header_i18n_key
+                        ? t(question.header_i18n_key, { defaultValue: question.header })
+                        : question.header}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {question.question_i18n_key
+                        ? t(question.question_i18n_key, { defaultValue: question.question })
+                        : question.question}
+                    </div>
                   </div>
                   {question.options?.length ? (
                     <div className="flex flex-wrap gap-2">
@@ -103,12 +115,16 @@ function InteractionRequestCard({
                             type="button"
                             size="sm"
                             variant={selected ? "default" : "outline"}
-                            title={option.description}
+                            title={option.description_i18n_key
+                              ? t(option.description_i18n_key, { defaultValue: option.description })
+                              : option.description}
                             onClick={() => question.multiple
                               ? toggleMultipleAnswer(question.id, option.label)
                               : setSingleAnswer(question.id, option.label)}
                           >
-                            {option.label}
+                            {option.label_i18n_key
+                              ? t(option.label_i18n_key, { defaultValue: option.label })
+                              : option.label}
                           </Button>
                         );
                       })}
@@ -150,7 +166,7 @@ export function InteractionRequests({
   ) => void;
 }) {
   const visibleInteractions = interactions.filter(
-    (interaction) => interaction.kind !== "plan_confirmation",
+    (interaction) => !["plan_confirmation", "reflection_decision"].includes(interaction.kind),
   );
   if (!visibleInteractions.length) return null;
   return (

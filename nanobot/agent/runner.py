@@ -1419,6 +1419,7 @@ class AgentRunner:
 
     # Non-SSRF boundary markers returned to the LLM as recoverable tool errors.
     _WORKSPACE_VIOLATION_MARKERS: tuple[str, ...] = (
+        "path resolves outside the current workspace",
         "outside the configured workspace",
         "outside allowed directory",
         "working_dir is outside",

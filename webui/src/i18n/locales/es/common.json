@@ -102,6 +102,7 @@
       "mcp": "Servicios MCP",
       "apps": "Aplicaciones",
       "nativeHost": "Host nativo",
+      "observability": "Observabilidad",
       "hostSafety": "Seguridad de la app",
       "voiceInput": "Entrada de voz"
     },
@@ -152,7 +153,8 @@
       "transcriptionProviderStatus": "Estado del proveedor",
       "transcriptionModel": "Modelo",
       "transcriptionLanguage": "Idioma",
-      "voiceLimits": "Limites"
+      "voiceLimits": "Limites",
+      "langfuseTrace": "Enviar trazas a Langfuse"
     },
     "help": {
       "theme": "Cambia entre apariencia clara y oscura.",
@@ -196,7 +198,10 @@
       "transcriptionProvider": "Usa las credenciales del proveedor correspondiente en Proveedores.",
       "transcriptionProviderStatus": "Las claves API permanecen en proveedores, no en la configuracion de transcripcion.",
       "transcriptionModel": "Dejalo como el valor predeterminado resuelto salvo que el proveedor necesite un id de modelo personalizado.",
-      "transcriptionLanguage": "Pista ISO-639 opcional, como en, zh, ja o ko."
+      "transcriptionLanguage": "Pista ISO-639 opcional, como en, zh, ja o ko.",
+      "langfuseEnabled": "Las trazas de nuevas conversaciones se enviaran a Langfuse tras reiniciar.",
+      "langfuseDisabled": "Las trazas se guardaran en archivos JSONL locales tras reiniciar.",
+      "langfuseNotConfigured": "Configura primero las claves publica y secreta de Langfuse en config.json."
     },
     "values": {
       "light": "Claro",
@@ -280,7 +285,7 @@
         "selectProvider": "Seleccionar proveedor",
         "credentials": "Credenciales",
         "noCredentialRequired": "No requiere key",
-        "noCredentialHelp": "DuckDuckGo funciona sin guardar una API key.",
+        "noCredentialHelp": "Bing funciona sin guardar una API key.",
         "apiKeyHelp": "Se guarda en config y se muestra enmascarada después de guardar.",
         "baseUrl": "Base URL",
         "baseUrlHelp": "SearXNG necesita la URL de tu propia instancia.",
@@ -585,6 +590,30 @@
   },
   "thread": {
     "loadingConversation": "Cargando conversación…",
+    "interaction": {
+      "approvalTitle": "Se requiere aprobación",
+      "questionTitle": "Se requiere tu respuesta",
+      "actionRequired": "Se requiere una acción",
+      "approveOnce": "Aprobar una vez",
+      "deny": "Rechazar",
+      "answerPlaceholder": "Escribe tu respuesta",
+      "continue": "Continuar",
+      "approvalReason": {
+        "externalSideEffect": "Un efecto externo requiere aprobación para estos parámetros exactos.",
+        "existingFileWrite": "Modificar un archivo local existente requiere aprobación con los permisos predeterminados.",
+        "highRiskCommand": "Un comando local de alto riesgo requiere aprobación con los permisos predeterminados."
+      },
+      "recovery": {
+        "header": "Recuperación",
+        "question": "El resultado del trabajo interrumpido es incierto. Comprueba el destino y elige entre reintentar, marcar el paso como completado o cancelarlo.",
+        "retry": "Reintentar",
+        "retryDescription": "Reintenta solo después de comprobar el destino.",
+        "markCompleted": "Marcar como completado",
+        "markCompletedDescription": "No repitas el efecto externo.",
+        "cancel": "Cancelar",
+        "cancelDescription": "Detener esta recuperación."
+      }
+    },
     "empty": {
       "greetings": {
         "workOn": "¿En qué trabajamos juntos?",
@@ -652,6 +681,22 @@
       "settings": "Abrir configuración",
       "sessionInfo": "Detalles de la sesión"
     },
+    "trace": {
+      "open": "Ver la traza del turno actual",
+      "title": "Traza del turno",
+      "sourceLocal": "JSONL local redactado",
+      "sourceLangfuse": "Observaciones de Langfuse",
+      "refresh": "Actualizar traza",
+      "openExternal": "Abrir en Langfuse",
+      "spans": "Spans",
+      "tokens": "Tokens",
+      "duration": "Duración",
+      "eventCount": "{{count}} eventos",
+      "noTurn": "Envía un mensaje para crear una traza de este turno.",
+      "loading": "Cargando traza...",
+      "empty": "Todavía no hay una traza disponible para este turno.",
+      "loadFailed": "No se pudo cargar la fuente de trazas."
+    },
     "sessionInfo": {
       "title": "Sesión",
       "untitled": "Chat sin título",
@@ -705,6 +750,7 @@
         "drag": "Arrastrar para reordenar"
       },
       "attachImage": "Adjuntar imagen",
+      "attachFile": "Adjuntar archivos",
       "imageMode": {
         "label": "Generar imagen",
         "toggle": "Activar o desactivar modo de generación de imágenes",
@@ -814,6 +860,7 @@
       "imageRejected": {
         "unsupported_type": "Tipo de archivo no compatible",
         "too_many_images": "Máximo {{max}} imágenes por mensaje",
+        "too_many_files": "Máximo {{max}} archivos por mensaje",
         "magic_mismatch": "El archivo no parece una imagen real",
         "decode_failed": "No se pudo decodificar esta imagen",
         "too_large": "Imagen demasiado grande — prueba una más pequeña",
@@ -826,8 +873,10 @@
         "mcpGroup": "Servicios MCP",
         "cliBadge": "CLI",
         "mcpBadge": "MCP",
+        "skillBadge": "Skill",
         "cliDescription": "Usar @{{name}} como app CLI local",
-        "mcpDescription": "Usar @{{name}} como servidor MCP"
+        "mcpDescription": "Usar @{{name}} como servidor MCP",
+        "skillDescription": "Usar Skill {{name}} para este turno"
       },
       "workspace": {
         "accessAria": "Workspace access mode",
@@ -853,10 +902,32 @@
       "title": "Plan",
       "execute": "Ejecutar plan",
       "starting": "Iniciando…",
+      "resume": "Reanudar plan",
+      "resuming": "Reanudando…",
+      "openDocument": "View full plan",
+      "hide": "Ocultar plan",
+      "show": "Mostrar plan",
+      "openSubagents": "View subagents",
+      "subagentsRunning": "{{count}} subagents running",
+      "subagentPanel": {
+        "title": "Subagent execution",
+        "description": "Live child-agent reasoning, tool activity, status, and results.",
+        "waiting": "Child steps are waiting to be dispatched.",
+        "iteration": "Iteration",
+        "reasoning": "Reasoning",
+        "noReasoning": "No reasoning has been emitted yet.",
+        "tools": "Tool activity",
+        "noTools": "No tools used yet.",
+        "result": "Result"
+      },
+      "batch": "Batch {{index}}",
+      "dependsOn": "Depends on",
       "confirmPrompt": "Confirmo el plan {{taskId}} con hash {{planHash}}. Ejecútalo ahora, mantén cada paso actualizado y complétalo solo después de verificarlo.",
+      "resumePrompt": "Reanuda el plan confirmado {{taskId}} con el hash completo actual {{planHash}}. Primero llama a plan(action='resume', task_id='{{taskId}}', expected_plan_hash='{{planHash}}') y luego continúa los nodos ready. No omitas la máquina de estados ni marques nodos failed como succeeded sin ejecución y verificación.",
       "status": {
         "creating": "Creando",
         "awaiting_confirmation": "Listo",
+        "awaiting_revision_confirmation": "Revision ready",
         "active": "En curso",
         "completed": "Completado"
       }

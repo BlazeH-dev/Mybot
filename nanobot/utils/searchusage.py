@@ -71,18 +71,18 @@ async def fetch_search_usage(
     Fetch usage info for the configured web search provider.
 
     Args:
-        provider: Provider name (e.g. "tavily", "brave", "duckduckgo").
+        provider: Provider name (e.g. "tavily", "brave", "bing").
         api_key:  API key for the provider (falls back to env vars).
 
     Returns:
         SearchUsageInfo with populated fields where available.
     """
-    p = (provider or "duckduckgo").strip().lower()
+    p = (provider or "bing").strip().lower()
 
     if p == "tavily":
         return await _fetch_tavily_usage(api_key)
     else:
-        # brave, duckduckgo, searxng, jina, unknown — no usage API
+        # brave, bing, duckduckgo, searxng, jina, unknown — no usage API
         return SearchUsageInfo(provider=p, supported=False)
 
 
@@ -164,5 +164,4 @@ def _parse_tavily_usage(data: dict[str, Any]) -> SearchUsageInfo:
         extract_used=account.get("extract_usage"),
         crawl_used=account.get("crawl_usage"),
     )
-
 

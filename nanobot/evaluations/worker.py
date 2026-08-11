@@ -84,7 +84,11 @@ def _consume_progress(path: Path, offset: int, job: dict[str, Any]) -> int:
             except json.JSONDecodeError:
                 continue
             kind = event.get("event")
-            if kind == "run_started":
+            if kind == "prepare_stage":
+                job["status"] = "preparing"
+                job["phase"] = str(event.get("stage") or "preparing")
+                job["current_variant"] = event.get("label") or job["phase"]
+            elif kind == "run_started":
                 job["status"] = "running"
                 job["phase"] = "running"
                 if not isinstance(job.get("case_rerun"), dict) and not job.get("total_cases"):

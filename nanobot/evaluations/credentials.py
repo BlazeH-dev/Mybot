@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
+from pathlib import Path
 
 ADOBE_CLIENT_ID = "PDF_SERVICES_CLIENT_ID"
 ADOBE_CLIENT_SECRET = "PDF_SERVICES_CLIENT_SECRET"
 ADOBE_KEYCHAIN_SERVICE = "Mybot Adobe PDF Services"
+CHROMIUM_PATH = "CHROMIUM_PATH"
+_MAC_CHROMIUM_PATHS = (
+    Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+    Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+    Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+)
 
 
 def _security(*arguments: str) -> subprocess.CompletedProcess[str] | None:
@@ -86,6 +94,17 @@ def adobe_pdf_services_env(
 ) -> dict[str, str]:
     env = dict(os.environ if environ is None else environ)
     env.update(adobe_pdf_services_credentials(env))
+    configured_browser = env.get(CHROMIUM_PATH, "").strip()
+    browser = configured_browser if configured_browser and Path(configured_browser).is_file() else ""
+    if not browser:
+        for executable in ("msedge", "chrome", "google-chrome", "chromium"):
+            browser = shutil.which(executable, path=env.get("PATH")) or ""
+            if browser:
+                break
+    if not browser and sys.platform == "darwin":
+        browser = next((str(path) for path in _MAC_CHROMIUM_PATHS if path.is_file()), "")
+    if browser:
+        env[CHROMIUM_PATH] = browser
     return env
 
 

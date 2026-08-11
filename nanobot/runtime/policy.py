@@ -96,7 +96,7 @@ class PolicyEngine:
         child_id: str | None = None,
     ) -> PermissionDecision:
         del task_id, plan_hash, child_id
-        hard = self._hard_boundary(tool.name, params, scope)
+        hard = self._hard_boundary(tool, params, scope)
         if hard is not None:
             return self._record(hard)
 
@@ -166,12 +166,16 @@ class PolicyEngine:
 
     def _hard_boundary(
         self,
-        tool_name: str,
+        tool: Tool,
         params: dict[str, Any],
         scope: WorkspaceScope | None,
     ) -> PermissionDecision | None:
         workspace = scope.project_path if scope is not None else None
-        for raw in self._path_values(tool_name, params):
+        trusted_read_roots = tuple(
+            Path(root).expanduser().resolve(strict=False)
+            for root in tool.trusted_read_roots
+        ) if tool.read_only else ()
+        for raw in self._path_values(tool.name, params):
             path = Path(raw).expanduser()
             if not path.is_absolute() and workspace is not None:
                 path = workspace / path
@@ -196,10 +200,13 @@ class PolicyEngine:
                     target=str(path),
                     hard_deny=True,
                 )
-            if scope is not None and scope.restrict_to_workspace and not is_path_within(
-                path,
-                scope.project_path,
-            ):
+            outside_workspace = (
+                scope is not None
+                and scope.restrict_to_workspace
+                and not is_path_within(path, scope.project_path)
+            )
+            trusted_read = any(is_path_within(path, root) for root in trusted_read_roots)
+            if outside_workspace and not trusted_read:
                 return PermissionDecision(
                     action="deny",
                     reason="path resolves outside the current workspace",

@@ -61,6 +61,7 @@ _BROWSER_RESTART_BEHAVIOR_BY_SECTION = {
     "browser": "engineRestart",
     "image": "engineRestart",
     "apps": "engineRestart",
+    "observability": "engineRestart",
     "advanced": "appRestart",
 }
 
@@ -73,7 +74,7 @@ _NATIVE_RESTART_BEHAVIOR_BY_SECTION = {
 }
 
 _WEB_SEARCH_PROVIDER_OPTIONS: tuple[dict[str, str], ...] = (
-    {"name": "duckduckgo", "label": "DuckDuckGo", "credential": "none"},
+    {"name": "bing", "label": "Bing", "credential": "none"},
     {"name": "brave", "label": "Brave Search", "credential": "api_key"},
     {"name": "tavily", "label": "Tavily", "credential": "api_key"},
     {"name": "searxng", "label": "SearXNG", "credential": "base_url"},
@@ -695,7 +696,7 @@ def settings_payload(
     search_provider = (
         search_config.provider
         if search_config.provider in _WEB_SEARCH_PROVIDER_BY_NAME
-        else "duckduckgo"
+        else "bing"
     )
     image_providers = _image_generation_provider_rows(config)
     selected_image_provider = next(
@@ -819,6 +820,16 @@ def settings_payload(
                 "schedule": defaults.dream.describe_schedule(),
             },
             "unified_session": defaults.unified_session,
+        },
+        "observability": {
+            "langfuse": {
+                "enabled": config.observability.langfuse.enabled,
+                "configured": bool(
+                    config.observability.langfuse.resolved_public_key()
+                    and config.observability.langfuse.resolved_secret_key()
+                ),
+                "base_url": config.observability.langfuse.resolved_base_url(),
+            },
         },
         "usage": token_usage_payload(timezone_name=defaults.timezone),
         "advanced": {
@@ -1259,6 +1270,26 @@ def update_network_safety_settings(query: QueryParams) -> dict[str, Any]:
             write_webui_default_access_mode(default_access_mode)
         except ValueError as exc:
             raise WebUISettingsError(str(exc)) from exc
+    return settings_payload(requires_restart=changed)
+
+
+def update_observability_settings(query: QueryParams) -> dict[str, Any]:
+    raw_enabled = _query_first_alias(query, "langfuse_enabled", "langfuseEnabled")
+    if raw_enabled is None:
+        raise WebUISettingsError("langfuse_enabled is required")
+
+    enabled = _parse_bool(raw_enabled, "langfuse_enabled")
+    config = load_config()
+    langfuse = config.observability.langfuse
+    if enabled and not (
+        langfuse.resolved_public_key() and langfuse.resolved_secret_key()
+    ):
+        raise WebUISettingsError("Langfuse public and secret keys must be configured first")
+
+    changed = langfuse.enabled != enabled
+    if changed:
+        langfuse.enabled = enabled
+        save_config(config)
     return settings_payload(requires_restart=changed)
 
 

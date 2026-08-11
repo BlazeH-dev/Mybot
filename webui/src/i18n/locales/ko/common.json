@@ -102,6 +102,7 @@
       "mcp": "MCP 서비스",
       "apps": "앱",
       "nativeHost": "네이티브 호스트",
+      "observability": "관측 가능성",
       "hostSafety": "앱 보안",
       "voiceInput": "음성 입력"
     },
@@ -152,7 +153,8 @@
       "transcriptionProviderStatus": "제공자 상태",
       "transcriptionModel": "모델",
       "transcriptionLanguage": "언어",
-      "voiceLimits": "제한"
+      "voiceLimits": "제한",
+      "langfuseTrace": "Trace를 Langfuse로 전송"
     },
     "help": {
       "theme": "밝은 모드와 어두운 모드를 전환합니다.",
@@ -196,7 +198,10 @@
       "transcriptionProvider": "Providers에 저장된 해당 제공자의 인증 정보를 사용합니다.",
       "transcriptionProviderStatus": "API 키는 transcription 설정이 아니라 providers 아래에 유지됩니다.",
       "transcriptionModel": "제공자가 사용자 지정 모델 ID를 요구하지 않으면 해석된 기본값을 사용하세요.",
-      "transcriptionLanguage": "en, zh, ja, ko 같은 선택적 ISO-639 힌트입니다."
+      "transcriptionLanguage": "en, zh, ja, ko 같은 선택적 ISO-639 힌트입니다.",
+      "langfuseEnabled": "재시작 후 새 대화 Trace가 Langfuse로 전송됩니다.",
+      "langfuseDisabled": "재시작 후 대화 Trace가 로컬 JSONL 파일에 저장됩니다.",
+      "langfuseNotConfigured": "먼저 config.json에서 Langfuse public key와 secret key를 설정하세요."
     },
     "values": {
       "light": "라이트",
@@ -280,7 +285,7 @@
         "selectProvider": "provider 선택",
         "credentials": "자격 증명",
         "noCredentialRequired": "key 필요 없음",
-        "noCredentialHelp": "DuckDuckGo는 API key를 저장하지 않고 사용할 수 있습니다.",
+        "noCredentialHelp": "Bing은 API key를 저장하지 않고 사용할 수 있습니다.",
         "apiKeyHelp": "config에 저장되며 저장 후에는 마스킹되어 표시됩니다.",
         "baseUrl": "Base URL",
         "baseUrlHelp": "SearXNG에는 자체 인스턴스 URL이 필요합니다.",
@@ -585,6 +590,30 @@
   },
   "thread": {
     "loadingConversation": "대화 불러오는 중…",
+    "interaction": {
+      "approvalTitle": "승인이 필요합니다",
+      "questionTitle": "입력이 필요합니다",
+      "actionRequired": "작업이 필요합니다",
+      "approveOnce": "이번만 승인",
+      "deny": "거부",
+      "answerPlaceholder": "답변 입력",
+      "continue": "계속",
+      "approvalReason": {
+        "externalSideEffect": "외부 부작용이 있어 현재 매개변수에 대한 승인이 필요합니다.",
+        "existingFileWrite": "기본 권한에서는 기존 로컬 파일 수정에 승인이 필요합니다.",
+        "highRiskCommand": "기본 권한에서는 고위험 로컬 명령 실행에 승인이 필요합니다."
+      },
+      "recovery": {
+        "header": "복구",
+        "question": "중단된 작업의 결과가 확실하지 않습니다. 대상을 확인한 후 재시도, 완료로 표시 또는 취소를 선택하세요.",
+        "retry": "재시도",
+        "retryDescription": "대상을 확인한 후에만 재시도합니다.",
+        "markCompleted": "완료로 표시",
+        "markCompletedDescription": "부작용을 반복하지 않습니다.",
+        "cancel": "취소",
+        "cancelDescription": "이 복구를 중단합니다."
+      }
+    },
     "empty": {
       "greetings": {
         "workOn": "우리 무엇을 함께 해볼까요?",
@@ -652,6 +681,22 @@
       "settings": "설정 열기",
       "sessionInfo": "세션 세부 정보"
     },
+    "trace": {
+      "open": "현재 턴 트레이스 보기",
+      "title": "턴 트레이스",
+      "sourceLocal": "로컬 비식별 JSONL",
+      "sourceLangfuse": "Langfuse 관측 데이터",
+      "refresh": "트레이스 새로 고침",
+      "openExternal": "Langfuse에서 열기",
+      "spans": "스팬",
+      "tokens": "토큰",
+      "duration": "소요 시간",
+      "eventCount": "이벤트 {{count}}개",
+      "noTurn": "메시지를 보내면 이 턴의 트레이스가 생성됩니다.",
+      "loading": "트레이스 불러오는 중...",
+      "empty": "이 턴에 사용할 수 있는 트레이스가 아직 없습니다.",
+      "loadFailed": "트레이스 소스를 불러오지 못했습니다."
+    },
     "sessionInfo": {
       "title": "세션",
       "untitled": "제목 없는 채팅",
@@ -705,6 +750,7 @@
         "drag": "드래그하여 순서 변경"
       },
       "attachImage": "이미지 첨부",
+      "attachFile": "파일 첨부",
       "imageMode": {
         "label": "이미지 생성",
         "toggle": "이미지 생성 모드 전환",
@@ -814,6 +860,7 @@
       "imageRejected": {
         "unsupported_type": "지원하지 않는 파일 형식입니다",
         "too_many_images": "메시지당 최대 {{max}}장까지 가능합니다",
+        "too_many_files": "메시지당 최대 {{max}}개 파일까지 가능합니다",
         "magic_mismatch": "이미지 파일이 아닌 것 같습니다",
         "decode_failed": "이 이미지를 디코딩할 수 없습니다",
         "too_large": "이미지가 너무 큽니다. 더 작은 걸로 시도해 주세요",
@@ -826,8 +873,10 @@
         "mcpGroup": "MCP 서비스",
         "cliBadge": "CLI",
         "mcpBadge": "MCP",
+        "skillBadge": "Skill",
         "cliDescription": "@{{name}}을 로컬 CLI 앱으로 사용",
-        "mcpDescription": "@{{name}}을 MCP 서버로 사용"
+        "mcpDescription": "@{{name}}을 MCP 서버로 사용",
+        "skillDescription": "이 턴을 Skill {{name}}으로 라우팅"
       },
       "workspace": {
         "accessAria": "Workspace access mode",
@@ -853,10 +902,32 @@
       "title": "계획",
       "execute": "계획 실행",
       "starting": "시작 중…",
+      "resume": "계획 계속",
+      "resuming": "복구 중…",
+      "openDocument": "View full plan",
+      "hide": "계획 접기",
+      "show": "계획 표시",
+      "openSubagents": "View subagents",
+      "subagentsRunning": "{{count}} subagents running",
+      "subagentPanel": {
+        "title": "Subagent execution",
+        "description": "Live child-agent reasoning, tool activity, status, and results.",
+        "waiting": "Child steps are waiting to be dispatched.",
+        "iteration": "Iteration",
+        "reasoning": "Reasoning",
+        "noReasoning": "No reasoning has been emitted yet.",
+        "tools": "Tool activity",
+        "noTools": "No tools used yet.",
+        "result": "Result"
+      },
+      "batch": "Batch {{index}}",
+      "dependsOn": "Depends on",
       "confirmPrompt": "계획 {{taskId}}(해시 {{planHash}})을 확인했습니다. 지금 실행하고 각 단계를 계속 업데이트하며 검증 후에만 완료하세요.",
+      "resumePrompt": "확인된 계획 {{taskId}}를 현재 전체 해시 {{planHash}}로 계속 실행합니다. 먼저 plan(action='resume', task_id='{{taskId}}', expected_plan_hash='{{planHash}}')를 호출한 뒤 ready 노드를 계속하세요. 상태 머신을 우회하거나 실행과 검증 없이 failed 노드를 succeeded로 표시하지 마세요.",
       "status": {
         "creating": "작성 중",
         "awaiting_confirmation": "준비됨",
+        "awaiting_revision_confirmation": "Revision ready",
         "active": "진행 중",
         "completed": "완료"
       }

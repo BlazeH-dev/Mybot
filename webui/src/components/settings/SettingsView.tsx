@@ -102,6 +102,7 @@ import {
   updateMcpServerTools,
   updateModelConfiguration,
   updateNetworkSafetySettings,
+  updateObservabilitySettings,
   updateProviderSettings,
   updateSettings,
   updateTranscriptionSettings,
@@ -125,6 +126,7 @@ import type {
   McpPresetInfo,
   McpPresetsPayload,
   NetworkSafetySettingsUpdate,
+  ObservabilitySettingsUpdate,
   ProviderModelsPayload,
   SettingsPayload,
   SkillSummary,
@@ -179,7 +181,7 @@ interface ModelConfigurationDraft {
   contextWindowTokens: number;
 }
 
-type PendingRestartSection = "runtime" | "browser" | "image";
+type PendingRestartSection = "runtime" | "browser" | "image" | "observability";
 type PendingRestartSections = Record<PendingRestartSection, boolean>;
 type RestartAwarePayload = {
   requires_restart?: boolean;
@@ -272,6 +274,7 @@ const EMPTY_PENDING_RESTART_SECTIONS: PendingRestartSections = {
   runtime: false,
   browser: false,
   image: false,
+  observability: false,
 };
 
 const DEFAULT_CUSTOM_MCP_FORM: CustomMcpForm = {
@@ -409,6 +412,10 @@ const DEFAULT_NETWORK_SAFETY_FORM: NetworkSafetySettingsUpdate = {
   webuiDefaultAccessMode: "default",
 };
 
+const DEFAULT_OBSERVABILITY_FORM: ObservabilitySettingsUpdate = {
+  langfuseEnabled: false,
+};
+
 function agentDraftFromPayload(payload: SettingsPayload): AgentSettingsDraft {
   const fallbackDefault = defaultPreset(payload);
   const activePresetName = modelPresetValue(payload);
@@ -480,12 +487,19 @@ function networkSafetyFormFromPayload(payload: SettingsPayload): NetworkSafetySe
   };
 }
 
+function observabilityFormFromPayload(payload: SettingsPayload): ObservabilitySettingsUpdate {
+  return {
+    langfuseEnabled: payload.observability?.langfuse.enabled ?? false,
+  };
+}
+
 function pendingRestartSectionsFromPayload(payload: SettingsPayload): PendingRestartSections {
   const sections = payload.restart_required_sections ?? [];
   return {
     runtime: sections.includes("runtime"),
     browser: sections.includes("browser"),
     image: sections.includes("image"),
+    observability: sections.includes("observability"),
   };
 }
 
@@ -536,6 +550,7 @@ export function SettingsView({
   const [imageGenerationSaving, setImageGenerationSaving] = useState(false);
   const [transcriptionSaving, setTranscriptionSaving] = useState(false);
   const [networkSafetySaving, setNetworkSafetySaving] = useState(false);
+  const [observabilitySaving, setObservabilitySaving] = useState(false);
   const [hostEngineApplying, setHostEngineApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSectionKey>(initialSection);
@@ -573,6 +588,11 @@ export function SettingsView({
   const [networkSafetyForm, setNetworkSafetyForm] = useState<NetworkSafetySettingsUpdate>(() =>
     initialSettings ? networkSafetyFormFromPayload(initialSettings) : DEFAULT_NETWORK_SAFETY_FORM,
   );
+  const [observabilityForm, setObservabilityForm] = useState<ObservabilitySettingsUpdate>(() =>
+    initialSettings
+      ? observabilityFormFromPayload(initialSettings)
+      : DEFAULT_OBSERVABILITY_FORM,
+  );
 
   useEffect(() => {
     setActiveSection(initialSection);
@@ -604,6 +624,7 @@ export function SettingsView({
     setImageGenerationForm(imageGenerationFormFromPayload(payload));
     setTranscriptionForm(transcriptionFormFromPayload(payload));
     setNetworkSafetyForm(networkSafetyFormFromPayload(payload));
+    setObservabilityForm(observabilityFormFromPayload(payload));
     if (payload.restart_required_sections) {
       setPendingRestartSections(pendingRestartSectionsFromPayload(payload));
     }
@@ -778,6 +799,14 @@ export function SettingsView({
     );
   }, [networkSafetyForm, settings]);
 
+  const observabilityDirty = useMemo(() => {
+    if (!settings) return false;
+    return (
+      observabilityForm.langfuseEnabled !==
+      (settings.observability?.langfuse.enabled ?? false)
+    );
+  }, [observabilityForm, settings]);
+
   const configuredModelProviderOptions = useMemo(
     () =>
       settings?.providers
@@ -791,7 +820,8 @@ export function SettingsView({
       !!settings?.requires_restart ||
       pendingRestartSections.runtime ||
       pendingRestartSections.browser ||
-      pendingRestartSections.image,
+      pendingRestartSections.image ||
+      pendingRestartSections.observability,
     [pendingRestartSections, settings?.requires_restart],
   );
 
@@ -1028,6 +1058,24 @@ export function SettingsView({
       setError((err as Error).message);
     } finally {
       setNetworkSafetySaving(false);
+    }
+  };
+
+  const saveObservabilitySettings = async () => {
+    if (!settings || !observabilityDirty || observabilitySaving) return;
+    setObservabilitySaving(true);
+    try {
+      const payload = await updateObservabilitySettings(token, observabilityForm);
+      applyPayload(payload);
+      if (payload.requires_restart) {
+        setPendingRestartSections((prev) => ({ ...prev, observability: true }));
+      }
+      await maybeRestartHostEngine(payload);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setObservabilitySaving(false);
     }
   };
 
@@ -1526,13 +1574,19 @@ export function SettingsView({
           <RuntimeSettings
             form={form}
             setForm={setForm}
+            observabilityForm={observabilityForm}
+            setObservabilityForm={setObservabilityForm}
             settings={settings}
             dirty={runtimeDirty}
             saving={saving}
+            observabilityDirty={observabilityDirty}
+            observabilitySaving={observabilitySaving}
             onSave={saveRuntimeSettings}
+            onSaveObservability={saveObservabilitySettings}
             onRestart={restartViaSettingsSurface}
             isRestarting={isRestarting || hostEngineApplying}
             requiresRestartPending={pendingRestartSections.runtime}
+            observabilityRestartPending={pendingRestartSections.observability}
           />
         );
       case "advanced":
@@ -4312,23 +4366,35 @@ function CliAppLogo({ app, showBrandLogos }: { app: CliAppInfo; showBrandLogos: 
 function RuntimeSettings({
   form,
   setForm,
+  observabilityForm,
+  setObservabilityForm,
   settings,
   dirty,
   saving,
+  observabilityDirty,
+  observabilitySaving,
   onSave,
+  onSaveObservability,
   onRestart,
   isRestarting,
   requiresRestartPending,
+  observabilityRestartPending,
 }: {
   form: AgentSettingsDraft;
   setForm: Dispatch<SetStateAction<AgentSettingsDraft>>;
+  observabilityForm: ObservabilitySettingsUpdate;
+  setObservabilityForm: Dispatch<SetStateAction<ObservabilitySettingsUpdate>>;
   settings: SettingsPayload;
   dirty: boolean;
   saving: boolean;
+  observabilityDirty: boolean;
+  observabilitySaving: boolean;
   onSave: () => void;
+  onSaveObservability: () => void;
   onRestart?: () => void;
   isRestarting?: boolean;
   requiresRestartPending: boolean;
+  observabilityRestartPending: boolean;
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
@@ -4501,6 +4567,58 @@ function RuntimeSettings({
           </SettingsGroup>
         </section>
       ) : null}
+
+      <section>
+        <SettingsSectionTitle>
+          {tx("settings.sections.observability", "Observability")}
+        </SettingsSectionTitle>
+        <SettingsGroup>
+          <SettingsRow
+            title={tx("settings.rows.langfuseTrace", "Send traces to Langfuse")}
+            description={
+              settings.observability?.langfuse.configured
+                ? observabilityForm.langfuseEnabled
+                  ? tx(
+                      "settings.help.langfuseEnabled",
+                      "New conversation traces are sent to Langfuse after restart.",
+                    )
+                  : tx(
+                      "settings.help.langfuseDisabled",
+                      "Conversation traces stay in local JSONL files after restart.",
+                    )
+                : tx(
+                    "settings.help.langfuseNotConfigured",
+                    "Configure the Langfuse public and secret keys in config.json first.",
+                  )
+            }
+          >
+            <ToggleButton
+              checked={observabilityForm.langfuseEnabled}
+              onChange={(langfuseEnabled) =>
+                setObservabilityForm({ langfuseEnabled })
+              }
+              disabled={
+                !settings.observability?.langfuse.configured &&
+                !observabilityForm.langfuseEnabled
+              }
+              ariaLabel={tx("settings.rows.langfuseTrace", "Send traces to Langfuse")}
+              label={
+                observabilityForm.langfuseEnabled
+                  ? tx("settings.values.on", "On")
+                  : tx("settings.values.off", "Off")
+              }
+            />
+          </SettingsRow>
+          <RestartSettingsFooter
+            dirty={observabilityDirty}
+            saving={observabilitySaving}
+            pendingRestart={observabilityRestartPending}
+            onSave={onSaveObservability}
+            onRestart={onRestart}
+            isRestarting={isRestarting}
+          />
+        </SettingsGroup>
+      </section>
 
       <section>
         <SettingsSectionTitle>{t("settings.sections.system")}</SettingsSectionTitle>
@@ -5775,11 +5893,13 @@ function ToggleButton({
   onChange,
   ariaLabel,
   label,
+  disabled = false,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   ariaLabel?: string;
   label: string;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -5787,10 +5907,12 @@ function ToggleButton({
       role="switch"
       aria-checked={checked}
       aria-label={ariaLabel ?? label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
         "relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full p-[2px]",
         "transition-colors duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+        disabled && "cursor-not-allowed opacity-45",
         checked
           ? "bg-[#2997FF] shadow-[inset_0_0_0_1px_rgba(0,0,0,0.035)]"
           : "bg-muted shadow-[inset_0_0_0_1px_rgba(0,0,0,0.035)] hover:bg-muted/80",

@@ -78,6 +78,16 @@ Core 只有 `user`。计划中的 `auto_review` 尚未实现，因此项目不�
 | Default Permission | `workspace_write` | workspace 内有限自治，已有文件写入、高风险命令和外部副作用可能 ask |
 | Full Access | `danger_full_access` | 取消本地 OS wrapper，但不是关闭全部安全检查 |
 
+Plan-only 的只读检查是规划辅助，不是计划创建的硬前置条件。`web_search`、
+`web_fetch`、网络或 provider 暂时不可用时，模型必须把问题登记为执行风险、
+前置条件或 fallback，继续生成结构化计划；只有进入执行节点后，相关工具失败才按
+节点失败与恢复规则处理。
+
+计划确认也是可修订的授权边界：当 Runner 处于 `awaiting_plan_confirmation`，用户的
+普通文字会撤销当前 pending `plan_confirmation`，恢复原 checkpoint 后进入受限
+`plan-only revision` 回合。该回合只能读取计划并调用 `plan(action="revise")` 生成新
+revision，不能确认、执行或产生副作用；审批和 uncertain recovery 仍由 typed card 独占。
+
 ## 2. PolicyEngine：每个工具调用先做确定性决策
 
 文件：`nanobot/runtime/policy.py`
@@ -441,3 +451,18 @@ Policy 是“应该不应该做”的应用决策；Sandbox 是“即使代码�
 - P5 从 audit、interaction 和 sandbox 事件建立 trace/eval 硬门。
 - P8 child 复用同一个 PolicyEngine、ApprovalManager 和 InteractionManager，且 approval 额外绑定 child id。
 - 选做 P3.1 将 worktree 作为 WebUI workspace 生命周期增强；它未排期、未实现，不改变 P3 sandbox/policy 语义，也不给普通 Agent Shell 新增 Git common dir 写权。
+
+## 2026-08-11：DAG Recovery 与本地化 HITL
+
+- `AgentLoop` 将孤立 child DAG node 分类为 `uncertain` 并复用 recovery decision 卡片；typed response 会确定性写回 node 状态，重复或 stale response 仍由 InteractionManager 拒绝。
+- 完成后 Reflection 和 `reflection_decision` 已取消，合法 suspension 保留 question、approval、plan confirmation 与 recovery decision；旧请求只保留反序列化兼容，进入会话时会取消并把旧审查状态收敛为 completed。
+- WebUI `InteractionRequests` 继续使用单一 typed question 卡片；卡片 chrome、Policy 审批原因与 recovery 内置选项通过九语言 i18n 按应用语言显示，提交仍使用原始协议值。
+- WebUI 文件预览继续默认限制在当前项目 workspace；对于 Runtime 默认 workspace 中的计划文档，只额外放行当前 session `plan_state` 精确绑定的 `plan.md`。授权同时校验 task id、revision、plan hash、固定 artifact id、绝对路径和 checksum，不开放 artifact 目录或任意外部文件。
+
+## 2026-08-11：Tool 声明可信只读根目录
+
+- `nanobot/agent/tools/base.py` 为工具增加默认空的 `trusted_read_roots`。
+- `_FsTool` 暴露与 `resolve_workspace_path()` 相同的媒体目录和 `extra_allowed_dirs`；内置 `SkillsLoader` 注入的 `nanobot/skills` 因而可被 restricted parent/child 的读取工具访问。
+- `PolicyEngine._hard_boundary()` 改为接收 Tool 实例。只有 `tool.read_only` 且目标位于工具声明根目录时才放行 workspace 外读取；protected path 检查仍先执行。
+- 写工具即使配置相同 extra root 也继续命中 `hard.workspace_escape`，不会继承读取权限。
+- 回归覆盖可信 Skill 读允许、同路径写拒绝，以及 PolicyEngine 的 workspace escape 文案可被 Runner 重复违规保护识别。

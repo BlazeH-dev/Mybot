@@ -12,6 +12,7 @@ import type {
   ModelConfigurationCreate,
   ModelConfigurationUpdate,
   NetworkSafetySettingsUpdate,
+  ObservabilitySettingsUpdate,
   ProviderModelsPayload,
   ProviderSettingsUpdate,
   SessionAutomationsPayload,
@@ -22,6 +23,7 @@ import type {
   SkillsPayload,
   SlashCommand,
   TranscriptionSettingsUpdate,
+  TurnTracePayload,
   WebSearchSettingsUpdate,
   WorkspacesPayload,
   WorkspaceDirectoriesPayload,
@@ -144,6 +146,21 @@ export async function fetchWebuiThread(
   if (res.status === 404) return null;
   if (!res.ok) throw new ApiError(res.status, `HTTP ${res.status}`);
   return (await res.json()) as WebuiThreadPersistedPayload;
+}
+
+export async function fetchTurnTrace(
+  token: string,
+  key: string,
+  turnId: string,
+  base: string = "",
+): Promise<TurnTracePayload> {
+  const query = new URLSearchParams({ turn_id: turnId });
+  return request<TurnTracePayload>(
+    `${base}/api/sessions/${encodeURIComponent(key)}/trace?${query}`,
+    token,
+    { cache: "no-store" },
+    API_READ_TIMEOUT_MS,
+  );
 }
 
 export async function fetchFilePreview(
@@ -657,6 +674,18 @@ export async function updateNetworkSafetySettings(
   query.set("webui_default_access_mode", update.webuiDefaultAccessMode);
   return request<SettingsPayload>(
     `${base}/api/settings/network-safety/update?${query}`,
+    token,
+  );
+}
+
+export async function updateObservabilitySettings(
+  token: string,
+  update: ObservabilitySettingsUpdate,
+  base: string = "",
+): Promise<SettingsPayload> {
+  const query = new URLSearchParams({ langfuse_enabled: String(update.langfuseEnabled) });
+  return request<SettingsPayload>(
+    `${base}/api/settings/observability/update?${query}`,
     token,
   );
 }

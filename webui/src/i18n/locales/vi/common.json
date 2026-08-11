@@ -102,6 +102,7 @@
       "mcp": "Dịch vụ MCP",
       "apps": "Ứng dụng",
       "nativeHost": "Host gốc",
+      "observability": "Khả năng quan sát",
       "hostSafety": "An toàn ứng dụng",
       "voiceInput": "Nhap giong noi"
     },
@@ -152,7 +153,8 @@
       "transcriptionProviderStatus": "Trang thai nha cung cap",
       "transcriptionModel": "Mo hinh",
       "transcriptionLanguage": "Ngon ngu",
-      "voiceLimits": "Gioi han"
+      "voiceLimits": "Gioi han",
+      "langfuseTrace": "Gui trace den Langfuse"
     },
     "help": {
       "theme": "Chuyển giữa giao diện sáng và tối.",
@@ -196,7 +198,10 @@
       "transcriptionProvider": "Dung thong tin xac thuc cua nha cung cap tu Providers.",
       "transcriptionProviderStatus": "API key nam trong providers, khong nam trong cai dat transcription.",
       "transcriptionModel": "Giu mac dinh da resolve tru khi nha cung cap can id model tuy chinh.",
-      "transcriptionLanguage": "Goi y ISO-639 tuy chon, nhu en, zh, ja hoac ko."
+      "transcriptionLanguage": "Goi y ISO-639 tuy chon, nhu en, zh, ja hoac ko.",
+      "langfuseEnabled": "Trace cua hoi thoai moi se duoc gui den Langfuse sau khi khoi dong lai.",
+      "langfuseDisabled": "Trace cua hoi thoai se duoc luu trong tep JSONL cuc bo sau khi khoi dong lai.",
+      "langfuseNotConfigured": "Hay cau hinh public key va secret key Langfuse trong config.json truoc."
     },
     "values": {
       "light": "Sáng",
@@ -280,7 +285,7 @@
         "selectProvider": "Chọn provider",
         "credentials": "Thông tin xác thực",
         "noCredentialRequired": "Không cần key",
-        "noCredentialHelp": "DuckDuckGo hoạt động mà không cần lưu API key.",
+        "noCredentialHelp": "Bing hoạt động mà không cần lưu API key.",
         "apiKeyHelp": "Được lưu trong config và chỉ hiện dạng che sau khi lưu.",
         "baseUrl": "Base URL",
         "baseUrlHelp": "SearXNG cần URL instance của bạn.",
@@ -585,6 +590,30 @@
   },
   "thread": {
     "loadingConversation": "Đang tải cuộc trò chuyện…",
+    "interaction": {
+      "approvalTitle": "Cần phê duyệt",
+      "questionTitle": "Cần thông tin từ bạn",
+      "actionRequired": "Cần thao tác",
+      "approveOnce": "Chỉ phê duyệt lần này",
+      "deny": "Từ chối",
+      "answerPlaceholder": "Nhập câu trả lời",
+      "continue": "Tiếp tục",
+      "approvalReason": {
+        "externalSideEffect": "Tác động bên ngoài cần được phê duyệt cho đúng các tham số này.",
+        "existingFileWrite": "Việc sửa tệp cục bộ hiện có cần được phê duyệt trong quyền mặc định.",
+        "highRiskCommand": "Lệnh cục bộ rủi ro cao cần được phê duyệt trong quyền mặc định."
+      },
+      "recovery": {
+        "header": "Khôi phục",
+        "question": "Kết quả của công việc bị gián đoạn chưa chắc chắn. Hãy kiểm tra đích rồi chọn thử lại, đánh dấu đã hoàn tất hoặc hủy bước bị ảnh hưởng.",
+        "retry": "Thử lại",
+        "retryDescription": "Chỉ thử lại sau khi kiểm tra đích.",
+        "markCompleted": "Đánh dấu đã hoàn tất",
+        "markCompletedDescription": "Không lặp lại tác động bên ngoài.",
+        "cancel": "Hủy",
+        "cancelDescription": "Dừng quá trình khôi phục này."
+      }
+    },
     "empty": {
       "greetings": {
         "workOn": "Mình cùng làm gì tiếp?",
@@ -652,6 +681,22 @@
       "settings": "Mở cài đặt",
       "sessionInfo": "Chi tiết phiên"
     },
+    "trace": {
+      "open": "Xem trace của lượt hiện tại",
+      "title": "Trace của lượt",
+      "sourceLocal": "JSONL cục bộ đã ẩn dữ liệu",
+      "sourceLangfuse": "Quan sát Langfuse",
+      "refresh": "Làm mới trace",
+      "openExternal": "Mở trong Langfuse",
+      "spans": "Span",
+      "tokens": "Token",
+      "duration": "Thời lượng",
+      "eventCount": "{{count}} sự kiện",
+      "noTurn": "Gửi tin nhắn để tạo trace cho lượt này.",
+      "loading": "Đang tải trace...",
+      "empty": "Chưa có trace cho lượt này.",
+      "loadFailed": "Không thể tải nguồn trace."
+    },
     "sessionInfo": {
       "title": "Phiên",
       "untitled": "Chat chưa đặt tên",
@@ -705,6 +750,7 @@
         "drag": "Kéo để sắp xếp"
       },
       "attachImage": "Đính kèm ảnh",
+      "attachFile": "Đính kèm tệp",
       "imageMode": {
         "label": "Tạo ảnh",
         "toggle": "Bật/tắt chế độ tạo ảnh",
@@ -814,6 +860,7 @@
       "imageRejected": {
         "unsupported_type": "Loại tệp không được hỗ trợ",
         "too_many_images": "Tối đa {{max}} ảnh mỗi tin nhắn",
+        "too_many_files": "Tối đa {{max}} tệp mỗi tin nhắn",
         "magic_mismatch": "Tệp này không phải là một ảnh thực",
         "decode_failed": "Không thể giải mã ảnh này",
         "too_large": "Ảnh quá lớn — hãy thử ảnh nhỏ hơn",
@@ -826,8 +873,10 @@
         "mcpGroup": "Dịch vụ MCP",
         "cliBadge": "CLI",
         "mcpBadge": "MCP",
+        "skillBadge": "Skill",
         "cliDescription": "Dùng @{{name}} như ứng dụng CLI cục bộ",
-        "mcpDescription": "Dùng @{{name}} như máy chủ MCP"
+        "mcpDescription": "Dùng @{{name}} như máy chủ MCP",
+        "skillDescription": "Định tuyến lượt này qua Skill {{name}}"
       },
       "workspace": {
         "accessAria": "Workspace access mode",
@@ -853,10 +902,32 @@
       "title": "Kế hoạch",
       "execute": "Thực thi kế hoạch",
       "starting": "Đang bắt đầu…",
+      "resume": "Tiếp tục kế hoạch",
+      "resuming": "Đang khôi phục…",
+      "openDocument": "View full plan",
+      "hide": "Thu gọn kế hoạch",
+      "show": "Hiện kế hoạch",
+      "openSubagents": "View subagents",
+      "subagentsRunning": "{{count}} subagents running",
+      "subagentPanel": {
+        "title": "Subagent execution",
+        "description": "Live child-agent reasoning, tool activity, status, and results.",
+        "waiting": "Child steps are waiting to be dispatched.",
+        "iteration": "Iteration",
+        "reasoning": "Reasoning",
+        "noReasoning": "No reasoning has been emitted yet.",
+        "tools": "Tool activity",
+        "noTools": "No tools used yet.",
+        "result": "Result"
+      },
+      "batch": "Batch {{index}}",
+      "dependsOn": "Depends on",
       "confirmPrompt": "Tôi xác nhận kế hoạch {{taskId}} với mã băm {{planHash}}. Hãy thực thi ngay, cập nhật từng bước và chỉ hoàn tất sau khi xác minh.",
+      "resumePrompt": "Tiếp tục kế hoạch đã xác nhận {{taskId}} với mã băm đầy đủ hiện tại {{planHash}}. Trước tiên gọi plan(action='resume', task_id='{{taskId}}', expected_plan_hash='{{planHash}}'), sau đó tiếp tục các nút ready. Không bỏ qua máy trạng thái hoặc đánh dấu nút failed là succeeded khi chưa thực thi và xác minh.",
       "status": {
         "creating": "Đang tạo",
         "awaiting_confirmation": "Sẵn sàng",
+        "awaiting_revision_confirmation": "Revision ready",
         "active": "Đang thực hiện",
         "completed": "Hoàn tất"
       }

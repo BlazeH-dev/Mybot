@@ -86,3 +86,26 @@ checkpoint 保存 task/plan/step、assistant tool call、completed/pending/uncer
 - 三档 InteractionRequest 跨刷新/重启恢复，回答/deadline 只消费一次，等待期不调用 provider。
 - checkpoint 损坏、plan hash 改变、input/artifact 缺失均拒绝恢复。
 - kill→resume 回归报告能验证 Office 任务恢复，未知副作用不自动重试。
+
+## 8. DAG Plan Artifact 与节点级恢复（2026-08-10）
+
+- plan schema v2 由 `PlanScheduler` 校验和推进；`plan.json` 保存当前 revision/state，用户查阅文件固定为 `plan.md`。每次修订原子替换该文件并更新 `plan_markdown` artifact 的 revision/hash/checksum；结构化 revision 历史仍用于授权和恢复。
+- checkpoint 增加 `plan_revision`、completed/pending/uncertain nodes 和 child 摘要；节点派发前、完成后与 artifact 登记均由 plan/session 持久化路径落盘。
+- 重启协调先验证 plan hash、计划 Markdown checksum 和 ArtifactStore index，再处理 running 节点：parent 无证据回 ready，完整可验证 artifact 恢复 succeeded，失联 child 转 uncertain。
+- `complete` 在所有节点终态满足且 expected artifacts 通过路径与存在性校验后直接完成；不再生成或校验独立 Reflection artifact。
+- 不承诺通用 exactly-once；外部副作用和失联 child 只允许人工恢复决定。
+
+## 9. Active Plan 显式继续（2026-08-11）
+
+- active 计划提供 hash-bound `resume`，只在用户明确继续时重置普通 failed 节点，不改变 revision、contract hash 或既有确认。
+- retry 前把旧 child id、artifact root、result 和 error 写入 attempt history，再清除本次执行绑定；后继 blocked 节点由 DAG 重新计算为 pending/ready。
+
+## 当前计划文档与单卡片投影（2026-08-11）
+
+- 创建和显式修订都只写 `.nanobot-runtime/artifacts/<task_id>/plan.md`，采用同目录临时文件加 `os.replace()` 并在登记后复核 checksum。
+- ArtifactStore 固定 id 为 `plan_markdown`。迁移旧任务时先验证当前 revision 的旧 Markdown/hash/checksum，再生成 `plan.md`，最后清理精确匹配的旧文件和 `plan_md_rN` 索引。
+- WebUI 文件预览只信任当前 session `plan_state` 中 task/revision/hash/path/checksum 全部匹配的 `plan.md`，不会开放整个 Runtime artifact 目录。
+- 会话级计划快照从完整消息集合计算，不依赖消息窗口；卡片固定在消息 viewport 上方且只有一个实例，折叠状态按会话本地持久化。
+- 当前计划被篡改、绑定过期或迁移校验失败时 fail loud，不回退到旧 revision，也不静默重建执行状态。
+- `/stop` 已知取消的 restricted child 回到 ready 且停止派发，等待用户点击“继续执行”；未知外部副作用仍进入 uncertain/recovery decision，不能借 resume 绕过。
+- WebUI active 计划卡片始终保留继续入口，避免历史卡片显示 stale running 时无法恢复。

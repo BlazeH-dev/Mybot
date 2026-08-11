@@ -249,8 +249,12 @@ async def test_child_question_routes_to_parent_and_resumes_same_child(tmp_path: 
     )
     assert "started" in started
     running = list(manager._running_tasks.values())
-    outbound = await asyncio.wait_for(bus.consume_outbound(), timeout=2)
-    interaction = outbound.metadata["_agent_ui"]["interaction"]
+    interaction = None
+    while interaction is None:
+        outbound = await asyncio.wait_for(bus.consume_outbound(), timeout=2)
+        agent_ui = outbound.metadata.get("_agent_ui", {})
+        if agent_ui.get("kind") == "interaction_request":
+            interaction = agent_ui["interaction"]
     assert interaction["child_id"]
     assert interaction["task_id"] == "parent"
     assert interaction["plan_hash"] == "plan-hash"

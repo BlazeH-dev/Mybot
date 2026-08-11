@@ -6,7 +6,9 @@ from nanobot.evaluations.credentials import (
     ADOBE_CLIENT_ID,
     ADOBE_CLIENT_SECRET,
     ADOBE_KEYCHAIN_SERVICE,
+    CHROMIUM_PATH,
     adobe_pdf_services_credentials,
+    adobe_pdf_services_env,
 )
 
 
@@ -75,3 +77,21 @@ def test_adobe_credentials_load_from_paired_secret_item(monkeypatch) -> None:
         ADOBE_CLIENT_ID: "paired-id",
         ADOBE_CLIENT_SECRET: "paired-secret",
     }
+
+
+def test_adobe_environment_discovers_standard_macos_browser(tmp_path, monkeypatch) -> None:
+    browser = tmp_path / "Microsoft Edge"
+    browser.write_text("browser", encoding="utf-8")
+    monkeypatch.setattr(
+        "nanobot.evaluations.credentials._MAC_CHROMIUM_PATHS",
+        (browser,),
+    )
+    monkeypatch.setattr("nanobot.evaluations.credentials.sys.platform", "darwin")
+
+    env = adobe_pdf_services_env({
+        ADOBE_CLIENT_ID: "environment-id",
+        ADOBE_CLIENT_SECRET: "environment-secret",
+        "PATH": "",
+    })
+
+    assert env[CHROMIUM_PATH] == str(browser)

@@ -22,15 +22,15 @@ from nanobot.config.schema import WebSearchConfig
 async def test_web_search_tool_refreshes_dynamic_config_loader(monkeypatch) -> None:
     tool = WebSearchTool(
         config=WebSearchConfig(provider="brave"),
-        config_loader=lambda: WebSearchConfig(provider="duckduckgo", max_results=3),
+        config_loader=lambda: WebSearchConfig(provider="bing", max_results=3),
     )
 
-    async def fake_duckduckgo(self, query: str, n: int) -> str:
+    async def fake_bing(self, query: str, n: int) -> str:
         return f"{self.config.provider}:{query}:{n}"
 
-    monkeypatch.setattr(WebSearchTool, "_search_duckduckgo", fake_duckduckgo)
+    monkeypatch.setattr(WebSearchTool, "_search_bing", fake_bing)
 
-    assert await tool.execute("nanobot") == "duckduckgo:nanobot:3"
+    assert await tool.execute("nanobot") == "bing:nanobot:3"
 
 
 @pytest.mark.asyncio

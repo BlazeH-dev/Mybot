@@ -91,21 +91,26 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 - 定量结论必须来自 `verified_facts.json`；纯格式、提取和批注任务不强制跑事实层。
 - 两个 Agent 模型的比较固定使用相同输入、OfficeCLI、Policy、约束和 evaluator，分开报告 coverage 与共同任务质量；不得通过 prompt、路由或评分偏袒任一模型。
 
-### 4.2 Plan 契约
+### 4.2 Plan DAG、版本与交付闸门
 
-- 静态内建 `plan` 工具固定提供 `create/get/confirm/update_step/complete`。
-- plan hash 只覆盖不可变契约；修改计划后旧确认失效。
+- 静态内建 `plan` 工具固定提供 `create/get/revise/confirm/resume/update_step/complete`；schema v2 step 包含 `id/description/depends_on/expected_artifacts/executor`，创建和修订时拒绝重复 ID、未知依赖、自依赖和循环。
+- Runtime 持久化 DAG 节点状态 `pending|ready|running|succeeded|failed|blocked|uncertain|cancelled`；ready 分支可并行，依赖链自然串行，单个分支失败只阻塞后继。
+- 普通失败不自动重试；用户在 active 计划卡片点击“继续执行”或明确要求继续后，`resume` 以当前完整 plan hash 为边界把 failed 节点重置为 ready、清理旧 child/result/error 绑定并重新派发。已知 `/stop` 取消的 child 直接回 ready，但不会在取消回调中自行重启。
+- 每个 task 维护单一 `.nanobot-runtime/artifacts/<task_id>/plan.md`，每次 revision 使用 Runtime 固定模板原子替换；ArtifactStore 固定使用 `plan_markdown`，metadata 绑定当前 revision、plan hash 和 checksum。旧 `plan-rN.md` 与 `plan_md_rN` 在校验迁移成功后清理，结构化 revision/checkpoint/trace 历史仍保留。
+- plan hash 只覆盖结构化契约；修订后旧 hash 和旧确认立即失效。active plan 只允许修改未开始节点；未受影响且 artifact checksum 仍有效的成功节点直接复用。
 - WebUI `execution_mode=plan_only` 只开放 plan 与只读检查工具；plan 记录停在 `awaiting_confirmation`，Runtime turn 以 `awaiting_plan_confirmation` 持久化挂起，同回合不得 confirm 或执行。
 - 普通 WebUI 复杂任务 create 后可自动激活；激活时 `approved_plan_hash` 必须等于当前 plan hash，并记录 `approval.mode=automatic`。
-- 手动/仅规划计划必须显式确认后激活；步骤依赖和 expected artifacts 由工具硬校验。
+- 手动/仅规划计划和所有后续 revision 必须显式确认后激活；步骤依赖和 expected artifacts 由工具硬校验。等待 `plan_confirmation` 时允许用户用普通文字提出修改，Runtime 撤销旧确认并进入受限 plan-only revision 回合；审批和恢复 typed interaction 仍不可绕过。
 - 自动激活只表示允许按计划推进，不批准高风险工具；外发和远程写仍独立经过 P3 policy/approval。本地已有文件写入与高风险本地 Shell 是否 ask 由当前 WebUI access profile 决定，但无论何种 profile 都必须经过 P3 OCC / hard deny。
-- plan 是 artifact 和后续 checkpoint 的根；动态摘要只放用户消息尾部 Runtime Context，工具定义保持稳定以利缓存。
+- parent 节点由当前主 AgentRunner 按节点范围推进；child 节点由 PlanScheduler 通过受治理 SubagentManager 自动派发，绑定父 task/hash、restricted child workspace、独立 artifact root 和禁止嵌套 spawn 的边界。
+- 所有必需节点达到成功或显式接受的终态，且每个 expected artifact 解析为任务目录内的安全路径并存在后，`plan complete` 直接将计划标记为 `completed`；不再启动独立 Reviewer、生成额外审查 artifact 或自动修订计划。
+- plan 是 artifact 和 checkpoint 的根；每个会话只渲染一张计划卡片，固定在标题栏与消息滚动区之间，后续进度、修订和恢复原位更新。卡片可折叠为单行栏，折叠状态按会话持久化，并可打开当前 `plan.md`。存在 child 节点时提供独立“查看子智能体”入口；主时间线只展示 parent reasoning/tool activity，child reasoning、工具调用、状态和结果进入 revision/hash 绑定的桌面侧栏。WebUI 只验收桌面浏览器，不新增移动端实现或测试。
 
 ### 4.3 Sandbox、Policy 与三档 HITL
 
 - `sandbox_mode` 使用 `read_only|workspace_write|danger_full_access`：plan-only 映射 `read_only`，Default Permission 映射 `workspace_write`，Full Access 映射 `danger_full_access`。
 - `workspace_write` 必须由 OS provider 强制：macOS 使用 Seatbelt，Linux/WSL2 使用 Bubblewrap；原生 Windows 首版不宣称支持。provider 缺失时返回 `sandbox_unavailable`，不得静默无沙箱执行；用户只能显式切换 Full Access 或修复 provider。
-- workspace 默认仅项目目录与当前 task artifact 目录可写；builtin Skill、上传媒体和必要系统运行库只读；`~/.nanobot`、凭据、Runtime interactions/checkpoint/trace 控制文件和项目 `.git` 默认不可由普通 sandbox 命令写入。
+- workspace 默认仅项目目录与当前 task artifact 目录可写；只读工具通过 `trusted_read_roots` 声明 builtin Skill、上传媒体等受控目录，Policy hard boundary 与文件工具使用同一只读根口径，写工具和 Exec 不消费该授权。`~/.nanobot`、凭据、Runtime interactions/checkpoint/trace 控制文件和项目 `.git` 始终 hard deny。
 - sandbox 内命令默认断网。Core 网络例外只支持直接 `curl`：禁止 shell 组合、redirect、proxy/resolve/config/interface 等目标改写，批准绑定当前 tool call/command hash/domain/port/审批时公网 DNS 地址/expiry，并以独立 one-shot `LaunchSpec` + `--resolve` 固定目标；持久 exec session 始终保持断网，不能被一次性 grant 解锁。SSRF、内网、metadata 和敏感目标仍 hard deny。
 - 沙箱覆盖 Agent 触发的 Shell 一次性/持久 session、CLI Apps 与 OfficeCLI 子进程；预配置 MCP server、channel bootstrap 和网关自身进程首版不纳入同一 OS 边界，必须在文档和 UI 标明，并继续受调用级 policy/SSRF 约束。
 - `danger_full_access` 表示用户明确关闭本地 OS 文件/网络沙箱，不等于关闭 Runtime policy：消息、邮件、远程写、凭据访问、OCC 和 hard deny 仍独立生效。
@@ -152,16 +157,20 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
   - `completed`：已持久化，跳过。
   - `pending`：未执行或可安全重放。
   - `uncertain`：副作用可能发生，使用 `required` 人工决定。
+- DAG 恢复语义：已验证成功节点跳过；pending/ready 重新入队；无执行证据的 parent running 回到 ready；可验证产物完整的 running 恢复 succeeded；丢失进程内 child 或外部副作用状态不明时转 uncertain 并要求 recovery decision。
+- plan hash、计划 Markdown、checkpoint 或产物 checksum 校验失败时 fail loud，不静默从头执行。
 - `awaiting_question|approval|plan_confirmation|recovery_decision` 是合法 suspension，不能恢复成工具失败。
 - 不宣称通用 exactly-once。
 
 ### 4.7 Subagent 治理
 
-- 每个父任务最多 5 个直接 child，禁止嵌套。
+- 每个父任务同一时刻最多 5 个直接 child，完成后释放槽位；禁止嵌套。
 - 权限只能继承或收紧；child 不设置 token、总时长或工具调用配额，避免长任务因父 Agent 低估工作量而失败。
 - 保留用户/父任务取消、网关关闭、单次 LLM 请求超时和 200 轮异常循环熔断；触发循环熔断时返回部分进展。
 - child 只接收必要目标、约束和 artifact 引用，不复制完整父会话。
 - child 默认只写自己的 artifact 子目录，父 Agent 负责事实共享、冲突处理和最终汇总。
+- PlanScheduler 默认并发派发 ready child 节点，依赖满足后继续下一批；默认与配置上限均为同时 5 个 direct child，完成后释放槽位，不限制任务生命周期内累计执行的 child 节点数。主 Runner 不前台等待 child；会话级 `/stop` 同时取消主任务和该 session 全部 child。
+- child 生命周期通过独立 `subagent_activity` WebSocket/transcript 流暴露，事件绑定 parent task、plan hash、node id 和 child id；刷新后从 transcript 聚合恢复，旧 revision activity 不进入当前计划面板，也不混入 parent 消息/思考时间线。
 - 任何使用 Subagent 的任务都要记录父子 trace，并与单 Agent 顺序执行比较成功率、时长和 token 成本。
 - 文件租约未实现不阻塞 P8；如果实现，仅协调同一进程 Agent，不能替代 OCC。
 
@@ -171,6 +180,7 @@ nanobot/workspaces/                 # P3.1 选做规划，尚未实现
 - `observability.langfuse.enabled=false`（默认）时保留现有 JSONL TraceHook 作为本地调试与离线证据路径；启用后切换到 Langfuse SDK，停写 JSONL，二者互斥。JSONL 代码删除推迟到 Langfuse 稳定后作为独立清理项。
 - Provider 观测必须在 `runner._request_model()` 内逐调用创建 generation observation（记录 start_time/TTFT/latency/usage）。优先使用 `langfuse.openai` drop-in（provider 从 config 设置环境变量后导入），自动追踪所有 OpenAI-compatible provider（OpenAI/DeepSeek/GPT-5.6）；检测到 drop-in 时 runner 不重复创建 generation。
 - Tool 观测必须在 `runner._run_tool()` 内逐调用创建 tool observation（记录 tool_call_id/arguments 摘要/latency/result 摘要/error）。
+- DAG 节点派发/完成、stale child completion、恢复分类和最终确定性完成均写入 `mybot.plan.*` trace。WebUI child activity transcript 是用户可见执行投影，不替代脱敏 trace 真相源。
 - Langfuse 负责 Trace/Sessions、Datasets/Dataset Runs、Experiments、Scores、LLM-as-a-Judge、Code Evaluator、Annotation Queue、成本/延迟 Dashboard、趋势和 CI regression gate。
 - Langfuse Python SDK `run_experiment()` 在 Mybot 进程中调用 task callback；OCB 使用 Langfuse LLM Connection 连接 `gpt-5.6-terra`，产生 `mybot_score` 和 reasoning，不需要 Mybot 的第二套 EvalResult/Score 数据库。
 - Mybot 新建 `nanobot/cli/benchmark.py`（prepare/estimate/run/export），封装 `langfuse.run_experiment()` 和 Langfuse API 查询。Langfuse Dataset Run、Score 和 Annotation 是评估真相源，Git/README 只是只读导出快照。
@@ -284,5 +294,6 @@ Mybot 只维护 benchmark 编排状态和本机恢复 checkpoint，不维护 Sco
 - 日本区 Langfuse Cloud 未启用或不可用时，普通 Runtime、本地 deterministic/cassette、Policy/OCC/HITL/OpenXML 硬门仍正常，但明确没有持久 Trace/Experiment；启用时可查询 Agent/LLM/tool/Policy/Interaction/artifact/checkpoint/child observation，比较 Dataset Run 和 Score 并处理 Annotation Queue。
 - WebUI 新增独立 `#/evaluations` 评测中心，但不复制 Langfuse 真相源：通过共享 suite catalog/adapter 与 Job Service 展示 readiness、估算、队列、进度、Case 状态、断点续测计数、分数摘要和 CLI/WebUI 历史，并提供 Resume 同 Job、Retry 新 Job 及 Dataset Run、Trace、Annotation Queue deep link；人工评分、Trace 详情和 Judge reasoning 仍只在 Langfuse 完成。未来新增评测维度只需提交受信任的 `benchmarks/suites/<suite-id>/manifest.yaml`、`adapter.py` 和测试，不需重复开发页面。
 - Subagent 权限、上下文、产物、usage、取消和循环熔断均可核对。
+- 计划卡片可查看当前 revision 下并行 child 的独立实时活动，主页面不会把 child reasoning/tool events 混成 parent 执行过程；刷新后仍可恢复已落盘的 child 状态与结果。
 
 P6 和 P3.1 不属于以上项目完成条件；若后续单独启动，其验收以对应阶段计划为准。

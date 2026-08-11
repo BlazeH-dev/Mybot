@@ -177,7 +177,7 @@ status: pending|answered|approved|denied|timed_out|expired|cancelled|superseded|
 
 ### 三档等待
 
-- `required`：必要参数、文件、不可推断选择、需要人工确认的 plan、uncertain recovery。无回答就不继续，只能回答、取消或 `/stop`。
+- `required`：必要参数、文件、不可推断选择、需要人工确认的 plan、uncertain recovery。无回答就不继续，只能回答、取消或 `/stop`；但用户可在 `plan_confirmation` 等待期间发送普通文字修改计划，Runtime 会撤销旧确认并以 plan-only revision 回合生成新 revision，不能借此确认或执行。审批和 uncertain recovery 仍不能由普通聊天绕过。
 - `auto_resolve`：非阻塞偏好问题，deadline 建议 60–240 秒。到期优先用声明的确定性默认值，否则返回 `timed_out` 让模型最佳判断；不得伪造用户答案。
 - `expire_and_deny`：Default Permission 下修改用户原文件和高风险本地 Shell，以及两种 profile 下的消息/邮件、远程写操作。到期 expired/denied，原工具不得执行；Full Access 下允许的本地写入仍必须先通过 OCC。
 
@@ -307,3 +307,18 @@ OfficeCLI 基线：只读 help/view/get/query/validate 通常 allow；任务目�
 - 刷新、断线、重启后卡片和 continuation 可恢复。
 - OfficeCLI allow/ask/deny 分级通过。
 - 未读、读后修改、mtime 不变但 hash 变化、多文件第 N 个冲突均硬失败且零部分写入。
+
+## 9. Plan Revision、Recovery 与本地化 HITL（2026-08-11）
+
+- `plan_confirmation` 与 `recovery_decision` 使用 revision/idempotency 绑定的 required typed response。除计划确认等待期间的受限文字修订例外外，普通聊天不能绕过；修订会撤销旧确认、生成新 hash 并再次要求显式确认。
+- 每个 plan revision 使用新 hash，旧 approval/confirmation 不可复用；修订草案必须经过显式确认，工具风险仍逐调用经过 P3 Policy。
+- interrupted child 或外部副作用不明的 DAG 节点转 `uncertain`，用户只能选择 Retry、Mark completed 或 Cancel affected node；Runtime 不自动重试不确定工作。
+- WebUI 通用 HITL 卡片的标题、按钮、审批原因和 Runtime recovery 问题使用 i18n；内置选项显示值按应用语言变化，但提交值保持后端原始协议标签，避免破坏确定性恢复。
+
+## 10. 可信只读根目录（2026-08-11）
+
+- `Tool.trusted_read_roots` 是工具声明额外只读目录的唯一接口，默认空集合且只对 `read_only` 工具生效。
+- 文件读取工具声明与路径解析器一致的 builtin Skill、受控媒体根目录；restricted parent/child 可读取这些资源，不再在工具执行前被误判为 workspace escape。
+- Policy 先检查 `.git`、凭据和 Runtime 控制目录，再判断 workspace/trusted root；受保护路径即使位于可信根目录仍拒绝。
+- 写文件、patch 和 Exec 不消费可信只读根目录，不能借用读取授权扩大写入或执行范围。
+- 回归覆盖 builtin Skill 允许读取、同一路径禁止写入、普通 workspace 外路径继续 hard deny。

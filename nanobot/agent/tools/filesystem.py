@@ -16,6 +16,7 @@ from nanobot.agent.tools.schema import (
     StringSchema,
     tool_parameters_schema,
 )
+from nanobot.config.paths import get_media_dir
 from nanobot.security.workspace_access import current_tool_workspace
 from nanobot.utils.helpers import build_image_content_blocks, detect_image_mime
 
@@ -91,6 +92,11 @@ class _FsTool(Tool):
 
     def _display_workspace(self) -> Path | None:
         return current_tool_workspace(self._workspace).project_path
+
+    @property
+    def trusted_read_roots(self) -> tuple[Path, ...]:
+        roots = [get_media_dir(), *(self._extra_allowed_dirs or [])]
+        return tuple(root.expanduser().resolve(strict=False) for root in roots)
 
 
 # ---------------------------------------------------------------------------

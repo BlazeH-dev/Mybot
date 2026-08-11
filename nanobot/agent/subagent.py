@@ -1,6 +1,7 @@
 """Subagent manager for background task execution."""
 
 import asyncio
+import inspect
 import json
 import time
 import uuid
@@ -48,6 +49,10 @@ from nanobot.security.workspace_access import (
     reset_workspace_scope,
     workspace_sandbox_status,
 )
+from nanobot.utils.progress_events import (
+    build_tool_event_finish_payloads,
+    build_tool_event_start_payload,
+)
 from nanobot.utils.prompt_templates import render_template
 
 
@@ -67,17 +72,48 @@ class SubagentStatus:
     error: str | None = None
     parent_task_id: str | None = None
     artifact_root: str | None = None
+    node_id: str | None = None
+    plan_hash: str | None = None
+    final_result: str | None = None
 
 
 class _SubagentHook(AgentHook):
     """Hook for subagent execution — logs tool calls and updates status."""
 
-    def __init__(self, task_id: str, status: SubagentStatus | None = None) -> None:
+    def __init__(
+        self,
+        task_id: str,
+        status: SubagentStatus | None = None,
+        on_activity: Callable[..., Any] | None = None,
+    ) -> None:
         super().__init__()
         self._task_id = task_id
         self._status = status
+        self._on_activity = on_activity
+
+    async def _emit(self, event: str, **payload: Any) -> None:
+        if self._on_activity is None:
+            return
+        outcome = self._on_activity(event=event, **payload)
+        if inspect.isawaitable(outcome):
+            await outcome
+
+    async def before_iteration(self, context: AgentHookContext) -> None:
+        if self._status is not None:
+            self._status.iteration = context.iteration
+            self._status.phase = "running"
+        await self._emit("iteration", iteration=context.iteration, phase="running")
 
     async def before_execute_tools(self, context: AgentHookContext) -> None:
+        if self._status is not None:
+            self._status.phase = "awaiting_tools"
+        tool_events = [build_tool_event_start_payload(call) for call in context.tool_calls]
+        await self._emit(
+            "tool_events",
+            iteration=context.iteration,
+            phase="awaiting_tools",
+            tool_events=tool_events,
+        )
         for tool_call in context.tool_calls:
             args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
             logger.debug(
@@ -85,14 +121,31 @@ class _SubagentHook(AgentHook):
                 self._task_id, tool_call.name, args_str,
             )
 
+    async def emit_reasoning(self, reasoning_content: str | None) -> None:
+        if not reasoning_content:
+            return
+        await self._emit("reasoning_delta", reasoning_delta=reasoning_content)
+
+    async def emit_reasoning_end(self) -> None:
+        await self._emit("reasoning_end")
+
     async def after_iteration(self, context: AgentHookContext) -> None:
         if self._status is None:
             return
         self._status.iteration = context.iteration
         self._status.tool_events = list(context.tool_events)
         self._status.usage = dict(context.usage)
+        self._status.phase = "tools_completed" if context.tool_calls else "running"
         if context.error:
             self._status.error = str(context.error)
+        await self._emit(
+            "tool_events" if context.tool_calls else "iteration",
+            iteration=context.iteration,
+            phase=self._status.phase,
+            usage=dict(context.usage),
+            tool_events=build_tool_event_finish_payloads(context),
+            error=str(context.error) if context.error else None,
+        )
 
 
 class SubagentManager:
@@ -193,6 +246,9 @@ class SubagentManager:
         workspace_scope: WorkspaceScope | None = None,
         parent_task_id: str | None = None,
         parent_plan_hash: str | None = None,
+        node_id: str | None = None,
+        completion_callback: Callable[[SubagentStatus], Any] | None = None,
+        return_task_id: bool = False,
     ) -> str:
         """Spawn a subagent to execute a task in the background."""
         parent_key = parent_task_id or session_key or f"{origin_channel}:{origin_chat_id}"
@@ -201,6 +257,12 @@ class SubagentManager:
             return (
                 "Cannot spawn subagent: direct child limit reached "
                 f"({spawned}/{self.max_direct_children})."
+            )
+        running = self.get_running_count()
+        if running >= self.max_concurrent_subagents:
+            return (
+                "Cannot spawn subagent: concurrency limit reached "
+                f"({running}/{self.max_concurrent_subagents} running)."
             )
         self._spawned_by_parent[parent_key] = spawned + 1
         task_id = str(uuid.uuid4())[:8]
@@ -213,6 +275,8 @@ class SubagentManager:
             task_description=task,
             started_at=time.monotonic(),
             parent_task_id=parent_task_id,
+            node_id=node_id,
+            plan_hash=parent_plan_hash,
         )
         self._task_statuses[task_id] = status
         emit_trace_event("mybot.subagent.spawn", {
@@ -222,6 +286,13 @@ class SubagentManager:
             "plan_hash": parent_plan_hash,
         })
         parent_trace = current_trace_context()
+
+        await self._publish_activity(
+            origin=origin,
+            status=status,
+            event="started",
+            phase="initializing",
+        )
 
         bg_task = asyncio.create_task(
             self._run_subagent(
@@ -249,11 +320,67 @@ class SubagentManager:
                 ids.discard(task_id)
                 if not ids:
                     del self._session_tasks[session_key]
+            remaining = self._spawned_by_parent.get(parent_key, 0) - 1
+            if remaining > 0:
+                self._spawned_by_parent[parent_key] = remaining
+            else:
+                self._spawned_by_parent.pop(parent_key, None)
+            if completion_callback is not None:
+                async def _notify() -> None:
+                    try:
+                        outcome = completion_callback(status)
+                        if inspect.isawaitable(outcome):
+                            await outcome
+                    except Exception:
+                        logger.exception("Subagent completion callback failed for {}", task_id)
+
+                asyncio.create_task(_notify())
 
         bg_task.add_done_callback(_cleanup)
 
         logger.info("Spawned subagent [{}]: {}", task_id, display_label)
+        if return_task_id:
+            return task_id
         return f"Subagent [{display_label}] started (id: {task_id}). I'll notify you when it completes."
+
+    async def _publish_activity(
+        self,
+        *,
+        origin: dict[str, str],
+        status: SubagentStatus,
+        event: str,
+        **updates: Any,
+    ) -> None:
+        """Publish one child-only UI event without adding it to the parent timeline."""
+        activity: dict[str, Any] = {
+            "event": event,
+            "child_id": status.task_id,
+            "label": status.label,
+            "task_description": status.task_description,
+            "parent_task_id": status.parent_task_id,
+            "plan_hash": status.plan_hash,
+            "node_id": status.node_id,
+            "phase": status.phase,
+            "iteration": status.iteration,
+            "elapsed_ms": max(0, int((time.monotonic() - status.started_at) * 1000)),
+            "usage": dict(status.usage),
+            "error": status.error,
+            "final_result": status.final_result,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        activity.update({key: value for key, value in updates.items() if value is not None})
+        await self.bus.publish_outbound(OutboundMessage(
+            channel=origin["channel"],
+            chat_id=origin["chat_id"],
+            content="",
+            metadata={
+                "_progress": True,
+                OUTBOUND_META_AGENT_UI: {
+                    "kind": "subagent_activity",
+                    "activity": activity,
+                },
+            },
+        ))
 
     async def _publish_interaction(
         self,
@@ -529,6 +656,13 @@ class SubagentManager:
         async def _on_checkpoint(payload: dict) -> None:
             status.phase = payload.get("phase", status.phase)
             status.iteration = payload.get("iteration", status.iteration)
+            await self._publish_activity(
+                origin=origin,
+                status=status,
+                event="checkpoint",
+                phase=status.phase,
+                iteration=status.iteration,
+            )
 
         try:
             parent_root = workspace_scope.project_path if workspace_scope is not None else self.workspace
@@ -597,6 +731,9 @@ class SubagentManager:
                 cumulative_usage: dict[str, int] = {}
                 cumulative_events: list[dict[str, str]] = []
                 cumulative_tools: list[str] = []
+                async def _on_activity(**payload: Any) -> None:
+                    await self._publish_activity(origin=origin, status=status, **payload)
+
                 while True:
                     result = await self.runner.run(AgentRunSpec(
                         initial_messages=messages,
@@ -605,13 +742,16 @@ class SubagentManager:
                         temperature=temperature,
                         max_iterations=self.max_iterations,
                         max_tool_result_chars=self.max_tool_result_chars,
-                        hook=CompositeHook([_SubagentHook(task_id, status), child_trace]),
+                        hook=CompositeHook([
+                            _SubagentHook(task_id, status, _on_activity),
+                            child_trace,
+                        ]),
                         max_iterations_message=(
                             "Stopped by the loop guard after {max_iterations} iterations. "
                             "Partial progress is reported below."
                         ),
                         error_message=None,
-                        fail_on_tool_error=True,
+                        fail_on_tool_error=False,
                         checkpoint_callback=_on_checkpoint,
                         session_key=sess_key,
                         workspace=root,
@@ -642,6 +782,12 @@ class SubagentManager:
                             tool_events=cumulative_events,
                         )
                     status.phase = result.stop_reason
+                    await self._publish_activity(
+                        origin=origin,
+                        status=status,
+                        event="checkpoint",
+                        phase=status.phase,
+                    )
                     request = await self._wait_for_interaction(str(interaction["request_id"]))
                     try:
                         created_at = datetime.fromisoformat(request.created_at)
@@ -667,16 +813,18 @@ class SubagentManager:
                 result = await _run_lifecycle()
             finally:
                 reset_workspace_scope(token)
-            partial_failure = result.stop_reason in {
+            unresolved_tool_error = self._has_unresolved_tool_error(result)
+            effective_stop_reason = "tool_error" if unresolved_tool_error else result.stop_reason
+            partial_failure = effective_stop_reason in {
                 "tool_error",
                 "budget_exceeded",
                 "max_iterations",
             }
             status.phase = "error" if partial_failure else "done"
-            status.stop_reason = result.stop_reason
+            status.stop_reason = effective_stop_reason
             emit_trace_event("mybot.subagent.complete", {
                 "child_id": task_id,
-                "stop_reason": result.stop_reason,
+                "stop_reason": effective_stop_reason,
                 "usage": result.usage,
                 "artifact_root": str(root),
             })
@@ -689,19 +837,49 @@ class SubagentManager:
                 })
             if partial_failure:
                 status.tool_events = list(result.tool_events)
+                status.final_result = self._format_partial_progress(result)
+                await self._publish_activity(
+                    origin=origin,
+                    status=status,
+                    event="failed",
+                    phase="error",
+                    usage=dict(result.usage),
+                    final_result=status.final_result,
+                )
                 await self._announce_result(
                     task_id, label, task,
-                    self._format_partial_progress(result),
+                    status.final_result,
                     origin, "error", origin_message_id,
                 )
             elif result.stop_reason == "error":
+                status.phase = "error"
+                status.final_result = result.error or "Error: subagent execution failed."
+                status.error = status.final_result
+                await self._publish_activity(
+                    origin=origin,
+                    status=status,
+                    event="failed",
+                    phase="error",
+                    usage=dict(result.usage),
+                    error=status.error,
+                    final_result=status.final_result,
+                )
                 await self._announce_result(
                     task_id, label, task,
-                    result.error or "Error: subagent execution failed.",
+                    status.final_result,
                     origin, "error", origin_message_id,
                 )
             else:
                 final_result = result.final_content or "Task completed but no final response was generated."
+                status.final_result = final_result
+                await self._publish_activity(
+                    origin=origin,
+                    status=status,
+                    event="completed",
+                    phase="done",
+                    usage=dict(result.usage),
+                    final_result=final_result,
+                )
                 logger.info("Subagent [{}] completed successfully", task_id)
                 await self._announce_result(task_id, label, task, final_result, origin, "ok", origin_message_id)
 
@@ -709,19 +887,37 @@ class SubagentManager:
             status.phase = "error"
             status.stop_reason = "cancelled"
             status.error = "Subagent cancelled."
+            status.final_result = status.error
             emit_trace_event("mybot.subagent.cancelled", {
                 "child_id": task_id,
                 "parent_task_id": parent_task_id,
             })
+            await self._publish_activity(
+                origin=origin,
+                status=status,
+                event="cancelled",
+                phase="error",
+                error=status.error,
+                final_result=status.final_result,
+            )
             raise
         except Exception as e:
             status.phase = "error"
             status.error = str(e)
+            status.final_result = f"Error: {e}"
             emit_trace_event("mybot.subagent.failed", {
                 "child_id": task_id,
                 "error": type(e).__name__,
             })
             logger.exception("Subagent [{}] failed", task_id)
+            await self._publish_activity(
+                origin=origin,
+                status=status,
+                event="failed",
+                phase="error",
+                error=status.error,
+                final_result=status.final_result,
+            )
             await self._announce_result(task_id, label, task, f"Error: {e}", origin, "error", origin_message_id)
         finally:
             if temporary_parent is not None:
@@ -798,6 +994,19 @@ class SubagentManager:
             or "Error: subagent execution failed."
         )
 
+    @staticmethod
+    def _has_unresolved_tool_error(result: AgentRunResult) -> bool:
+        """Treat a final tool error as unresolved unless a later tool call succeeds."""
+        last_status = next(
+            (
+                str(event.get("status") or "")
+                for event in reversed(result.tool_events)
+                if isinstance(event, dict) and event.get("status") in {"ok", "error"}
+            ),
+            "",
+        )
+        return last_status == "error"
+
     def _build_subagent_prompt(self, workspace: Path | None = None) -> str:
         """Build a focused system prompt for the subagent."""
         from nanobot.agent.context import ContextBuilder
@@ -829,6 +1038,14 @@ class SubagentManager:
     def get_running_count(self) -> int:
         """Return the number of currently running subagents."""
         return len(self._running_tasks)
+
+    def get_running_task_ids(self) -> set[str]:
+        """Return a snapshot of live child ids for durable scheduler recovery."""
+        return {
+            task_id
+            for task_id, task in self._running_tasks.items()
+            if not task.done()
+        }
 
     def get_running_count_by_session(self, session_key: str) -> int:
         """Return the number of currently running subagents for a session."""

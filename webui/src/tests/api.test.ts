@@ -13,6 +13,7 @@ import {
   fetchSidebarState,
   fetchSkillDetail,
   fetchSkills,
+  fetchTurnTrace,
   fetchWebuiThread,
   fetchWorkspaceDirectories,
   fetchWorkspaces,
@@ -29,6 +30,7 @@ import {
   updateModelConfiguration,
   updateMcpServerTools,
   updateNetworkSafetySettings,
+  updateObservabilitySettings,
   updateProviderSettings,
   updateSettings,
   updateSkillEnabled,
@@ -69,6 +71,19 @@ describe("webui API helpers", () => {
     expect(fetch).toHaveBeenCalledWith(
       "/api/sessions/websocket%3Achat-1/file-preview?path=%2Ftmp%2Fproject%2Fhook.py%3A12",
       expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+        credentials: "same-origin",
+      }),
+    );
+  });
+
+  it("fetches a trace for one encoded WebUI turn", async () => {
+    await fetchTurnTrace("tok", "websocket:chat-1", "turn:1");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/sessions/websocket%3Achat-1/trace?turn_id=turn%3A1",
+      expect.objectContaining({
+        cache: "no-store",
         headers: { Authorization: "Bearer tok" },
         credentials: "same-origin",
       }),
@@ -322,6 +337,17 @@ describe("webui API helpers", () => {
 
     expect(fetch).toHaveBeenCalledWith(
       "/api/settings/network-safety/update?webui_allow_local_service_access=false&webui_default_access_mode=full",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+      }),
+    );
+  });
+
+  it("serializes observability settings updates", async () => {
+    await updateObservabilitySettings("tok", { langfuseEnabled: false });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/settings/observability/update?langfuse_enabled=false",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
       }),

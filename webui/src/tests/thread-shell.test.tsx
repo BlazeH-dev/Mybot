@@ -3,7 +3,10 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ThreadShell } from "@/components/thread/ThreadShell";
+import {
+  planCollapsedStorageKey,
+  ThreadShell,
+} from "@/components/thread/ThreadShell";
 import { CLI_APPS_CHANGED_EVENT } from "@/lib/cli-app-events";
 import { ClientProvider } from "@/providers/ClientProvider";
 import type { CliAppsPayload, SettingsPayload, UIMessage } from "@/lib/types";
@@ -119,6 +122,41 @@ function transcriptFromSimpleMessages(
   };
 }
 
+function planTranscriptMessage(revision = 1): UIMessage {
+  return {
+    id: `plan-${revision}`,
+    role: "tool",
+    kind: "trace",
+    content: "plan()",
+    traces: ["plan()"],
+    createdAt: 1000 + revision,
+    toolEvents: [{
+      version: 1,
+      phase: "end",
+      call_id: `plan-call-${revision}`,
+      name: "plan",
+      arguments: { action: revision === 1 ? "create" : "revise" },
+      result: JSON.stringify({
+        plan: {
+          task_id: "fixed-card-plan",
+          goal: `Plan revision ${revision}`,
+          status: "active",
+          plan_hash: `hash-${revision}`,
+          revision,
+          plan_markdown: {
+            path: "/tmp/.nanobot-runtime/artifacts/fixed-card-plan/plan.md",
+          },
+          steps: [{
+            id: "work",
+            description: `Work revision ${revision}`,
+            status: "running",
+          }],
+        },
+      }),
+    }],
+  };
+}
+
 function httpJson(body: unknown) {
   return {
     ok: true,
@@ -221,6 +259,7 @@ function modelSettings(model: string, provider: string): SettingsPayload {
 
 describe("ThreadShell", () => {
   beforeEach(() => {
+    window.localStorage.clear();
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -229,6 +268,80 @@ describe("ThreadShell", () => {
         json: async () => ({}),
       }),
     );
+  });
+
+  it("keeps the conversation stop control available while a subagent is running", async () => {
+    const client = makeClient();
+    render(wrap(
+      client,
+      <ThreadShell
+        session={session("child-stop")}
+        title="Child stop"
+        onToggleSidebar={() => {}}
+      />,
+    ));
+
+    act(() => {
+      client._emitChat("child-stop", {
+        event: "subagent_activity",
+        chat_id: "child-stop",
+        activity: {
+          event: "started",
+          child_id: "child-1",
+          label: "Research",
+          status: "running",
+        },
+      });
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /stop response/i }));
+    expect(client.sendMessage).toHaveBeenCalledWith("child-stop", "/stop");
+  });
+
+  it("renders one fixed plan surface above the viewport and remembers collapse state", async () => {
+    const client = makeClient();
+    const transcript = {
+      schemaVersion: 3,
+      messages: [planTranscriptMessage(1), planTranscriptMessage(2)],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes("websocket%3Aplan-card/webui-thread")) {
+          return httpJson(transcript);
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      }),
+    );
+
+    const view = render(wrap(
+      client,
+      <ThreadShell
+        session={session("plan-card")}
+        title="Plan card"
+        onToggleSidebar={() => {}}
+      />,
+    ));
+
+    const surface = await screen.findByTestId("conversation-plan-surface");
+    expect(screen.getAllByTestId("plan-progress-card")).toHaveLength(1);
+    expect(screen.getByText("Plan revision 2")).toBeInTheDocument();
+    expect(surface.nextElementSibling).toHaveAttribute("data-testid", "thread-viewport");
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide plan" }));
+    expect(screen.getByTestId("plan-progress-card")).toHaveAttribute("data-collapsed", "true");
+    expect(window.localStorage.getItem(planCollapsedStorageKey("websocket:plan-card"))).toBe("true");
+
+    view.unmount();
+    render(wrap(
+      client,
+      <ThreadShell
+        session={session("plan-card")}
+        title="Plan card"
+        onToggleSidebar={() => {}}
+      />,
+    ));
+    expect(await screen.findByTestId("plan-progress-card")).toHaveAttribute("data-collapsed", "true");
   });
 
   it("does not navigate away when clicking the chat title", async () => {

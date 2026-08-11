@@ -7,7 +7,7 @@ import dataclasses
 import json
 import os
 import time
-from contextlib import AsyncExitStack, nullcontext, suppress
+from contextlib import AsyncExitStack, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum, auto
@@ -21,7 +21,9 @@ from nanobot.agent import model_presets as preset_helpers
 from nanobot.agent.autocompact import AutoCompact
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.execution_mode import (
+    EXECUTION_MODE_METADATA_KEY,
     EXECUTION_MODE_PLAN_ONLY,
+    PLAN_REVISION_REQUEST_METADATA_KEY,
     execution_mode_from_metadata,
     plan_only_prompt,
     plan_only_registry,
@@ -57,6 +59,7 @@ from nanobot.runtime.interactions import (
     InteractionStrategy,
 )
 from nanobot.runtime.langfuse import LangfuseRuntime
+from nanobot.runtime.plan_scheduler import PlanScheduler, contract_hash
 from nanobot.runtime.policy import (
     PermissionDecision,
     PolicyEngine,
@@ -596,6 +599,10 @@ class AgentLoop:
             request_metadata["_runtime_approved_plan_hash"] = str(
                 current_plan.get("approved_plan_hash") or ""
             )
+            request_metadata["_runtime_plan_managed_children"] = any(
+                isinstance(step, dict) and step.get("executor") == "child"
+                for step in (current_plan.get("steps") or [])
+            )
         request_ctx = RequestContext(
             channel=channel,
             chat_id=chat_id,
@@ -718,10 +725,10 @@ class AgentLoop:
         """
         tasks = self._active_tasks.pop(key, [])
         cancelled = sum(1 for t in tasks if not t.done() and t.cancel())
-        for t in tasks:
-            with suppress(asyncio.CancelledError, Exception):
-                await t
-        sub_cancelled = await self.subagents.cancel_by_session(key)
+        child_cancellation = asyncio.create_task(self.subagents.cancel_by_session(key))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        sub_cancelled = await child_cancellation
         return cancelled + sub_cancelled
 
     def _effective_session_key(self, msg: InboundMessage) -> str:
@@ -796,11 +803,9 @@ class AgentLoop:
         async def _drain_pending(*, limit: int = _MAX_INJECTIONS_PER_TURN) -> list[dict[str, Any]]:
             """Drain follow-up messages from the pending queue.
 
-            When no messages are immediately available but sub-agents
-            spawned in this dispatch are still running, blocks until at
-            least one result arrives (or timeout).  This keeps the runner
-            loop alive so subsequent sub-agent completions are consumed
-            in-order rather than dispatched separately.
+            Only messages already available are injected. Background subagents
+            report through the bus when they finish; the parent Runner must not
+            occupy the foreground turn while waiting for them.
             """
             if pending_queue is None:
                 return []
@@ -831,43 +836,6 @@ class AgentLoop:
                     break
                 if normalized is not None:
                     items.append(normalized)
-
-            # Block if nothing drained but sub-agents spawned in this dispatch
-            # are still running.  Keeps the runner loop alive so subsequent
-            # completions are injected in-order rather than dispatched separately.
-            if (not items
-                    and session is not None
-                    and self.subagents.get_running_count_by_session(session.key) > 0):
-                wait_deadline = time.monotonic() + 300
-                while not items:
-                    remaining = wait_deadline - time.monotonic()
-                    if remaining <= 0:
-                        logger.warning(
-                            "Timeout waiting for sub-agent completion in session {}",
-                            session.key,
-                        )
-                        return items
-                    try:
-                        pending_msg = await asyncio.wait_for(
-                            pending_queue.get(),
-                            timeout=remaining,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "Timeout waiting for sub-agent completion in session {}",
-                            session.key,
-                        )
-                        return items
-                    normalized = _to_user_message(pending_msg)
-                    if normalized is not None:
-                        items.append(normalized)
-                while len(items) < limit:
-                    try:
-                        normalized = _to_user_message(pending_queue.get_nowait())
-                    except asyncio.QueueEmpty:
-                        break
-                    if normalized is not None:
-                        items.append(normalized)
 
             return items
 
@@ -907,6 +875,9 @@ class AgentLoop:
             plan_only=execution_mode_from_metadata(metadata) == EXECUTION_MODE_PLAN_ONLY,
         )
         trace_task_id = task_id or (active_session_key or "ephemeral").replace(":", "_")
+        webui_turn_id = metadata.get("webui_turn_id") if isinstance(metadata, dict) else None
+        if not isinstance(webui_turn_id, str) or not webui_turn_id:
+            webui_turn_id = None
         initial_trace_events = []
         if session is not None:
             queued = session.metadata.pop(self._RUNTIME_TRACE_EVENTS_KEY, [])
@@ -925,6 +896,7 @@ class AgentLoop:
                     actor="main",
                     model=self.model,
                     session_id=active_session_key,
+                    turn_id=webui_turn_id,
                     plan_hash=plan_hash,
                     sandbox_mode=getattr(sandbox_mode, "value", str(sandbox_mode)),
                     initial_events=initial_trace_events,
@@ -935,6 +907,8 @@ class AgentLoop:
                     task_id=trace_task_id,
                     actor="main",
                     model=self.model,
+                    session_id=active_session_key,
+                    turn_id=webui_turn_id,
                     initial_events=initial_trace_events,
                 )
             if isinstance(hook, CompositeHook):
@@ -1729,6 +1703,7 @@ class AgentLoop:
         # ensure it exists in case this handler is invoked independently.
         if ctx.session is None:
             ctx.session = self.sessions.get_or_create(ctx.session_key)
+        self._migrate_legacy_reflection_state(ctx.session)
         await self._runtime_events().session_turn_started(msg, ctx.session_key)
         self.workspace_scopes.persist_message_scope(ctx.session, msg)
 
@@ -1751,6 +1726,52 @@ class AgentLoop:
 
         checkpoint, _ = self._runtime_checkpoint_snapshot(ctx.session)
         checkpoint_phase = str(checkpoint.get("phase") or "") if checkpoint else ""
+        if checkpoint_phase == "awaiting_plan_confirmation":
+            interaction = checkpoint.get("interaction") if isinstance(checkpoint, dict) else None
+            request_id = interaction.get("request_id") if isinstance(interaction, dict) else None
+            try:
+                request = self.interactions.get(request_id) if isinstance(request_id, str) else None
+            except Exception:
+                request = None
+            plan = ctx.session.metadata.get("plan_state")
+            if (
+                request is not None
+                and request.kind == InteractionKind.PLAN_CONFIRMATION
+                and request.status == InteractionStatus.PENDING
+                and isinstance(plan, dict)
+                and request.task_id == plan.get("task_id")
+                and request.plan_hash == plan.get("plan_hash")
+            ):
+                cancelled = self.interactions.cancel(
+                    request.request_id,
+                    expected_revision=request.revision,
+                    idempotency_key=f"plan-revision:{ctx.turn_id}",
+                )
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="",
+                    metadata={
+                        "_progress": True,
+                        OUTBOUND_META_AGENT_UI: {
+                            "kind": "interaction_updated",
+                            "interaction": cancelled.as_dict(),
+                        },
+                    },
+                ))
+                self._materialize_interaction_response(ctx.session, request.request_id)
+                self._restore_runtime_checkpoint(ctx.session)
+                revision_metadata = dict(msg.metadata or {})
+                revision_metadata[EXECUTION_MODE_METADATA_KEY] = EXECUTION_MODE_PLAN_ONLY
+                revision_metadata[PLAN_REVISION_REQUEST_METADATA_KEY] = True
+                ctx.msg = dataclasses.replace(msg, metadata=revision_metadata)
+                ctx.tools = plan_only_registry(ctx.tools or self.tools)
+                emit_trace_event("mybot.plan.confirmation_superseded_for_revision", {
+                    "task_id": request.task_id,
+                    "plan_hash": request.plan_hash,
+                    "request_id": request.request_id,
+                })
+                return "ok"
         if checkpoint_phase in {
             "awaiting_question",
             "awaiting_approval",
@@ -2071,6 +2092,78 @@ class AgentLoop:
         )
         return True
 
+    def _migrate_legacy_reflection_state(self, session: Session) -> bool:
+        plan = session.metadata.get("plan_state")
+        if not isinstance(plan, dict) or plan.get("status") not in {
+            "reviewing",
+            "awaiting_reflection_decision",
+        }:
+            return False
+
+        task_id = str(plan.get("task_id") or "")
+        if not task_id:
+            return False
+        for request in self.interactions.list_pending(task_id=task_id or None):
+            if request.kind != InteractionKind.REFLECTION_DECISION:
+                continue
+            self.interactions.cancel(
+                request.request_id,
+                expected_revision=request.revision,
+                idempotency_key=f"reflection-removed:{request.request_id}",
+            )
+
+        now = datetime.now().astimezone().isoformat()
+        plan["status"] = "completed"
+        plan["completed_at"] = str(plan.get("completed_at") or now)
+        plan["updated_at"] = now
+        for key in (
+            "interaction_request_id",
+            "reflection",
+            "reflection_attempts",
+            "reflection_findings",
+        ):
+            plan.pop(key, None)
+        session.metadata["plan_state"] = plan
+
+        path = (
+            self.workspace
+            / ".nanobot-runtime"
+            / "artifacts"
+            / task_id
+            / "plan.json"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(".json.tmp")
+        temp.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temp, path)
+        self.checkpoints.artifacts.register(
+            task_id=task_id,
+            artifact_id="plan",
+            path=path,
+            type="plan",
+            source_artifacts=list(plan.get("input_artifacts") or []),
+            status="completed",
+        )
+
+        runner = session.metadata.get(self._RUNTIME_CHECKPOINT_KEY)
+        if isinstance(runner, dict):
+            runner["phase"] = "tools_completed"
+            runner.pop("interaction", None)
+            completed = runner.get("completed_tool_results")
+            if isinstance(completed, list):
+                for item in reversed(completed):
+                    if isinstance(item, dict) and item.get("name") == "plan":
+                        item["content"] = json.dumps({
+                            "path": str(path),
+                            "plan": plan,
+                            "verification": {"passed": True, "missing": []},
+                        }, ensure_ascii=False)
+                        break
+            self._set_runtime_checkpoint(session, runner)
+        else:
+            self.sessions.save(session)
+        return True
+
     def _set_runtime_checkpoint(self, session: Session, payload: dict[str, Any]) -> None:
         """Persist the latest in-flight turn state into session metadata."""
         session.metadata[self._RUNTIME_CHECKPOINT_KEY] = payload
@@ -2177,8 +2270,30 @@ class AgentLoop:
         if request.status == InteractionStatus.PENDING:
             return False
 
+        node_recovery_applied = False
+        if (
+            request.kind == InteractionKind.RECOVERY_DECISION
+            and request.payload.get("uncertain_node_ids")
+        ):
+            node_recovery_applied = self._apply_plan_node_recovery_decision(session, request)
         checkpoint, _ = self._runtime_checkpoint_snapshot(session)
         if not isinstance(checkpoint, dict):
+            if node_recovery_applied:
+                try:
+                    self.interactions.consume(
+                        request.request_id,
+                        expected_revision=request.revision,
+                        idempotency_key=f"resume:{session.key}:{request.request_id}",
+                    )
+                except Exception:
+                    logger.exception("Could not consume resolved interaction {}", request_id)
+                    return False
+                emit_trace_event("mybot.interaction.resumed", {
+                    "request_id": request.request_id,
+                    "kind": request.kind.value,
+                    "status": request.status.value,
+                })
+                return True
             return False
 
         interaction = checkpoint.get("interaction")
@@ -2192,6 +2307,8 @@ class AgentLoop:
             "request_id": request.request_id,
             "kind": request.kind.value,
             "status": request.status.value,
+            "task_id": request.task_id,
+            "plan_hash": request.plan_hash,
             "response": request.response,
             "resolution": request.resolution,
         }
@@ -2233,6 +2350,7 @@ class AgentLoop:
                     })
                     replaced = True
                 checkpoint["pending_tool_calls"] = remaining
+        replaced = replaced or node_recovery_applied
         if not replaced:
             return False
 
@@ -2241,7 +2359,10 @@ class AgentLoop:
         session.metadata[self._RUNTIME_CHECKPOINT_KEY] = checkpoint
         self._set_runtime_checkpoint(session, checkpoint)
         consume_here = (
-            request.kind in {InteractionKind.QUESTION, InteractionKind.RECOVERY_DECISION}
+            request.kind in {
+                InteractionKind.QUESTION,
+                InteractionKind.RECOVERY_DECISION,
+            }
             or (
                 request.kind == InteractionKind.APPROVAL
                 and request.status != InteractionStatus.APPROVED
@@ -2277,6 +2398,171 @@ class AgentLoop:
         emit_trace_event("mybot.interaction.resumed", trace_attributes)
         return True
 
+    def _apply_plan_node_recovery_decision(self, session: Session, request: Any) -> bool:
+        plan = session.metadata.get("plan_state")
+        if not isinstance(plan, dict) or plan.get("plan_hash") != request.plan_hash:
+            return False
+        answer = str((request.response or {}).get("answer") or "").strip().lower()
+        target_status = {
+            "retry": "ready",
+            "mark completed": "succeeded",
+            "cancel": "cancelled",
+        }.get(answer)
+        if target_status is None:
+            return False
+        node_ids = {
+            str(item)
+            for item in request.payload.get("uncertain_node_ids", [])
+            if str(item)
+        }
+        changed = False
+        for node_id in node_ids:
+            step = next((
+                item
+                for item in plan.get("steps", [])
+                if isinstance(item, dict) and str(item.get("id")) == node_id
+            ), None)
+            if not isinstance(step, dict) or step.get("status") != "uncertain":
+                continue
+            try:
+                PlanScheduler.transition(plan, node_id, target_status)
+            except Exception:
+                logger.exception("Could not recover plan node {}", node_id)
+                return False
+            step["recovery_decision"] = answer
+            changed = True
+        if not changed:
+            return False
+        plan["status"] = "active"
+        plan["updated_at"] = datetime.now().astimezone().isoformat()
+        session.metadata["plan_state"] = plan
+        self.sessions.save(session)
+        path = (
+            self.workspace
+            / ".nanobot-runtime"
+            / "artifacts"
+            / str(plan["task_id"])
+            / "plan.json"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(".json.tmp")
+        temp.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temp, path)
+        self.checkpoints.artifacts.register(
+            task_id=str(plan["task_id"]),
+            artifact_id="plan",
+            path=path,
+            type="plan",
+            source_artifacts=list(plan.get("input_artifacts") or []),
+            status=str(plan.get("status") or "active"),
+        )
+        return True
+
+    def _reconcile_plan_nodes(self, session: Session) -> str | None:
+        plan = session.metadata.get("plan_state")
+        if not isinstance(plan, dict) or plan.get("status") != "active":
+            return None
+        if int(plan.get("schema_version") or 1) < 2 or not isinstance(plan.get("steps"), list):
+            return None
+        if contract_hash(plan) != plan.get("plan_hash"):
+            plan["recovery_error"] = "Stored plan hash does not match the structured plan."
+            self.sessions.save(session)
+            return str(plan["recovery_error"])
+
+        task_id = str(plan.get("task_id") or "")
+        try:
+            records = self.checkpoints.artifacts.list(task_id)
+        except Exception as exc:
+            plan["recovery_error"] = f"Artifact index validation failed: {exc}"
+            self.sessions.save(session)
+            return str(plan["recovery_error"])
+        records_by_path = {str(Path(record.path).resolve()): record for record in records}
+        task_root = self.checkpoints.artifacts.task_root(task_id)
+        markdown = plan.get("plan_markdown")
+        if isinstance(markdown, dict):
+            artifact_id = str(markdown.get("artifact_id") or "")
+            record = next((item for item in records if item.artifact_id == artifact_id), None)
+            if not (
+                record is not None
+                and record.checksum == markdown.get("checksum")
+                and record.path == str(Path(str(markdown.get("path") or "")).resolve())
+                and self.checkpoints.artifacts.verify(record)
+            ):
+                plan["recovery_error"] = "Immutable plan Markdown failed checksum validation."
+                self.sessions.save(session)
+                return str(plan["recovery_error"])
+
+        def _artifacts_verified(step: dict[str, Any]) -> bool:
+            expected = [str(item) for item in step.get("expected_artifacts", [])]
+            if not expected:
+                return False
+            roots = [task_root]
+            if isinstance(step.get("artifact_root"), str):
+                roots.insert(0, Path(step["artifact_root"]).resolve())
+            for relative in expected:
+                verified = False
+                for root in roots:
+                    candidate = (root / relative).resolve()
+                    try:
+                        candidate.relative_to(root.resolve())
+                    except ValueError:
+                        continue
+                    record = records_by_path.get(str(candidate))
+                    if record is not None and self.checkpoints.artifacts.verify(record):
+                        verified = True
+                        break
+                if not verified:
+                    return False
+            return True
+
+        before = json.dumps(plan.get("steps", []), ensure_ascii=False, sort_keys=True)
+        PlanScheduler.recover_running(
+            plan,
+            live_child_ids=self.subagents.get_running_task_ids(),
+            artifacts_verified=_artifacts_verified,
+        )
+        after = json.dumps(plan.get("steps", []), ensure_ascii=False, sort_keys=True)
+        if before == after:
+            return None
+        plan["updated_at"] = datetime.now().astimezone().isoformat()
+        session.metadata["plan_state"] = plan
+        self.sessions.save(session)
+        path = task_root / "plan.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(".json.tmp")
+        temp.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temp, path)
+        self.checkpoints.artifacts.register(
+            task_id=task_id,
+            artifact_id="plan",
+            path=path,
+            type="plan",
+            source_artifacts=list(plan.get("input_artifacts") or []),
+            status=str(plan.get("status") or "active"),
+        )
+        runner = session.metadata.get(self._RUNTIME_CHECKPOINT_KEY)
+        if isinstance(runner, dict):
+            self.checkpoints.write(
+                plan=plan,
+                runner_payload=runner,
+                session_key=session.key,
+                interactions=[
+                    item.request_id
+                    for item in self.interactions.list_pending(task_id=task_id)
+                ],
+            )
+        summary = PlanScheduler.recovery_summary(plan)
+        emit_trace_event("mybot.plan.recovered", {
+            "task_id": task_id,
+            "plan_hash": plan.get("plan_hash"),
+            "recovery": {
+                "completed": list(summary.completed),
+                "pending": list(summary.pending),
+                "uncertain": list(summary.uncertain),
+            },
+        })
+        return None
+
     async def _prepare_uncertain_recovery(
         self,
         session: Session,
@@ -2285,25 +2571,42 @@ class AgentLoop:
         chat_id: str,
         turn_id: str | None,
     ) -> bool:
+        recovery_error = self._reconcile_plan_nodes(session)
         plan = session.metadata.get("plan_state")
         if not isinstance(plan, dict) or not self.checkpoints.eligible(plan):
             return False
+        if recovery_error:
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                content=f"Runtime recovery stopped: {recovery_error}",
+                metadata={"_progress": True},
+            ))
+            return True
+        durable = None
         try:
             durable = self.checkpoints.load(
                 str(plan.get("task_id")),
                 expected_plan_hash=str(plan.get("plan_hash")),
             )
         except CheckpointError:
-            return False
-        recovery = self.checkpoints.recovery_plan(durable)
-        if not recovery.uncertain:
+            durable = None
+        recovery = self.checkpoints.recovery_plan(durable) if durable is not None else None
+        uncertain_tools = tuple(recovery.uncertain) if recovery is not None else ()
+        uncertain_nodes = tuple(
+            str(step.get("id"))
+            for step in plan.get("steps", [])
+            if isinstance(step, dict) and step.get("status") == "uncertain"
+        )
+        if not uncertain_tools and not uncertain_nodes:
             return False
 
         existing = next((
             request
             for request in self.interactions.list_pending(task_id=str(plan.get("task_id")))
             if request.kind == InteractionKind.RECOVERY_DECISION
-            and set(request.payload.get("uncertain_tool_call_ids", [])) == set(recovery.uncertain)
+            and set(request.payload.get("uncertain_tool_call_ids", [])) == set(uncertain_tools)
+            and set(request.payload.get("uncertain_node_ids", [])) == set(uncertain_nodes)
         ), None)
         request = existing or self.interactions.create(
             kind=InteractionKind.RECOVERY_DECISION,
@@ -2311,28 +2614,54 @@ class AgentLoop:
             task_id=str(plan.get("task_id")),
             turn_id=turn_id,
             plan_hash=str(plan.get("plan_hash")),
-            tool_call_id=recovery.uncertain[0],
-            continuation={"action": "recover_uncertain_tools"},
+            tool_call_id=uncertain_tools[0] if uncertain_tools else None,
+            continuation={"action": "recover_uncertain_runtime_state"},
             payload={
                 "chat_id": chat_id,
-                "uncertain_tool_call_ids": list(recovery.uncertain),
-                "checkpoint_state_hash": durable.get("state_hash"),
+                "uncertain_tool_call_ids": list(uncertain_tools),
+                "uncertain_node_ids": list(uncertain_nodes),
+                "checkpoint_state_hash": durable.get("state_hash") if durable else None,
             },
             questions=[{
                 "id": "recovery_action",
                 "header": "Recovery",
+                "header_i18n_key": "thread.interaction.recovery.header",
                 "question": (
-                    "A previous external side effect may have happened. Choose whether to "
-                    "retry, mark it completed, or cancel the task."
+                    "Interrupted work has an uncertain outcome. Check the target, then choose "
+                    "whether to retry, mark it completed, or cancel the affected node."
                 ),
+                "question_i18n_key": "thread.interaction.recovery.question",
                 "options": [
-                    {"label": "Retry", "description": "Retry only after checking the target."},
-                    {"label": "Mark completed", "description": "Do not repeat the side effect."},
-                    {"label": "Cancel", "description": "Stop this recovery."},
+                    {
+                        "label": "Retry",
+                        "label_i18n_key": "thread.interaction.recovery.retry",
+                        "description": "Retry only after checking the target.",
+                        "description_i18n_key": (
+                            "thread.interaction.recovery.retryDescription"
+                        ),
+                    },
+                    {
+                        "label": "Mark completed",
+                        "label_i18n_key": "thread.interaction.recovery.markCompleted",
+                        "description": "Do not repeat the side effect.",
+                        "description_i18n_key": (
+                            "thread.interaction.recovery.markCompletedDescription"
+                        ),
+                    },
+                    {
+                        "label": "Cancel",
+                        "label_i18n_key": "thread.interaction.recovery.cancel",
+                        "description": "Stop this recovery.",
+                        "description_i18n_key": (
+                            "thread.interaction.recovery.cancelDescription"
+                        ),
+                    },
                 ],
             }],
         )
-        runner = durable.get("runner")
+        runner = durable.get("runner") if durable is not None else session.metadata.get(
+            self._RUNTIME_CHECKPOINT_KEY
+        )
         if isinstance(runner, dict):
             runner["phase"] = "awaiting_recovery_decision"
             runner["interaction"] = request.as_dict()
@@ -2352,7 +2681,8 @@ class AgentLoop:
         ))
         trace_attributes = {
             "request_id": request.request_id,
-            "uncertain_tool_call_ids": list(recovery.uncertain),
+            "uncertain_tool_call_ids": list(uncertain_tools),
+            "uncertain_node_ids": list(uncertain_nodes),
         }
         self._queue_runtime_trace_event(
             session,

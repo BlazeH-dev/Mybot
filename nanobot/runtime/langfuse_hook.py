@@ -22,6 +22,7 @@ class LangfuseTraceHook(AgentHook):
         actor: str,
         model: str,
         session_id: str | None = None,
+        turn_id: str | None = None,
         plan_hash: str | None = None,
         sandbox_mode: str | None = None,
         initial_events: list[dict[str, Any]] | None = None,
@@ -32,6 +33,7 @@ class LangfuseTraceHook(AgentHook):
         self.actor = actor
         self.model = model
         self.session_id = session_id
+        self.turn_id = turn_id
         self.plan_hash = plan_hash
         self.sandbox_mode = sandbox_mode
         self.initial_events = list(initial_events or [])
@@ -52,6 +54,8 @@ class LangfuseTraceHook(AgentHook):
             "mybot.model": self.model,
             "mybot.plan.hash": self.plan_hash,
             "mybot.sandbox.mode": self.sandbox_mode,
+            "mybot.session.id": self.session_id,
+            "mybot.webui.turn.id": self.turn_id,
             "mybot.input.summary": value_summary(context.messages),
         }
         try:

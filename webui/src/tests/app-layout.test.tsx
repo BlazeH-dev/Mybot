@@ -1170,7 +1170,9 @@ describe("App layout", () => {
     expect(screen.queryByText("Dream")).not.toBeInTheDocument();
     expect(screen.queryByText("Unified session")).not.toBeInTheDocument();
     expect(screen.getByText("Default workspace")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    const identitySection = screen.getByRole("heading", { name: "Identity" }).closest("section");
+    expect(identitySection).toBeTruthy();
+    expect(within(identitySection!).getByRole("button", { name: "Save" })).toBeDisabled();
     fireEvent.pointerDown(screen.getByRole("button", { name: "UTC" }));
     expect(screen.getByPlaceholderText("Search timezone")).toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText("Search timezone"), {
@@ -1178,7 +1180,7 @@ describe("App layout", () => {
     });
     fireEvent.click(screen.getByRole("menuitem", { name: /Asia\/Shanghai/ }));
     expect(screen.getByRole("button", { name: "Asia/Shanghai" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(within(identitySection!).getByRole("button", { name: "Save" })).toBeEnabled();
   });
 
   it("restores the settings section from the URL hash after a page reload", async () => {

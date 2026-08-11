@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobot.runtime.artifacts import ArtifactStore
+from nanobot.runtime.plan_scheduler import PlanScheduler
 
 
 class CheckpointError(ValueError):
@@ -33,6 +34,9 @@ class RecoveryPlan:
     uncertain: tuple[str, ...]
     suspension: str | None
     interaction_request_id: str | None
+    completed_nodes: tuple[str, ...] = ()
+    pending_nodes: tuple[str, ...] = ()
+    uncertain_nodes: tuple[str, ...] = ()
 
 
 class CheckpointStore:
@@ -47,7 +51,10 @@ class CheckpointStore:
             return False
         plan_hash = plan.get("plan_hash")
         return (
-            plan.get("status") in {"active", "completed"}
+            plan.get("status") in {
+                "active",
+                "completed",
+            }
             and isinstance(plan_hash, str)
             and plan.get("approved_plan_hash") == plan_hash
         )
@@ -83,20 +90,34 @@ class CheckpointStore:
             else:
                 pending.append(call_id)
 
+        node_recovery = PlanScheduler.recovery_summary(plan)
         checkpoint: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "task_id": task_id,
             "session_key": session_key,
             "plan_hash": plan["plan_hash"],
             "approved_plan_hash": plan["approved_plan_hash"],
             "plan_status": plan["status"],
+            "plan_revision": int(plan.get("revision") or 1),
             "created_at": datetime.now().astimezone().isoformat(),
             "runner": runner_payload,
             "completed": completed,
             "pending": pending,
             "uncertain": uncertain,
             "interaction_requests": list(interactions or []),
-            "children": list(children or []),
+            "children": list(children or [
+                {
+                    "node_id": step.get("id"),
+                    "child_id": step.get("child_id"),
+                    "status": step.get("status"),
+                    "executor": step.get("executor"),
+                }
+                for step in plan.get("steps", [])
+                if isinstance(step, dict) and step.get("executor") == "child"
+            ]),
+            "completed_nodes": list(node_recovery.completed),
+            "pending_nodes": list(node_recovery.pending),
+            "uncertain_nodes": list(node_recovery.uncertain),
             "artifacts": [record.as_dict() for record in self.artifacts.list(task_id)],
         }
         checkpoint["state_hash"] = _state_hash(checkpoint)
@@ -148,6 +169,9 @@ class CheckpointStore:
             interaction_request_id=(
                 str(interaction.get("request_id")) if interaction.get("request_id") else None
             ),
+            completed_nodes=tuple(str(item) for item in checkpoint.get("completed_nodes", [])),
+            pending_nodes=tuple(str(item) for item in checkpoint.get("pending_nodes", [])),
+            uncertain_nodes=tuple(str(item) for item in checkpoint.get("uncertain_nodes", [])),
         )
 
     def delete(self, task_id: str) -> None:

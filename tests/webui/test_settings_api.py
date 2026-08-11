@@ -19,6 +19,7 @@ from nanobot.webui.settings_api import (
     update_agent_settings,
     update_model_configuration,
     update_network_safety_settings,
+    update_observability_settings,
     update_provider_settings,
     update_skill_enabled,
     update_transcription_settings,
@@ -331,6 +332,27 @@ def test_settings_payload_includes_network_safety_fields(
     assert payload["advanced"]["ssrf_whitelist_count"] == 1
 
 
+def test_settings_payload_includes_observability_status(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.observability.langfuse.enabled = True
+    config.observability.langfuse.public_key = "pk-test"
+    config.observability.langfuse.secret_key = "sk-test"
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = settings_payload()
+
+    assert payload["observability"]["langfuse"] == {
+        "enabled": True,
+        "configured": True,
+        "base_url": "https://jp.cloud.langfuse.com",
+    }
+
+
 def test_settings_payload_includes_effective_transcription_config(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -622,6 +644,37 @@ def test_update_network_safety_settings_writes_local_service_flag(
     assert payload["advanced"]["webui_allow_local_service_access"] is False
     assert payload["advanced"]["webui_default_access_mode"] == "full"
     assert payload["requires_restart"] is True
+
+
+def test_update_observability_settings_persists_enabled_state(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.observability.langfuse.public_key = "pk-test"
+    config.observability.langfuse.secret_key = "sk-test"
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = update_observability_settings({"langfuse_enabled": ["true"]})
+
+    saved = load_config(config_path)
+    assert saved.observability.langfuse.enabled is True
+    assert payload["observability"]["langfuse"]["enabled"] is True
+    assert payload["requires_restart"] is True
+
+
+def test_update_observability_settings_rejects_missing_credentials(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    save_config(Config(), config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    with pytest.raises(WebUISettingsError, match="keys must be configured"):
+        update_observability_settings({"langfuse_enabled": ["true"]})
 
 
 def test_update_network_safety_settings_accepts_legacy_restricted_default_access(

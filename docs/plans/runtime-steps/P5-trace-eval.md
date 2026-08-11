@@ -94,3 +94,11 @@ ci (离线硬门)
 - 不把 LLM Judge 放进本地安全硬门，不用软分数覆盖权限、数字或文件失败。
 - 不在 benchmark 运行中隐式下载资产、安装 latest binary 或修改输入。
 - 不把旧 Python Office Skill、旧周报 DSL、已放弃的独立评测 UI 和历史命令恢复回来。
+
+## 8. DAG 与确定性完成观测（2026-08-11）
+
+- trace 覆盖 `mybot.plan.created|confirmed|node.dispatched|node.completed|node.stale_completion|recovered`，至少记录 task/revision/hash/node/child 与恢复结果。
+- `plan complete` 不再调用独立 Reviewer；评测覆盖节点终态、预期产物缺失/越界、artifact/plan stale 和完成状态持久化。
+- DAG hard gate 覆盖并行批次、依赖串行、失败分支继续、增量 revision 成功节点复用、orphan running 恢复和 uncertain 不自动重试。
+- WebUI 只做桌面浏览器验收：计划卡片恢复、Markdown 预览与 HITL 多语言卡片；不新增移动端截图或断点测试。
+- child 可观测性采用双层职责：脱敏父子 trace 继续作为诊断/评估证据，WebUI transcript 只持久化用户可见的 `subagent_activity` 投影。测试保证并行 child 独立聚合、刷新恢复、终态保留、stale hash 隔离，且 child reasoning/tool events 不进入 parent 消息时间线。

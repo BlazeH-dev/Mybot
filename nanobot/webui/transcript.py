@@ -1426,7 +1426,102 @@ def build_webui_thread_response(
         "schemaVersion": WEBUI_TRANSCRIPT_SCHEMA_VERSION,
         "sessionKey": session_key,
         "messages": msgs,
+        "subagent_activities": replay_transcript_to_subagent_activities(lines),
     }
     if fork_boundary is not None:
         payload["fork_boundary_message_count"] = fork_boundary
     return payload
+
+
+def replay_transcript_to_subagent_activities(
+    lines: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Fold append-only child events into refresh-safe activity snapshots."""
+    activities: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    terminal_status = {
+        "completed": "completed",
+        "failed": "failed",
+        "cancelled": "cancelled",
+    }
+    for record in lines:
+        if record.get("event") != "subagent_activity":
+            continue
+        raw = record.get("activity")
+        if not isinstance(raw, dict):
+            continue
+        child_id = raw.get("child_id")
+        if not isinstance(child_id, str) or not child_id:
+            continue
+        if child_id not in activities:
+            order.append(child_id)
+            activities[child_id] = {
+                "child_id": child_id,
+                "label": str(raw.get("label") or child_id),
+                "task_description": str(raw.get("task_description") or ""),
+                "parent_task_id": raw.get("parent_task_id"),
+                "plan_hash": raw.get("plan_hash"),
+                "node_id": raw.get("node_id"),
+                "status": "running",
+                "phase": "initializing",
+                "iteration": 0,
+                "elapsed_ms": 0,
+                "reasoning": "",
+                "reasoning_streaming": False,
+                "tool_events": [],
+                "usage": {},
+                "final_result": None,
+                "error": None,
+                "updated_at": raw.get("updated_at"),
+            }
+        current = activities[child_id]
+        for key in (
+            "label",
+            "task_description",
+            "parent_task_id",
+            "plan_hash",
+            "node_id",
+            "phase",
+            "iteration",
+            "elapsed_ms",
+            "usage",
+            "final_result",
+            "error",
+            "updated_at",
+        ):
+            if key in raw and raw[key] is not None:
+                current[key] = raw[key]
+        event = str(raw.get("event") or "")
+        if event in terminal_status:
+            current["status"] = terminal_status[event]
+            current["reasoning_streaming"] = False
+        elif current.get("status") not in terminal_status.values():
+            current["status"] = "running"
+        reasoning_delta = raw.get("reasoning_delta")
+        if isinstance(reasoning_delta, str) and reasoning_delta:
+            current["reasoning"] = str(current.get("reasoning") or "") + reasoning_delta
+            current["reasoning_streaming"] = True
+        if event == "reasoning_end":
+            current["reasoning_streaming"] = False
+        incoming_events = raw.get("tool_events")
+        if isinstance(incoming_events, list):
+            existing = current.get("tool_events")
+            merged = list(existing) if isinstance(existing, list) else []
+            index_by_id = {
+                str(item.get("call_id")): index
+                for index, item in enumerate(merged)
+                if isinstance(item, dict) and item.get("call_id")
+            }
+            for item in incoming_events:
+                if not isinstance(item, dict):
+                    continue
+                call_id = str(item.get("call_id") or "")
+                if call_id and call_id in index_by_id:
+                    index = index_by_id[call_id]
+                    merged[index] = {**merged[index], **item}
+                else:
+                    if call_id:
+                        index_by_id[call_id] = len(merged)
+                    merged.append(dict(item))
+            current["tool_events"] = merged
+    return [activities[child_id] for child_id in order]

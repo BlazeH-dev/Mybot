@@ -100,6 +100,33 @@ class TestHandleStop:
         assert all(e.is_set() for e in events)
         assert "2 task" in out.content
 
+    @pytest.mark.asyncio
+    async def test_stop_cancels_children_without_waiting_for_main_cleanup(self):
+        loop, _ = _make_loop()
+        child_cancel_started = asyncio.Event()
+
+        async def cancel_children(_key: str) -> int:
+            child_cancel_started.set()
+            return 1
+
+        loop.subagents.cancel_by_session = AsyncMock(side_effect=cancel_children)
+
+        async def main_task() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await child_cancel_started.wait()
+                raise
+
+        task = asyncio.create_task(main_task())
+        await asyncio.sleep(0)
+        loop._active_tasks["test:c1"] = [task]
+
+        stopped = await asyncio.wait_for(loop._cancel_active_tasks("test:c1"), timeout=1.0)
+
+        assert stopped == 2
+        assert child_cancel_started.is_set()
+
 
 class TestDispatch:
     def test_exec_tool_not_registered_when_disabled(self):
