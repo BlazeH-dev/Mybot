@@ -191,3 +191,8 @@ pytest tests/runtime/ -q
 - 许可源下载/Adobe 子进程将 `getaddrinfo` 结果中的 IPv4 候选排在 IPv6 之前，但不删除 IPv6 候选；这避免本机无路由的 IPv6 CloudFront 在 123 个 release 直接下载项上重复耗尽连接超时，仍保留 IPv6-only 源站的回退能力。
 - `prepare_stage` 进度覆盖 pinned source、benchmark venv、Dataset metadata、smoke manifest、licensed references、Langfuse Dataset、Cloud smoke 和最终 fingerprint；worker 将阶段投影到 Job `phase/current_variant`，页面不再把网络挂起伪装成无信息的 `preparing`。
 - 镜像只解决公共 OCB 资产传输，不改变 licensed upload、Adobe 转换、Langfuse Japan Cloud 或模型评测硬门。
+
+## 2026-08-11：本地 Trace 测试隔离
+
+- `tests/agent/test_task_cancel.py` 的最小 AgentLoop 改为接收 pytest `tmp_path` 作为真实 workspace，不再用 `MagicMock` 伪造路径；本地 `TraceHook` 写入 `.nanobot-runtime/trace/` 时因此始终位于 pytest 临时目录，不会将 mock 的字符串表示物化为项目根目录下的 `MagicMock/`。
+- `.gitignore` 排除 nanobot 本地 workspace 模板、cron、memory 及 `.nanobot-runtime` 状态。网关被临时指向源码仓库时，工作区初始化和本地 trace 不会进入 Git 待提交列表。

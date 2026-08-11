@@ -105,3 +105,11 @@ temp/
 *.tmp
 exp/
 .playwright-mcp/
+
+# Local nanobot workspace state
+HEARTBEAT.md
+SOUL.md
+USER.md
+memory/
+cron/
+.nanobot-runtime/
