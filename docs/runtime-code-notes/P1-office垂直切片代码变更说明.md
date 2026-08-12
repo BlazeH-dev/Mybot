@@ -125,3 +125,9 @@ ruff check nanobot/ tests/skills/test_officecli_runtime.py
 **为什么文件存在不代表任务成功？**
 
 文件可能是空的、关系损坏、数字错误或预览空白。artifact registration 只证明产物可追踪，validator 才决定它是否满足交付契约。
+
+## 2026-08-12：Office Case 空终态恢复
+
+- Office benchmark 中，模型可能已完成文档读取和计算，却在最后一轮返回空内容；旧 finalization 提示过于宽泛，复杂或证据不完整的题目仍可能再次返回空。
+- Runtime 的无工具 finalization 现在明确要求直接回答原请求、不得再调用工具；资料不足或相互冲突时需说明限制并基于显式假设给出最佳支持答案，而不是用空响应终止。
+- 该变化不补充外部资料、不改变 Case prompt/evaluator，也不把 fallback 文案当作成功答案；有界 finalization 后持续为空仍以 `empty_final_response` fail-closed。

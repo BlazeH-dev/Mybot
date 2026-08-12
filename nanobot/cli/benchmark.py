@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 import uuid
@@ -33,11 +34,18 @@ _PROFILE_PATH = _ROOT / "benchmarks" / "office" / "profiles.json"
 _CONSTRAINTS_PATH = _ROOT / "benchmarks" / "office" / "constraints.txt"
 _PROFILES = frozenset({"ci", "office-smoke", "office-release"})
 _BENCHMARK_SAMPLES = {
-    "ocb": (255, 509, 1018),
+    "ocb": (211,),
 }
 _DEFAULT_BENCHMARK_SAMPLES = {
     benchmark: samples[-1] for benchmark, samples in _BENCHMARK_SAMPLES.items()
 }
+_RELEASE_SOURCE_SAMPLE = 255
+_RELEASE_EXCLUDED_OCB_CASE_IDS = frozenset({
+    "0", "4", "7", "35", "37", "39", "40", "41", "54", "57", "75", "80", "100", "475",
+    "476", "477", "481", "512", "515", "520", "521", "531", "586", "593",
+    "597", "599", "600", "640", "643", "647", "820", "833", "834", "860",
+    "862", "863", "868", "875", "876", "899", "901", "922", "936", "978",
+})
 _RELEASE_SAMPLE_SEED = "mybot-office-release-v1"
 _RELEASE_SAMPLE_STRATEGY = "deterministic-stratified-v1"
 _RELEASE_SAMPLE_DATASET_TAG = "strat-v1"
@@ -275,6 +283,13 @@ def _materialize_manifest(
     )
 
 
+def _write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
 def _probe_soffice(path: Path | None, expected_version: str | None) -> dict[str, Any]:
     if path is None or not expected_version:
         raise BenchmarkError(
@@ -359,21 +374,118 @@ def _download_ocb_references(
     missing = _missing_ocb_references(rows)
     if not missing:
         return
-    wrapper = (
-        "import runpy, socket, sys; "
-        "original_getaddrinfo = socket.getaddrinfo; "
-        "socket.getaddrinfo = lambda *args, **kwargs: sorted("
-        "original_getaddrinfo(*args, **kwargs), "
-        "key=lambda item: item[0] != socket.AF_INET); "
-        "from adobe.pdfservices.operation.config.client_config import ClientConfig; "
-        "from adobe.pdfservices.operation.pdf_services import PDFServices; "
-        "original_init = PDFServices.__init__; "
-        "PDFServices.__init__ = lambda self, credentials, *, client_config=None: "
-        "original_init(self, credentials, client_config=client_config or ClientConfig("
-        f"connect_timeout={_ADOBE_CONNECT_TIMEOUT_MS}, read_timeout={_ADOBE_READ_TIMEOUT_MS})); "
-        "script_path = sys.argv[1]; sys.argv = sys.argv[1:]; "
-        "runpy.run_path(script_path, run_name='__main__')"
-    )
+    wrapper = textwrap.dedent(f"""
+        import runpy
+        import socket
+        import sys
+        from io import BytesIO
+        from urllib.parse import urlsplit
+
+        import requests as standard_requests
+        from adobe.pdfservices.operation.config.client_config import ClientConfig
+        from adobe.pdfservices.operation.pdf_services import PDFServices
+        from curl_cffi import requests as browser_requests
+        from curl_cffi.const import CurlHttpVersion
+        from pypdf import PdfReader, PdfWriter
+
+        original_getaddrinfo = socket.getaddrinfo
+        original_standard_get = standard_requests.get
+        socket.getaddrinfo = lambda *args, **kwargs: sorted(
+            original_getaddrinfo(*args, **kwargs),
+            key=lambda item: item[0] != socket.AF_INET,
+        )
+
+        def compatible_get(*args, **kwargs):
+            url = str(args[0] if args else kwargs.get("url", ""))
+            expected_html = urlsplit(url).path.lower().endswith((".htm", ".html"))
+            try:
+                response = original_standard_get(*args, **kwargs)
+            except standard_requests.exceptions.SSLError:
+                response = None
+            except standard_requests.exceptions.RequestException:
+                raise
+            if response is not None:
+                content_type = response.headers.get("content-type", "").lower()
+                blocked = response.status_code in {{
+                    403, 408, 425, 429, 444, 500, 502, 503, 504,
+                }}
+                blocked = blocked or (
+                    response.status_code == 200
+                    and "text/html" in content_type
+                    and not expected_html
+                )
+                if not blocked:
+                    return response
+                response.close()
+            strategies = (
+                ("chrome", None),
+                ("safari", None),
+                ("firefox", None),
+                ("chrome", CurlHttpVersion.V1_1),
+            )
+            last_response = None
+            last_error = None
+            for index, (impersonate, http_version) in enumerate(strategies):
+                options = dict(kwargs)
+                options["impersonate"] = impersonate
+                if http_version is not None:
+                    options["http_version"] = http_version
+                try:
+                    response = browser_requests.get(*args, **options)
+                except Exception as exc:
+                    last_error = exc
+                    continue
+                last_response = response
+                content_type = response.headers.get("content-type", "").lower()
+                blocked = response.status_code in {{
+                    403, 408, 425, 429, 444, 500, 502, 503, 504,
+                }}
+                blocked = blocked or (
+                    response.status_code == 200
+                    and "text/html" in content_type
+                    and not expected_html
+                )
+                if not blocked:
+                    return response
+                if index < len(strategies) - 1:
+                    response.close()
+            if last_response is not None:
+                return last_response
+            if last_error is not None:
+                raise last_error
+            return standard_requests.sessions.Session().get(*args, **kwargs)
+
+        standard_requests.get = compatible_get
+        original_init = PDFServices.__init__
+        original_upload = PDFServices.upload
+        PDFServices.__init__ = lambda self, credentials, *, client_config=None: original_init(
+            self,
+            credentials,
+            client_config=client_config or ClientConfig(
+                connect_timeout={_ADOBE_CONNECT_TIMEOUT_MS},
+                read_timeout={_ADOBE_READ_TIMEOUT_MS},
+            ),
+        )
+
+        def compatible_upload(self, input_stream, mime_type):
+            sanitized = input_stream
+            try:
+                reader = PdfReader(BytesIO(input_stream))
+                if reader.is_encrypted and reader.decrypt(""):
+                    writer = PdfWriter()
+                    writer.clone_document_from_reader(reader)
+                    output = BytesIO()
+                    writer.write(output)
+                    sanitized = output.getvalue()
+            except Exception:
+                pass
+            return original_upload(self, sanitized, mime_type)
+
+        PDFServices.upload = compatible_upload
+        script_path = sys.argv[1]
+        sys.argv = sys.argv[1:]
+        runpy.run_path(script_path, run_name="__main__")
+    """)
     output_root = data_root / "reference_files"
     for attempt in range(1, _ADOBE_CONVERSION_ATTEMPTS + 1):
         remaining = [
@@ -391,24 +503,29 @@ def _download_ocb_references(
                 f"({attempt}/{_ADOBE_CONVERSION_ATTEMPTS})"
             ),
         )
-        _run(
-            [
-                str(python),
-                "-c",
-                wrapper,
-                str(source_root / "download_and_convert_files.py"),
-                "--manifest",
-                str(data_root / "data" / "ocb_source_urls.parquet"),
-                "--output-dir",
-                str(output_root),
-                "--filename",
-                ",".join(remaining),
-                "--delay",
-                "0",
-            ],
-            env=adobe_pdf_services_env(),
-            timeout_seconds=(_ADOBE_READ_TIMEOUT_MS / 1000) * len(remaining) * 2,
-        )
+        for filename in remaining:
+            try:
+                _run(
+                    [
+                        str(python),
+                        "-c",
+                        wrapper,
+                        str(source_root / "download_and_convert_files.py"),
+                        "--manifest",
+                        str(data_root / "data" / "ocb_source_urls.parquet"),
+                        "--output-dir",
+                        str(output_root),
+                        "--filename",
+                        filename,
+                        "--delay",
+                        "0",
+                    ],
+                    env=adobe_pdf_services_env(),
+                    timeout_seconds=(_ADOBE_READ_TIMEOUT_MS / 1000) * 2,
+                )
+            except BenchmarkError:
+                # A native downloader failure must not prevent other cached assets from progressing.
+                continue
         if attempt < _ADOBE_CONVERSION_ATTEMPTS:
             time.sleep(_ADOBE_CONVERSION_RETRY_INTERVAL_SEC)
 
@@ -468,6 +585,21 @@ def _deterministic_stratified_rows(
     return [item[3] for item in ranked]
 
 
+def _release_usable_ocb_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    source_rows = _deterministic_stratified_rows("ocb", rows)[:_RELEASE_SOURCE_SAMPLE]
+    usable = [
+        row
+        for row in source_rows
+        if _case_id(row) not in _RELEASE_EXCLUDED_OCB_CASE_IDS
+    ]
+    expected = _DEFAULT_BENCHMARK_SAMPLES["ocb"]
+    if len(usable) != expected:
+        raise BenchmarkError(
+            f"office-release usable OCB subset has {len(usable)} items; expected {expected}"
+        )
+    return usable
+
+
 def _release_dataset_name(base_name: str, benchmark: str, sample: int) -> str:
     if sample == _DEFAULT_BENCHMARK_SAMPLES[benchmark]:
         return base_name
@@ -506,10 +638,13 @@ def _case_manifest_map(
                 raise BenchmarkError(
                     f"{benchmark} manifest has {len(items[benchmark])} items; need {sample}"
                 )
-            items[benchmark] = _deterministic_stratified_rows(
-                benchmark,
-                items[benchmark],
-            )[:sample]
+            if benchmark == "ocb" and sample == _DEFAULT_BENCHMARK_SAMPLES["ocb"]:
+                items[benchmark] = _release_usable_ocb_rows(items[benchmark])
+            else:
+                items[benchmark] = _deterministic_stratified_rows(
+                    benchmark,
+                    items[benchmark],
+                )[:sample]
     return items
 
 
@@ -846,7 +981,11 @@ def prepare(
             case_manifest_root / f"{profile}-ocb.jsonl",
             case_ids=ocb_case_ids,
         )
-        ocb_rows = _read_rows(case_manifest_root / f"{profile}-ocb.jsonl")
+        ocb_manifest_path = case_manifest_root / f"{profile}-ocb.jsonl"
+        ocb_rows = _read_rows(ocb_manifest_path)
+        if profile == "office-release":
+            ocb_rows = _release_usable_ocb_rows(ocb_rows)
+            _write_rows(ocb_manifest_path, ocb_rows)
         if allow_licensed_content:
             _emit_evaluation_progress(
                 "prepare_stage", stage="references", label="Download licensed Office references"
@@ -871,11 +1010,16 @@ def prepare(
                 python,
                 "ocb",
                 ocb_data,
-                case_manifest_root / f"{profile}-ocb.jsonl",
+                ocb_manifest_path,
                 case_ids=ocb_case_ids,
             )
+            if profile == "office-release":
+                _write_rows(
+                    ocb_manifest_path,
+                    _release_usable_ocb_rows(_read_rows(ocb_manifest_path)),
+                )
             missing_ocb = _missing_ocb_references(
-                _read_rows(case_manifest_root / f"{profile}-ocb.jsonl")
+                _read_rows(ocb_manifest_path)
             )
             if missing_ocb:
                 raise BenchmarkError(
@@ -893,6 +1037,15 @@ def prepare(
             "case_manifest_root": str(case_manifest_root),
             "datasets": {},
             "licensed_content_uploaded": allow_licensed_content,
+            "release_source_sample": _RELEASE_SOURCE_SAMPLE if profile == "office-release" else None,
+            "release_excluded_case_ids": (
+                sorted(_RELEASE_EXCLUDED_OCB_CASE_IDS, key=int)
+                if profile == "office-release"
+                else []
+            ),
+            "release_usable_case_count": (
+                _DEFAULT_BENCHMARK_SAMPLES["ocb"] if profile == "office-release" else None
+            ),
             "constraints_sha256": hashlib.sha256(_CONSTRAINTS_PATH.read_bytes()).hexdigest(),
             "libreoffice": libreoffice,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -974,7 +1127,7 @@ def _validate_benchmark_samples(profile: str, samples: dict[str, int]) -> None:
 def estimate(
     profile: str = typer.Option(..., "--profile"),
     model_presets: list[str] | None = typer.Option(None, "--model-preset"),
-    ocb_sample: int = typer.Option(1018, "--ocb-sample", min=1, max=1018),
+    ocb_sample: int = typer.Option(211, "--ocb-sample", min=1, max=1018),
 ) -> None:
     """Print a pre-run token estimate without calling any model."""
     try:
@@ -1457,17 +1610,23 @@ def _wait_for_local_scores(
 
 
 def _flush_benchmark_runtime(runtime: LangfuseRuntime) -> None:
-    """Flush benchmark telemetry without failing a completed run on score lag."""
+    """Flush benchmark telemetry without failing completed Cases on queue lag."""
     try:
         runtime.flush(strict=True)
     except LangfuseFlushTimeoutError as exc:
         detail = str(exc).lower()
-        if "score ingestion" not in detail:
+        if "score ingestion" not in detail and "media upload" not in detail:
             raise
-        console.print(
-            "[yellow]Langfuse score ingestion is still draining; benchmark Cases are "
-            "complete and the score will appear after remote ingestion.[/yellow]"
-        )
+        if "score ingestion" in detail:
+            console.print(
+                "[yellow]Langfuse score ingestion is still draining; benchmark Cases are "
+                "complete and the score will appear after remote ingestion.[/yellow]"
+            )
+        else:
+            console.print(
+                "[yellow]Langfuse media uploads are still draining; benchmark Cases and "
+                "their structured outputs are complete, so execution will continue.[/yellow]"
+            )
 
 
 def _enqueue_review_items(
@@ -1523,7 +1682,7 @@ def run(
     profile: str = typer.Option(..., "--profile"),
     model_presets: list[str] | None = typer.Option(None, "--model-preset"),
     cache_dir: Path | None = typer.Option(None, "--cache-dir"),
-    ocb_sample: int = typer.Option(1018, "--ocb-sample", min=1, max=1018),
+    ocb_sample: int = typer.Option(211, "--ocb-sample", min=1, max=1018),
     benchmarks: list[str] | None = typer.Option(None, "--benchmark"),
     skills: list[str] | None = typer.Option(None, "--skill"),
     parent_run_id: str | None = typer.Option(None, "--parent-run-id"),

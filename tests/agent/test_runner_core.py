@@ -258,6 +258,9 @@ async def test_runner_retries_empty_final_response_with_summary_prompt():
     assert calls[0]["tools"] is not None
     assert calls[1]["tools"] is not None
     assert calls[2]["tools"] is None
+    finalization_prompt = calls[2]["messages"][-1]["content"]
+    assert "Do not call tools" in finalization_prompt
+    assert "best supported answer" in finalization_prompt
     assert result.usage["prompt_tokens"] == 13
     assert result.usage["completion_tokens"] == 9
 

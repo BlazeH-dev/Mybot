@@ -1009,6 +1009,7 @@ export interface EvaluationJob {
   aggregate_scores?: Record<string, number | boolean | string | null>;
   usage?: EvaluationUsage | null;
   metrics?: EvaluationMetrics | null;
+  model_runs?: EvaluationModelRun[];
   review_status?: string;
   cancel_requested?: boolean;
   resumable?: boolean;
@@ -1020,6 +1021,23 @@ export interface EvaluationJob {
   created_at?: string | null;
   started_at?: string | null;
   finished_at?: string | null;
+}
+
+export interface EvaluationModelRun {
+  job_id: string;
+  model_preset: string;
+  status: string;
+  total_cases: number;
+  completed_cases: number;
+  successful_cases: number;
+  failed_cases: number;
+  remaining_cases: number;
+  dataset_run_id?: string | null;
+  langfuse_url?: string | null;
+  aggregate_scores: Record<string, number | boolean | string | null>;
+  usage?: EvaluationUsage | null;
+  metrics?: EvaluationMetrics | null;
+  review_status: string;
 }
 
 export interface EvaluationRemoteRun {

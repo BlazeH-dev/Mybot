@@ -48,7 +48,7 @@ def test_office_suite_manifest_exposes_extension_contract() -> None:
         "gpt-5-6-luna",
         "deepseek-v4-flash",
     }
-    assert suite["benchmark_samples"] == {"ocb": [255, 509, 1018]}
+    assert suite["benchmark_samples"] == {"ocb": [211]}
     assert suite["extension"]["manifest"].endswith("manifest.yaml")
     assert suite["extension"]["adapter"].endswith("adapter.py")
 
@@ -57,16 +57,16 @@ def test_release_samples_apply_to_estimate_and_cli_command() -> None:
     catalog = EvaluationCatalog()
     request = EvaluationRequest.from_payload({
         "profile": "office-release",
-        "benchmark_samples": {"ocb": 255},
+        "benchmark_samples": {"ocb": 211},
     })
 
     estimate = catalog.adapter("office").estimate(request)  # type: ignore[attr-defined]
     command = catalog.command(request)
 
-    assert estimate["case_counts"] == {"ocb": 255}
-    assert estimate["skill_runs"] == 510
-    assert estimate["judge_runs"] == 510
-    assert command[command.index("--ocb-sample") + 1] == "255"
+    assert estimate["case_counts"] == {"ocb": 211}
+    assert estimate["skill_runs"] == 422
+    assert estimate["judge_runs"] == 422
+    assert command[command.index("--ocb-sample") + 1] == "211"
 
 
 def test_ci_preflight_is_offline_and_estimate_is_zero() -> None:

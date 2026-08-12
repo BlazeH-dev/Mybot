@@ -186,6 +186,10 @@ pytest tests/runtime/ -q
 - 已缓存的 benchmark source 只有在 HEAD 等于 pinned revision、工作树干净且 LICENSE digest 匹配时才直接复用；满足条件时不再无条件 `git fetch`，避免 GitHub 不可达阻塞重复 prepare。
 - Hugging Face 官方 endpoint 使用有界连接、下载和子进程超时；单次连接/下载保持 10/120 秒超时，整批 snapshot 总时限为 2 小时，避免 release 多 GB 许可资产的正常传输被 smoke 级总时限中断。未显式配置 `HF_ENDPOINT` 时，官方源连续失败后自动回退 `https://hf-mirror.com`，仍按固定 dataset revision 下载并由后续 manifest digest/fingerprint 校验。
 - benchmark constraints 固定加入 `pandas==2.3.2`，满足上游 OCB `download_and_convert_files.py` 的 parquet manifest 读取依赖；依赖仍只安装在外部 benchmark venv。
+- benchmark constraints 固定加入 `curl_cffi==0.13.0`；licensed prepare 通过运行时 wrapper 仅替换 pinned 上游 downloader 的 HTTP GET 实现，以 Chrome TLS 指纹访问会拦截普通 Python 客户端的官方来源。原始 URL、SEC 联系标识、Adobe 转换、文件格式校验、manifest 与 fingerprint 口径保持不变。
+- blocked source 会继续尝试 Safari、Firefox 与 HTTP/1.1 指纹；`pypdf==6.15.0` 只处理空密码可解的 PDF 容器加密，再调用同一 Adobe Export PDF API。真实 404、不可解密 PDF 或全部网络策略失败仍由资产完整性硬门拒绝。
+- 标准 `requests` 仍优先处理正常响应，只有明确的 403/503、拦截 HTML 或 TLS 错误才进入浏览器指纹路径；缺失资产按文件隔离到独立有界子进程，单个站点触发原生崩溃时其余文件仍可继续缓存，最终完整性校验仍 fail-closed。
+- Office release 正式口径改为原固定分层 255 候选中的可执行子集：固定排除受 36 个失效/受限来源影响的 41 个 Case，并追加排除任务/参考证据契约或稳定产出异常的 Case 0、4、7，不补入其他 Case，最终每模型 211、双模型 422。Prepare manifest、Dataset、fingerprint、Job 预估和运行 checkpoint 均以同一 211 条身份集合为准；已有 DeepSeek 其余 211 条完成 checkpoint 必须复用，不得因口径收缩而重跑。
 - Adobe 转换通过运行时 wrapper 向官方 SDK 注入 `ClientConfig(connect_timeout=30000, read_timeout=120000)`，对仍缺失的目标文件最多重试 3 次；不修改 pinned OCB checkout，也不把本地替代转换混入 benchmark。
 - Adobe 运行环境优先保留显式 `CHROMIUM_PATH`，否则查找 PATH 内的 Edge/Chrome/Chromium，并在 macOS 自动识别 `/Applications` 下的标准安装，确保 HTML 许可源仍使用上游规定的 Chromium→Adobe 转换链。
 - 许可源下载/Adobe 子进程将 `getaddrinfo` 结果中的 IPv4 候选排在 IPv6 之前，但不删除 IPv6 候选；这避免本机无路由的 IPv6 CloudFront 在 123 个 release 直接下载项上重复耗尽连接超时，仍保留 IPv6-only 源站的回退能力。
@@ -196,3 +200,18 @@ pytest tests/runtime/ -q
 
 - `tests/agent/test_task_cancel.py` 的最小 AgentLoop 改为接收 pytest `tmp_path` 作为真实 workspace，不再用 `MagicMock` 伪造路径；本地 `TraceHook` 写入 `.nanobot-runtime/trace/` 时因此始终位于 pytest 临时目录，不会将 mock 的字符串表示物化为项目根目录下的 `MagicMock/`。
 - `.gitignore` 排除 nanobot 本地 workspace 模板、cron、memory 及 `.nanobot-runtime` 状态。网关被临时指向源码仓库时，工作区初始化和本地 trace 不会进入 Git 待提交列表。
+
+## 2026-08-12：benchmark 媒体队列延迟恢复
+
+- Langfuse 的 Office 媒体附件由独立后台队列上传；模型 Case、结构化输出和 Dataset Run item 已完成后，该队列仍可能因网络吞吐在 30 秒 flush 窗口内保留大量任务。
+- `_flush_benchmark_runtime()` 将 `media upload queue` timeout 与已有的 `score ingestion queue` timeout 同样视为远端最终一致延迟，打印明确告警并允许后续 variant 继续；恢复时仍复用同一 Job、稳定 Dataset Run 和 Case checkpoint。
+- OTEL trace flush timeout、同步 Score 上传错误和未分类异常继续 fail-closed，避免把 Trace 或评分真相源丢失误报为成功。
+- `tests/cli/test_benchmark_contract.py` 覆盖 score/media 队列可恢复、OTEL flush 仍抛错的分类契约。
+
+## 2026-08-12：双模型历史结果独立投影
+
+- `/api/evaluations/runs` 从 Job Case 和已关联 Langfuse Dataset Run 投影 `model_runs`，每个模型独立统计成功、失败、剩余、状态、得分、用量和链接。
+- 运行中的模型即使尚未获得 Dataset Run ID 也会立即出现；远端 Run 可用后按 `model_preset` 绑定，不改变 Job、Run 或 checkpoint。
+- 已被本地模型行关联的 Langfuse Run 不再重复显示，模型行展开只返回该模型的 Case 视图。
+- 模型投影只适用于 `action=run`；prepare 只记录准备状态，不再产生没有 Case/Score 的模型结果行。
+- worker 实时事件只携带原始 Job 时，前端合并更新并保留轮询接口已有的 `model_runs`，因此运行中的 DeepSeek/Luna 独立行不会在进度事件到达时消失。

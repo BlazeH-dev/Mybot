@@ -46,10 +46,94 @@ from nanobot.webui.http_utils import (
 )
 from nanobot.webui.settings_api import settings_payload, update_provider_settings
 from nanobot.webui.transcript import append_transcript_object, read_transcript_lines
+from nanobot.webui.ws_http import _evaluation_model_runs
 
 # -- Shared helpers (aligned with test_websocket_integration.py) ---------------
 
 _PORT = 29876
+
+
+def test_evaluation_model_runs_separate_model_progress_and_links() -> None:
+    rows = _evaluation_model_runs(
+        {
+            "job_id": "job-models",
+            "status": "running",
+            "action": "run",
+            "total_cases": 422,
+            "request": {
+                "action": "run",
+                "model_presets": ["deepseek-v4-flash", "gpt-5-6-luna"],
+            },
+            "cases": [
+                *[
+                    {"model_preset": "deepseek-v4-flash", "status": "completed"}
+                    for _ in range(211)
+                ],
+                {"model_preset": "gpt-5-6-luna", "status": "completed"},
+                {"model_preset": "gpt-5-6-luna", "status": "failed"},
+                {"model_preset": "gpt-5-6-luna", "status": "running"},
+            ],
+        },
+        [{
+            "dataset_run_id": "run-deepseek",
+            "model_preset": "deepseek-v4-flash",
+            "langfuse_url": "https://langfuse.test/deepseek",
+            "aggregate_scores": {"mybot_score": 0.8},
+            "review_status": "pending",
+        }],
+    )
+
+    assert rows[0] == {
+        "job_id": "job-models",
+        "model_preset": "deepseek-v4-flash",
+        "status": "completed",
+        "total_cases": 211,
+        "completed_cases": 211,
+        "successful_cases": 211,
+        "failed_cases": 0,
+        "remaining_cases": 0,
+        "dataset_run_id": "run-deepseek",
+        "langfuse_url": "https://langfuse.test/deepseek",
+        "aggregate_scores": {"mybot_score": 0.8},
+        "usage": None,
+        "metrics": None,
+        "review_status": "pending",
+    }
+    assert rows[1] == {
+        "job_id": "job-models",
+        "model_preset": "gpt-5-6-luna",
+        "status": "running",
+        "total_cases": 211,
+        "completed_cases": 2,
+        "successful_cases": 1,
+        "failed_cases": 1,
+        "remaining_cases": 209,
+        "dataset_run_id": None,
+        "langfuse_url": None,
+        "aggregate_scores": {},
+        "usage": None,
+        "metrics": None,
+        "review_status": "pending",
+    }
+
+
+def test_evaluation_model_runs_ignore_prepare_jobs() -> None:
+    rows = _evaluation_model_runs(
+        {
+            "job_id": "job-prepare",
+            "status": "completed",
+            "action": "prepare",
+            "total_cases": 422,
+            "request": {
+                "action": "prepare",
+                "model_presets": ["deepseek-v4-flash", "gpt-5-6-luna"],
+            },
+            "cases": [],
+        },
+        [],
+    )
+
+    assert rows == []
 
 
 def _ch(bus: Any, **kw: Any) -> WebSocketChannel:

@@ -32,6 +32,7 @@ from nanobot.cli.benchmark import (
     _missing_ocb_references,
     _read_rows,
     _release_dataset_name,
+    _release_usable_ocb_rows,
     _remote_item_has_required_scores,
     _sample_stratum,
     _select_values,
@@ -102,6 +103,8 @@ def test_benchmark_constraints_include_ocb_manifest_reader() -> None:
 
     assert "pyarrow==23.0.1" in constraints
     assert "pandas==2.3.2" in constraints
+    assert "curl_cffi==0.13.0" in constraints
+    assert "pypdf==6.15.0" in constraints
 
 
 def test_cloud_smoke_waits_for_delayed_trace_ingestion(monkeypatch) -> None:
@@ -277,11 +280,60 @@ def test_ocb_reference_conversion_uses_bounded_adobe_client_and_retries(
     )
 
     assert len(calls) == 2
-    assert "ClientConfig(connect_timeout=30000, read_timeout=120000)" in calls[0][0][2]
+    compile(calls[0][0][2], "<ocb-downloader-wrapper>", "exec")
+    assert "connect_timeout=30000" in calls[0][0][2]
+    assert "read_timeout=120000" in calls[0][0][2]
     assert "item[0] != socket.AF_INET" in calls[0][0][2]
+    assert "original_standard_get(*args, **kwargs)" in calls[0][0][2]
+    assert "from curl_cffi import requests as browser_requests" in calls[0][0][2]
+    assert "CurlHttpVersion.V1_1" in calls[0][0][2]
+    assert '("safari", None)' in calls[0][0][2]
+    assert '("firefox", None)' in calls[0][0][2]
+    assert "writer.clone_document_from_reader(reader)" in calls[0][0][2]
     assert calls[0][1] == {"SAFE": "1"}
-    assert calls[0][2] == 480.0
+    assert calls[0][2] == 240.0
+    assert calls[0][0][-3] == "first.pptx"
     assert calls[1][0][-3] == "second.pptx"
+
+
+def test_ocb_reference_conversion_isolates_native_downloader_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    output_root = tmp_path / "data" / "reference_files"
+    output_root.mkdir(parents=True)
+    rows = [{
+        "input": {
+            "reference_paths": ["/cache/crash.pptx", "/cache/ready.pptx"],
+            "reference_sha256": [None, None],
+        },
+    }]
+
+    def fake_run(command: list[str], *, cwd=None, env=None, timeout_seconds=None) -> str:
+        filename = command[-3]
+        calls.append(filename)
+        if filename == "crash.pptx":
+            raise BenchmarkError("downloader exited with signal 11")
+        (output_root / filename).write_bytes(b"x" * 2048)
+        return ""
+
+    monkeypatch.setattr("nanobot.cli.benchmark._run", fake_run)
+    monkeypatch.setattr("nanobot.cli.benchmark.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "nanobot.cli.benchmark.adobe_pdf_services_env", lambda: {"SAFE": "1"}
+    )
+
+    _download_ocb_references(
+        Path(sys.executable),
+        tmp_path / "source",
+        tmp_path / "data",
+        rows,
+    )
+
+    assert "ready.pptx" in calls
+    assert calls.count("crash.pptx") == 3
+    assert (output_root / "ready.pptx").is_file()
 
 
 def test_missing_ocb_references_are_reported_without_local_paths() -> None:
@@ -313,7 +365,10 @@ def test_run_filters_are_validated_and_deduplicated() -> None:
         _select_values(["removed"], ("ocb",), "benchmark")
 
 
-def test_release_case_manifest_is_sampled(tmp_path: Path) -> None:
+def test_release_case_manifest_is_sampled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     rows = "".join(
         json.dumps({
             "input": {"format": "docx"},
@@ -322,14 +377,44 @@ def test_release_case_manifest_is_sampled(tmp_path: Path) -> None:
         for index in range(1018)
     )
     (tmp_path / "office-release-ocb.jsonl").write_text(rows, encoding="utf-8")
+    monkeypatch.setattr(
+        "nanobot.cli.benchmark._release_usable_ocb_rows",
+        lambda values: values[:211],
+    )
 
     sampled = _case_manifest_map(
         {"case_manifest_root": str(tmp_path)},
         "office-release",
-        benchmark_samples={"ocb": 255},
+        benchmark_samples={"ocb": 211},
     )
 
-    assert {benchmark: len(rows) for benchmark, rows in sampled.items()} == {"ocb": 255}
+    assert {benchmark: len(rows) for benchmark, rows in sampled.items()} == {"ocb": 211}
+
+
+def test_release_usable_subset_excludes_only_fixed_unavailable_cases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        {
+            "input": {"format": "docx"},
+            "metadata": {"case_id": str(index), "track": "qa"},
+        }
+        for index in range(255)
+    ]
+    excluded = frozenset(str(index) for index in range(44))
+    monkeypatch.setattr(
+        "nanobot.cli.benchmark._deterministic_stratified_rows",
+        lambda _benchmark, values: values,
+    )
+    monkeypatch.setattr(
+        "nanobot.cli.benchmark._RELEASE_EXCLUDED_OCB_CASE_IDS",
+        excluded,
+    )
+
+    usable = _release_usable_ocb_rows(rows)
+
+    assert len(usable) == 211
+    assert {row["metadata"]["case_id"] for row in usable}.isdisjoint(excluded)
 
 
 def test_release_sampling_is_reproducible_proportional_and_nested() -> None:
@@ -359,10 +444,7 @@ def test_release_sampling_is_reproducible_proportional_and_nested() -> None:
     assert set(quarter) < set(half) < set(ordered_ids)
     assert sum(case_id.startswith("pptx-") for case_id in quarter) == 5
     assert sum(case_id.startswith("pptx-") for case_id in half) == 10
-    assert _release_dataset_name("office-release-ocb", "ocb", 255) == (
-        "office-release-ocb-strat-v1-n255"
-    )
-    assert _release_dataset_name("office-release-ocb", "ocb", 1018) == "office-release-ocb"
+    assert _release_dataset_name("office-release-ocb", "ocb", 211) == "office-release-ocb"
 
 
 def test_release_sampling_stratum_is_format_and_track() -> None:
@@ -408,13 +490,20 @@ def test_score_readback_lag_keeps_completed_case_pending(
     ) == {}
 
 
-def test_benchmark_flush_tolerates_only_score_ingestion_timeout() -> None:
+def test_benchmark_flush_tolerates_async_queue_timeouts() -> None:
     def raise_score_timeout(**_kwargs) -> None:
         raise LangfuseFlushTimeoutError(
             "Langfuse score ingestion queue did not drain within 30 seconds (1 unfinished)"
         )
 
     _flush_benchmark_runtime(SimpleNamespace(flush=raise_score_timeout))
+
+    def raise_media_timeout(**_kwargs) -> None:
+        raise LangfuseFlushTimeoutError(
+            "Langfuse media upload queue did not drain within 30 seconds (1 unfinished)"
+        )
+
+    _flush_benchmark_runtime(SimpleNamespace(flush=raise_media_timeout))
 
     def raise_otel_timeout(**_kwargs) -> None:
         raise LangfuseFlushTimeoutError(

@@ -20,7 +20,7 @@ DEFAULT_CACHE = Path.home() / ".cache" / "nanobot" / "benchmarks"
 OFFICE_BENCHMARKS = ("ocb",)
 OFFICE_PROFILES = ("ci", "office-smoke", "office-release")
 OFFICE_BENCHMARK_SAMPLES = {
-    "ocb": (255, 509, 1018),
+    "ocb": (211,),
 }
 DEFAULT_OFFICE_BENCHMARK_SAMPLES = {
     benchmark: samples[-1] for benchmark, samples in OFFICE_BENCHMARK_SAMPLES.items()

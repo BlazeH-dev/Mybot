@@ -97,6 +97,57 @@ _ACTIVE_EVALUATION_STATUSES = frozenset({
 })
 _EVALUATION_REMOTE_DELETE_TIMEOUT_SECONDS = 8.0
 
+
+def _evaluation_model_runs(
+    job: dict[str, Any],
+    linked_runs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    request = job.get("request") if isinstance(job.get("request"), dict) else {}
+    action = str(job.get("action") or request.get("action") or "")
+    if action != "run":
+        return []
+    model_presets = [str(value) for value in request.get("model_presets") or [] if value]
+    if not model_presets:
+        return []
+    cases = job.get("cases") if isinstance(job.get("cases"), list) else []
+    total_cases = int(job.get("total_cases") or 0)
+    per_model_total = total_cases // len(model_presets) if total_cases else 0
+    active = str(job.get("status") or "") in _ACTIVE_EVALUATION_STATUSES
+    rows: list[dict[str, Any]] = []
+    for model_preset in model_presets:
+        model_cases = [case for case in cases if case.get("model_preset") == model_preset]
+        completed = sum(1 for case in model_cases if case.get("status") == "completed")
+        failed = sum(1 for case in model_cases if case.get("status") == "failed")
+        running = sum(1 for case in model_cases if case.get("status") == "running")
+        terminal = completed + failed
+        linked = next(
+            (row for row in linked_runs if row.get("model_preset") == model_preset),
+            None,
+        )
+        if terminal >= per_model_total > 0:
+            status = "failed" if failed else "completed"
+        elif running or terminal:
+            status = "running" if active else str(job.get("status") or "interrupted")
+        else:
+            status = "queued" if active else str(job.get("status") or "interrupted")
+        rows.append({
+            "job_id": job.get("job_id"),
+            "model_preset": model_preset,
+            "status": status,
+            "total_cases": per_model_total,
+            "completed_cases": terminal,
+            "successful_cases": completed,
+            "failed_cases": failed,
+            "remaining_cases": max(0, per_model_total - terminal),
+            "dataset_run_id": linked.get("dataset_run_id") if linked else None,
+            "langfuse_url": linked.get("langfuse_url") if linked else None,
+            "aggregate_scores": dict(linked.get("aggregate_scores") or {}) if linked else {},
+            "usage": linked.get("usage") if linked else None,
+            "metrics": linked.get("metrics") if linked else None,
+            "review_status": linked.get("review_status") if linked else "pending",
+        })
+    return rows
+
 if TYPE_CHECKING:
     from nanobot.bus.queue import MessageBus
     from nanobot.cron.service import CronService
@@ -344,6 +395,7 @@ class GatewayHTTPHandler:
                     enriched["usage"] = linked_usage
                 if linked_metrics:
                     enriched["metrics"] = linked_metrics
+                enriched["model_runs"] = _evaluation_model_runs(enriched, linked_runs)
                 local.append(enriched)
             return _http_json_response({"jobs": local, "langfuse": remote})
         delete_match = re.match(r"^/api/evaluations/runs/([A-Za-z0-9_-]+)/delete$", got)

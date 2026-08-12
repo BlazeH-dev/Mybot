@@ -21,7 +21,10 @@ EMPTY_FINAL_RESPONSE_MESSAGE = (
 )
 
 FINALIZATION_RETRY_PROMPT = (
-    "Please provide your response to the user based on the conversation above."
+    "Provide the final answer to the user's original request now, using only the conversation "
+    "and tool results above. Do not call tools. Do not return an empty response. If the available "
+    "evidence is incomplete or inconsistent, state the limitation and give the best supported "
+    "answer with explicit assumptions instead of refusing to answer."
 )
 
 LENGTH_RECOVERY_PROMPT = (

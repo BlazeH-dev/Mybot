@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EvaluationCenter } from "@/components/evaluations/EvaluationCenter";
@@ -68,7 +68,7 @@ describe("EvaluationCenter", () => {
         model_presets: [{ id: "gpt-5-6-luna", label: "gpt-5-6-luna" }],
         runtime_profiles: [{ id: "default", label: "Default runtime" }],
         benchmark_samples: {
-          ocb: [255, 509, 1018],
+          ocb: [211],
         },
       }],
     });
@@ -122,14 +122,14 @@ describe("EvaluationCenter", () => {
       target: { value: "office-release" },
     });
     fireEvent.change(await screen.findByLabelText("OCB sample"), {
-      target: { value: "255" },
+      target: { value: "211" },
     });
     await waitFor(() => expect(fetchEvaluationReadiness).toHaveBeenCalledWith(
       "token",
       expect.objectContaining({
         profile: "office-release",
         benchmark_samples: {
-          ocb: 255,
+          ocb: 211,
         },
       }),
     ));
@@ -201,6 +201,142 @@ describe("EvaluationCenter", () => {
     expect(screen.getByText("in 1,200 · out 300")).toBeInTheDocument();
     expect(screen.getByText("4 calls · 12s · TTFT 0.8s")).toBeInTheDocument();
     expect(screen.queryByText(/This corrected model output/)).not.toBeInTheDocument();
+  });
+
+  it("shows active model results separately before every Langfuse run is available", async () => {
+    vi.mocked(fetchEvaluationRuns).mockResolvedValue({
+      jobs: [{
+        job_id: "job-model-progress",
+        suite_id: "office",
+        profile: "office-release",
+        status: "running",
+        phase: "running",
+        total_cases: 422,
+        completed_cases: 221,
+        model_runs: [
+          {
+            job_id: "job-model-progress",
+            model_preset: "deepseek-v4-flash",
+            status: "completed",
+            total_cases: 211,
+            completed_cases: 211,
+            successful_cases: 211,
+            failed_cases: 0,
+            remaining_cases: 0,
+            dataset_run_id: "run-deepseek",
+            langfuse_url: "https://langfuse.test/deepseek",
+            aggregate_scores: { mybot_score: 0.8 },
+            review_status: "pending",
+          },
+          {
+            job_id: "job-model-progress",
+            model_preset: "gpt-5-6-luna",
+            status: "running",
+            total_cases: 211,
+            completed_cases: 10,
+            successful_cases: 7,
+            failed_cases: 3,
+            remaining_cases: 201,
+            aggregate_scores: {},
+            review_status: "pending",
+          },
+        ],
+      }],
+      langfuse: {
+        available: true,
+        runs: [{
+          source: "langfuse",
+          job_id: null,
+          dataset_run_id: "run-deepseek",
+          dataset_name: "office-release",
+          name: "deepseek remote",
+          status: "completed",
+          model_preset: "deepseek-v4-flash",
+          item_count: 211,
+          completed_items: 211,
+          failed_items: 0,
+          aggregate_scores: { mybot_score: 0.8 },
+          review_status: "pending",
+        }],
+      },
+    });
+    vi.mocked(fetchEvaluationCases).mockResolvedValue([
+      { case_id: "993", model_preset: "gpt-5-6-luna", status: "completed" },
+      { case_id: "602", model_preset: "deepseek-v4-flash", status: "completed" },
+    ]);
+    renderCenter();
+
+    expect(await screen.findByText("DeepSeek-v4-flash")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5.6-luna")).toBeInTheDocument();
+    expect(screen.getByText(/10\/211.*201 remaining.*3 failed/)).toBeInTheDocument();
+    expect(screen.queryByText("deepseek remote")).not.toBeInTheDocument();
+
+    const toggles = screen.getAllByRole("button", { name: "Toggle case details" });
+    fireEvent.click(toggles[1]);
+    expect(await screen.findByText("993")).toBeInTheDocument();
+    expect(screen.queryByText("602")).not.toBeInTheDocument();
+  });
+
+  it("keeps projected model rows when a worker update omits them", async () => {
+    vi.mocked(fetchEvaluationRuns).mockResolvedValue({
+      jobs: [{
+        job_id: "job-model-progress",
+        suite_id: "office",
+        profile: "office-release",
+        status: "running",
+        phase: "running",
+        total_cases: 422,
+        completed_cases: 221,
+        model_runs: [
+          {
+            job_id: "job-model-progress",
+            model_preset: "deepseek-v4-flash",
+            status: "completed",
+            total_cases: 211,
+            completed_cases: 211,
+            successful_cases: 211,
+            failed_cases: 0,
+            remaining_cases: 0,
+            aggregate_scores: {},
+            review_status: "pending",
+          },
+          {
+            job_id: "job-model-progress",
+            model_preset: "gpt-5-6-luna",
+            status: "running",
+            total_cases: 211,
+            completed_cases: 10,
+            successful_cases: 10,
+            failed_cases: 0,
+            remaining_cases: 201,
+            aggregate_scores: {},
+            review_status: "pending",
+          },
+        ],
+      }],
+      langfuse: { available: true, runs: [] },
+    });
+    renderCenter();
+
+    expect(await screen.findByText("DeepSeek-v4-flash")).toBeInTheDocument();
+    const handler = [...evaluationHandlers][0] as (event: unknown) => void;
+    act(() => {
+      handler({
+        event: "evaluation_job_updated",
+        job: {
+          job_id: "job-model-progress",
+          suite_id: "office",
+          profile: "office-release",
+          status: "running",
+          phase: "running",
+          total_cases: 422,
+          completed_cases: 222,
+        },
+      });
+    });
+
+    expect(screen.getByText("DeepSeek-v4-flash")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5.6-luna")).toBeInTheDocument();
   });
 
   it("groups multiple Langfuse links and deletes a local history job after confirmation", async () => {
@@ -277,7 +413,7 @@ describe("EvaluationCenter", () => {
           skills: ["officecli"],
           model_presets: ["gpt-5-6-luna", "deepseek-v4-flash"],
           runtime_profiles: ["default"],
-          benchmark_samples: { ocb: 255 },
+          benchmark_samples: { ocb: 211 },
           allow_licensed_content: true,
         },
       }],

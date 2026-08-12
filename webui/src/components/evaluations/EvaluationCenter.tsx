@@ -270,7 +270,7 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
   const [modelPresets, setModelPresets] = useState<string[]>([]);
   const [runtimeProfiles, setRuntimeProfiles] = useState<string[]>([]);
   const [benchmarkSamples, setBenchmarkSamples] = useState<Record<string, number>>({
-    ocb: 1018,
+    ocb: 211,
   });
   const [allowLicensedContent, setAllowLicensedContent] = useState(false);
   const [readiness, setReadiness] = useState<EvaluationReadiness | null>(null);
@@ -393,7 +393,11 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
       setRuns((current) => {
         if (!current) return current;
         const jobs = current.jobs.some((job) => job.job_id === event.job.job_id)
-          ? current.jobs.map((job) => job.job_id === event.job.job_id ? event.job : job)
+          ? current.jobs.map((job) => job.job_id === event.job.job_id ? {
+            ...job,
+            ...event.job,
+            model_runs: event.job.model_runs ?? job.model_runs,
+          } : job)
           : [event.job, ...current.jobs];
         return { ...current, jobs };
       });
@@ -420,17 +424,20 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
     }
   };
 
-  const toggleCases = async (runId: string) => {
-    if (expandedRun === runId) {
+  const toggleCases = async (rowId: string, runId = rowId, modelPreset?: string) => {
+    if (expandedRun === rowId) {
       setExpandedRun(null);
       return;
     }
-    setExpandedRun(runId);
-    if (cases[runId]) return;
-    setCasesLoading(runId);
+    setExpandedRun(rowId);
+    if (cases[rowId]) return;
+    setCasesLoading(rowId);
     try {
       const rows = await fetchEvaluationCases(token, runId);
-      setCases((current) => ({ ...current, [runId]: rows }));
+      setCases((current) => ({
+        ...current,
+        [rowId]: modelPreset ? rows.filter((item) => item.model_preset === modelPreset) : rows,
+      }));
     } catch (caught) {
       setError((caught as Error).message);
     } finally {
@@ -472,6 +479,13 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
 
   const currentJobs = (runs?.jobs ?? []).filter((job) => ACTIVE_STATUSES.has(job.status));
   const historicalJobs = (runs?.jobs ?? []).filter((job) => !ACTIVE_STATUSES.has(job.status));
+  const modelHistoryRows = (runs?.jobs ?? []).flatMap((job) => (
+    (job.model_runs ?? []).map((modelRun) => ({ job, modelRun }))
+  ));
+  const projectedJobIds = new Set(modelHistoryRows.map(({ job }) => job.job_id));
+  const linkedModelRunIds = new Set(modelHistoryRows.flatMap(({ modelRun }) => (
+    modelRun.dataset_run_id ? [modelRun.dataset_run_id] : []
+  )));
   const totalTokens = readiness?.estimate.estimated_tokens?.total ?? 0;
   const selectionValid = profile === "ci" || (
     benchmarks.length > 0 && skills.length > 0 && modelPresets.length > 0 && runtimeProfiles.length > 0
@@ -617,13 +631,19 @@ export function EvaluationCenter({ hostChromeInset = false }: { hostChromeInset?
             <table className="w-full min-w-[1080px] text-left text-xs">
               <thead className="border-b bg-muted/35 text-muted-foreground"><tr><th className="w-10 px-3 py-2.5" /><th className="px-3 py-2.5 font-medium">Run</th><th className="px-3 py-2.5 font-medium">Variant</th><th className="px-3 py-2.5 font-medium">Status</th><th className="px-3 py-2.5 font-medium">Scores</th><th className="px-3 py-2.5 font-medium">Usage & performance</th><th className="px-3 py-2.5 font-medium">Review</th><th className="px-3 py-2.5 font-medium">Created</th><th className="px-3 py-2.5 text-right font-medium">Actions</th></tr></thead>
               <tbody className="divide-y">
-                  {historicalJobs.map((job) => (
+                {modelHistoryRows.map(({ job, modelRun }) => {
+                  const rowId = `${job.job_id}--${modelRun.model_preset}`;
+                  return (
+                    <HistoryRows key={rowId} id={modelRun.dataset_run_id ?? rowId} label={`${job.suite_id} / ${job.profile}`} variant={formatModelVariant(modelRun.model_preset)} status={modelRun.status} scores={modelRun.aggregate_scores} usage={modelRun.usage} metrics={modelRun.metrics} review={modelRun.review_status} created={job.created_at} links={modelRun.langfuse_url ? [modelRun.langfuse_url] : []} progress={`${modelRun.completed_cases}/${modelRun.total_cases} · ${modelRun.remaining_cases} remaining${modelRun.failed_cases ? ` · ${modelRun.failed_cases} failed` : ""}`} expanded={expandedRun === rowId} cases={cases[rowId]} casesLoading={casesLoading === rowId} onToggle={() => void toggleCases(rowId, job.job_id, modelRun.model_preset)} onCaseRerun={(item) => client.rerunEvaluationCase(job.job_id, item.benchmark ?? "", item.skill ?? "", item.case_id, item.model_preset)} />
+                  );
+                })}
+                {historicalJobs.filter((job) => !projectedJobIds.has(job.job_id)).map((job) => (
                   <HistoryRows key={`job-${job.job_id}`} id={job.job_id} label={`${job.suite_id} / ${job.profile}`} variant={job.request?.model_presets?.join(", ") ?? job.action ?? "-"} status={job.status} failure={job.failure} scores={job.aggregate_scores ?? {}} usage={job.usage} metrics={job.metrics} review={job.review_status ?? "-"} created={job.created_at} links={job.langfuse_links ?? []} progress={job.total_cases ? `${job.completed_cases ?? 0}/${job.total_cases}${job.remaining_cases != null ? ` · ${job.remaining_cases} remaining` : ""}${job.resumed_cases ? ` · ${job.resumed_cases} reused` : ""}${job.resume_count ? ` · resumed ${job.resume_count}x` : ""}` : undefined} expanded={expandedRun === job.job_id} cases={cases[job.job_id]} casesLoading={casesLoading === job.job_id} onToggle={() => void toggleCases(job.job_id)} onCaseRerun={(item) => client.rerunEvaluationCase(job.job_id, item.benchmark ?? "", item.skill ?? "", item.case_id, item.model_preset)} onResume={job.resumable && ["failed", "cancelled", "interrupted"].includes(job.status) ? () => client.resumeEvaluation(job.job_id) : undefined} onRetry={["failed", "cancelled", "interrupted"].includes(job.status) ? () => client.retryEvaluation(job.job_id) : undefined} onDelete={() => { setDeleteError(null); setDeleteTarget({ id: job.job_id, label: `${job.suite_id} / ${job.profile}`, remote: false }); }} />
                 ))}
-                {(runs?.langfuse.runs ?? []).map((run) => (
+                {(runs?.langfuse.runs ?? []).filter((run) => !linkedModelRunIds.has(run.dataset_run_id)).map((run) => (
                   <HistoryRows key={`remote-${run.dataset_run_id}`} id={run.dataset_run_id} label={run.name} variant={[run.benchmark, run.skill, run.model_preset].filter(Boolean).join(" / ")} status={run.status} scores={run.aggregate_scores} usage={run.usage} metrics={run.metrics} review={run.review_status} created={run.created_at} links={run.langfuse_url ? [run.langfuse_url] : []} expanded={expandedRun === run.dataset_run_id} cases={cases[run.dataset_run_id]} casesLoading={casesLoading === run.dataset_run_id} onToggle={() => void toggleCases(run.dataset_run_id)} onDelete={() => { setDeleteError(null); setDeleteTarget({ id: run.dataset_run_id, label: run.name, remote: true }); }} />
                 ))}
-                {historicalJobs.length === 0 && (runs?.langfuse.runs.length ?? 0) === 0 ? <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">{loading ? "Loading..." : t("evaluations.noHistory", { defaultValue: "No evaluation runs yet." })}</td></tr> : null}
+                {modelHistoryRows.length === 0 && historicalJobs.length === 0 && (runs?.langfuse.runs.length ?? 0) === 0 ? <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">{loading ? "Loading..." : t("evaluations.noHistory", { defaultValue: "No evaluation runs yet." })}</td></tr> : null}
               </tbody>
             </table>
           </div>
