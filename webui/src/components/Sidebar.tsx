@@ -8,6 +8,7 @@ import {
   SquarePen,
   Blocks,
   ChartNoAxesCombined,
+  RefreshCcwDot,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -38,8 +39,9 @@ interface SidebarProps {
   onOpenApps: () => void;
   onOpenSkills: () => void;
   onOpenEvaluations: () => void;
+  onOpenSkillEvolution: () => void;
   onOpenSearch: () => void;
-  activeUtility?: "apps" | "skills" | "evaluations" | null;
+  activeUtility?: "apps" | "skills" | "evaluations" | "skill-evolution" | null;
   onToggleArchived: () => void;
   onCollapse: () => void;
   onExpand?: () => void;
@@ -174,6 +176,13 @@ export function Sidebar(props: SidebarProps) {
           onClick={props.onOpenEvaluations}
           active={props.activeUtility === "evaluations"}
           icon={<ChartNoAxesCombined className="h-4 w-4" />}
+        />
+        <SidebarActionButton
+          collapsed={collapsed}
+          label={t("sidebar.skillEvolution", { defaultValue: "Skill evolution" })}
+          onClick={props.onOpenSkillEvolution}
+          active={props.activeUtility === "skill-evolution"}
+          icon={<RefreshCcwDot className="h-4 w-4" />}
         />
         {props.archivedCount ? (
           <SidebarActionButton

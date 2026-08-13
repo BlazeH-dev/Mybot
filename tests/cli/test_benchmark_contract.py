@@ -31,6 +31,7 @@ from nanobot.cli.benchmark import (
     _manifest,
     _missing_ocb_references,
     _read_rows,
+    _recover_run_experiment_media_timeout,
     _release_dataset_name,
     _release_usable_ocb_rows,
     _remote_item_has_required_scores,
@@ -512,6 +513,57 @@ def test_benchmark_flush_tolerates_async_queue_timeouts() -> None:
 
     with pytest.raises(LangfuseFlushTimeoutError, match="OTEL flush"):
         _flush_benchmark_runtime(SimpleNamespace(flush=raise_otel_timeout))
+
+
+def test_run_experiment_media_timeout_requires_complete_remote_readback() -> None:
+    pending = [SimpleNamespace(id="item-1"), SimpleNamespace(id="item-2")]
+    complete = {
+        "status": "completed",
+        "score_names": ["output_present"],
+        "score_values": {"output_present": True},
+    }
+    media_timeout = LangfuseFlushTimeoutError(
+        "Langfuse media upload queue did not drain within 30 seconds (2 unfinished)"
+    )
+    recovered = {
+        "run_id": "run-1",
+        "items": {"item-1": complete, "item-2": complete},
+    }
+
+    assert _recover_run_experiment_media_timeout(
+        media_timeout,
+        benchmark="ocb",
+        pending_items=pending,
+        recovered=recovered,
+        task_failures=[],
+    )
+
+    for exception in (
+        RuntimeError("network failed"),
+        LangfuseFlushTimeoutError("Langfuse OTEL flush did not finish within 30 seconds"),
+    ):
+        assert not _recover_run_experiment_media_timeout(
+            exception,
+            benchmark="ocb",
+            pending_items=pending,
+            recovered=recovered,
+            task_failures=[],
+        )
+
+    assert not _recover_run_experiment_media_timeout(
+        media_timeout,
+        benchmark="ocb",
+        pending_items=pending,
+        recovered={"run_id": "run-1", "items": {"item-1": complete}},
+        task_failures=[],
+    )
+    assert not _recover_run_experiment_media_timeout(
+        media_timeout,
+        benchmark="ocb",
+        pending_items=pending,
+        recovered=recovered,
+        task_failures=[("case-2", "task failed")],
+    )
 
 
 def test_dataset_payload_never_uploads_local_paths() -> None:

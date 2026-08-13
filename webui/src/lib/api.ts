@@ -265,6 +265,50 @@ export async function fetchEvaluationCases(
   return payload.cases;
 }
 
+export async function fetchSkillEvolutionBadCases(
+  token: string,
+  runId: string,
+  threshold: number,
+  base: string = "",
+): Promise<{ threshold: number; cases: import("@/lib/types").SkillEvolutionBadCase[] }> {
+  const query = new URLSearchParams({ run_id: runId, threshold: String(threshold) });
+  return request(`${base}/api/skill-evolution/bad-cases?${query}`, token, undefined, EVALUATION_READ_TIMEOUT_MS);
+}
+
+export async function generateSkillEvolution(
+  token: string,
+  runId: string,
+  threshold: number,
+  caseKeys: string[],
+  base: string = "",
+): Promise<import("@/lib/types").SkillEvolutionTask> {
+  const query = new URLSearchParams({
+    run_id: runId,
+    threshold: String(threshold),
+    case_keys: JSON.stringify(caseKeys),
+  });
+  return request(`${base}/api/skill-evolution/generate?${query}`, token, undefined, 300_000);
+}
+
+export async function fetchSkillEvolutionTask(
+  token: string,
+  taskId: string,
+  base: string = "",
+): Promise<import("@/lib/types").SkillEvolutionTask> {
+  return request(`${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}`, token);
+}
+
+export async function runSkillEvolutionAction(
+  token: string,
+  taskId: string,
+  action: "revise" | "test" | "apply" | "switch-back",
+  revisionId: string,
+  base: string = "",
+): Promise<import("@/lib/types").SkillEvolutionTask> {
+  const query = new URLSearchParams({ revision_id: revisionId });
+  return request(`${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}/${action}?${query}`, token);
+}
+
 export type DeleteEvaluationRunResult = {
   deleted: boolean;
   scheduled?: boolean;

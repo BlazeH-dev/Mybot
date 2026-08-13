@@ -151,6 +151,7 @@ def _evaluation_model_runs(
 if TYPE_CHECKING:
     from nanobot.bus.queue import MessageBus
     from nanobot.cron.service import CronService
+    from nanobot.evaluations.skill_evolution import SkillEvolutionService
     from nanobot.session.manager import SessionManager
 
 
@@ -221,6 +222,7 @@ class GatewayHTTPHandler:
         evaluation_catalog: EvaluationCatalog,
         evaluations: EvaluationJobService,
         evaluation_results: LangfuseEvaluationReader,
+        skill_evolution: SkillEvolutionService,
         log: Any = logger,
     ) -> None:
         self.config = config
@@ -237,6 +239,7 @@ class GatewayHTTPHandler:
         self.evaluation_catalog = evaluation_catalog
         self.evaluations = evaluations
         self.evaluation_results = evaluation_results
+        self.skill_evolution = skill_evolution
         self._log = log
         self._runtime_surface = runtime_surface
         self._evaluation_delete_tasks: set[asyncio.Task[None]] = set()
@@ -304,6 +307,10 @@ class GatewayHTTPHandler:
         if response is not None:
             return response
 
+        response = await self._dispatch_skill_evolution_routes(request, got)
+        if response is not None:
+            return response
+
         # Misc routes
         response = self._dispatch_misc_routes(connection, request, got)
         if response is not None:
@@ -352,14 +359,29 @@ class GatewayHTTPHandler:
                 )
             return _http_json_response(payload.payload())
         if got == "/api/evaluations/runs":
-            remote = await asyncio.to_thread(self.evaluation_results.list_runs)
+            jobs = self.evaluations.list()
+            known_run_ids = {
+                str(run_id)
+                for job in jobs
+                for run_id in job.get("dataset_run_ids", [])
+                if run_id
+            }
+            known = await asyncio.to_thread(
+                self.evaluation_results.list_runs_by_ids,
+                known_run_ids,
+            )
+            remote = (
+                known
+                if known_run_ids
+                else await asyncio.to_thread(self.evaluation_results.list_runs)
+            )
             remote_by_id = {
                 str(row.get("dataset_run_id")): row
-                for row in remote.get("runs", [])
+                for row in [*(remote.get("runs", [])), *(known.get("runs", []))]
                 if row.get("dataset_run_id")
             }
             local = []
-            for job in self.evaluations.list():
+            for job in jobs:
                 linked_ids = {str(run_id) for run_id in job.get("dataset_run_ids", [])}
                 resume_token = str(job.get("resume_token") or job.get("job_id") or "")
                 stable_suffix = f"-job-{resume_token}" if resume_token else ""
@@ -397,7 +419,14 @@ class GatewayHTTPHandler:
                     enriched["metrics"] = linked_metrics
                 enriched["model_runs"] = _evaluation_model_runs(enriched, linked_runs)
                 local.append(enriched)
-            return _http_json_response({"jobs": local, "langfuse": remote})
+            return _http_json_response({
+                "jobs": local,
+                "langfuse": {
+                    **remote,
+                    "available": bool(remote_by_id) or bool(remote.get("available")),
+                    "runs": list(remote_by_id.values()),
+                },
+            })
         delete_match = re.match(r"^/api/evaluations/runs/([A-Za-z0-9_-]+)/delete$", got)
         if delete_match:
             run_id = delete_match.group(1)
@@ -489,6 +518,74 @@ class GatewayHTTPHandler:
                 return _http_json_response({"cases": row.get("cases", [])})
             return _http_json_response(row)
         return _http_error(404, "evaluation route not found")
+
+    async def _dispatch_skill_evolution_routes(
+        self,
+        request: WsRequest,
+        got: str,
+    ) -> Response | None:
+        if not got.startswith("/api/skill-evolution"):
+            return None
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        query = _parse_query(request.path)
+        try:
+            if got == "/api/skill-evolution/tasks":
+                return _http_json_response({"tasks": self.skill_evolution.list()})
+            if got == "/api/skill-evolution/bad-cases":
+                run_id = _query_first(query, "run_id") or ""
+                threshold = float(_query_first(query, "threshold") or "0.6")
+                return _http_json_response(
+                    await asyncio.to_thread(self.skill_evolution.bad_cases, run_id, threshold)
+                )
+            if got == "/api/skill-evolution/generate":
+                run_id = _query_first(query, "run_id") or ""
+                threshold = float(_query_first(query, "threshold") or "0.6")
+                raw_cases = _query_first(query, "case_keys") or "[]"
+                case_keys = json.loads(raw_cases)
+                if not isinstance(case_keys, list):
+                    raise ValueError("case_keys must be an array")
+                task = await asyncio.to_thread(
+                    self.skill_evolution.generate,
+                    run_id,
+                    [str(value) for value in case_keys],
+                    threshold,
+                )
+                return _http_json_response(task)
+            task_match = re.match(r"^/api/skill-evolution/tasks/([A-Za-z0-9_-]+)$", got)
+            if task_match:
+                task = self.skill_evolution.get(task_match.group(1))
+                return _http_json_response(task) if task else _http_error(404, "task not found")
+            action_match = re.match(
+                r"^/api/skill-evolution/tasks/([A-Za-z0-9_-]+)/(revise|test|apply|switch-back)$",
+                got,
+            )
+            if action_match:
+                task_id, action = action_match.groups()
+                revision_id = _query_first(query, "revision_id") or "r1"
+                if action == "revise":
+                    task = await asyncio.to_thread(self.skill_evolution.revise, task_id)
+                elif action == "test":
+                    task = self.skill_evolution.start_test(task_id, revision_id)
+                elif action == "apply":
+                    task = await asyncio.to_thread(
+                        self.skill_evolution.apply, task_id, revision_id
+                    )
+                else:
+                    task = await asyncio.to_thread(self.skill_evolution.switch_back, task_id)
+                if action in {"apply", "switch-back"}:
+                    from nanobot.agent.skills import request_skills_reload
+
+                    task["runtime_refresh"] = await request_skills_reload(self.bus)
+                return _http_json_response(task)
+        except KeyError:
+            return _http_error(404, "Skill evolution resource not found")
+        except (ValueError, json.JSONDecodeError) as exc:
+            return _http_error(400, str(exc))
+        except Exception as exc:
+            self._log.exception("Skill evolution route failed: {}", got)
+            return _http_error(500, str(exc)[:300])
+        return _http_error(404, "Skill evolution route not found")
 
     async def _delete_evaluation_history(
         self,

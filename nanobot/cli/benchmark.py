@@ -695,7 +695,12 @@ def _benchmark_skill_guidance(skill: str, workspace: Path) -> str:
     selected builtin Skill is loaded from the source checkout, so a model must
     not infer that ``scripts/...`` exists relative to the isolated workspace.
     """
-    skill_root = (_ROOT / "nanobot" / "skills" / skill).resolve()
+    workspace_skill_root = workspace / "skills" / skill
+    skill_root = (
+        workspace_skill_root.resolve()
+        if (workspace_skill_root / "SKILL.md").is_file()
+        else (_ROOT / "nanobot" / "skills" / skill).resolve()
+    )
     scripts_dir_name = "Scripts" if os.name == "nt" else "bin"
     lines = [
         "Benchmark runtime paths are authoritative for this isolated Case:",
@@ -704,7 +709,7 @@ def _benchmark_skill_guidance(skill: str, workspace: Path) -> str:
         "- Do not search /Users, $HOME, /, or parent directories for these paths.",
         "- Do not use recursive find commands to rediscover a path listed here.",
     ]
-    if skill == "officecli":
+    if skill in {"officecli", "officecli-evolved"}:
         launcher = (Path(sys.prefix) / scripts_dir_name / "officecli").resolve()
         lines.extend([
             f"- OfficeCLI launcher: {launcher}",
@@ -722,6 +727,7 @@ def _stage_case_workspace(
     run_root: Path,
     skill: str,
     model_preset: str,
+    skill_override_dir: Path | None = None,
 ) -> Path:
     case_id = str(source["metadata"]["case_id"])
     workspace = run_root / benchmark / skill / _safe_component(model_preset) / _safe_component(case_id)
@@ -740,6 +746,10 @@ def _stage_case_workspace(
             raise BenchmarkError(f"benchmark material is unavailable: {path}")
         destination.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, destination / path.name)
+    if skill_override_dir is not None:
+        skill_destination = workspace / "skills" / skill
+        skill_destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(skill_override_dir, skill_destination)
     return workspace
 
 
@@ -1199,6 +1209,7 @@ async def _run_agent_item(
     model_preset: str,
     run_root: Path,
     force_rerun: bool = False,
+    skill_override_dir: Path | None = None,
 ) -> dict[str, Any]:
     from nanobot.nanobot import Nanobot
 
@@ -1241,6 +1252,7 @@ async def _run_agent_item(
             run_root=run_root,
             skill=skill,
             model_preset=model_preset,
+            skill_override_dir=skill_override_dir,
         )
         guided_prompt = (
             _benchmark_skill_guidance(skill, workspace)
@@ -1470,11 +1482,13 @@ def _resume_run_name(
     skill: str,
     resume_token: str | None,
     model_preset: str | None = None,
+    suffix: str | None = None,
 ) -> str | None:
     if resume_token is None:
         return None
     model_suffix = f"-{_safe_component(model_preset)}" if model_preset else ""
-    return f"mybot-{profile}-{benchmark}-{skill}{model_suffix}-job-{resume_token}"
+    extra_suffix = f"-{_safe_component(suffix)}" if suffix else ""
+    return f"mybot-{profile}-{benchmark}-{skill}{model_suffix}-job-{resume_token}{extra_suffix}"
 
 
 def _remote_variant_state(
@@ -1629,6 +1643,37 @@ def _flush_benchmark_runtime(runtime: LangfuseRuntime) -> None:
             )
 
 
+def _recover_run_experiment_media_timeout(
+    exc: BaseException,
+    *,
+    benchmark: str,
+    pending_items: list[Any],
+    recovered: dict[str, Any],
+    task_failures: list[tuple[str, str]],
+) -> bool:
+    """Accept the SDK's final media flush timeout only after remote completeness readback."""
+    if not isinstance(exc, LangfuseFlushTimeoutError):
+        return False
+    if "media upload queue" not in str(exc).lower() or task_failures:
+        return False
+    expected_item_ids = {
+        str(getattr(item, "id", ""))
+        for item in pending_items
+        if str(getattr(item, "id", ""))
+    }
+    remote_items = recovered.get("items") or {}
+    return bool(
+        recovered.get("run_id")
+        and expected_item_ids
+        and all(
+            item_id in remote_items
+            and remote_items[item_id].get("status") == "completed"
+            and _remote_item_has_required_scores(benchmark, remote_items[item_id])
+            for item_id in expected_item_ids
+        )
+    )
+
+
 def _enqueue_review_items(
     runtime: LangfuseRuntime,
     *,
@@ -1692,6 +1737,8 @@ def run(
     rerun_skill: str | None = typer.Option(None, "--rerun-skill", hidden=True),
     rerun_model_preset: str | None = typer.Option(None, "--rerun-model-preset", hidden=True),
     rerun_case: str | None = typer.Option(None, "--rerun-case", hidden=True),
+    skill_override_dir: Path | None = typer.Option(None, "--skill-override-dir", hidden=True),
+    run_name_suffix: str | None = typer.Option(None, "--run-name-suffix", hidden=True),
 ) -> None:
     """Run offline CI gates or thinly invoke Langfuse Experiment Runner."""
     try:
@@ -1719,7 +1766,16 @@ def run(
             tuple(manifest["repositories"]),
             "benchmark",
         )
-        selected_skills = _select_values(skills, tuple(manifest["skills"]), "Skill")
+        allowed_skills = tuple(manifest["skills"])
+        if skill_override_dir is not None:
+            skill_override_dir = skill_override_dir.expanduser().resolve()
+            if not (skill_override_dir / "SKILL.md").is_file():
+                raise BenchmarkError("--skill-override-dir must contain SKILL.md")
+            override_name = skill_override_dir.name
+            allowed_skills = tuple(dict.fromkeys((*allowed_skills, override_name)))
+        selected_skills = _select_values(skills, allowed_skills, "Skill")
+        if skill_override_dir is not None and selected_skills != (skill_override_dir.name,):
+            raise BenchmarkError("--skill-override-dir requires selecting exactly its directory name")
         configured_models = manifest["models"]["agent"]
         if isinstance(configured_models, str):
             configured_models = [configured_models]
@@ -1772,6 +1828,8 @@ def run(
                     rerun_skill=rerun_skill,
                     rerun_model_preset=rerun_model_preset,
                     rerun_case=rerun_case,
+                    skill_override_dir=skill_override_dir,
+                    run_name_suffix=run_name_suffix,
                 )
             return
         model_preset = selected_model_presets[0]
@@ -1883,6 +1941,7 @@ def run(
                         skill,
                         resume_token,
                         model_preset,
+                        run_name_suffix,
                     )
                     remote = _remote_variant_state(
                         runtime,
@@ -1980,6 +2039,7 @@ def run(
                                 model_preset=model_preset,
                                 run_root=run_root,
                                 force_rerun=rerun_case is not None,
+                                skill_override_dir=skill_override_dir,
                             )
                         except Exception as exc:
                             task_failures.append((case_id, str(exc)[:500]))
@@ -2022,7 +2082,7 @@ def run(
                                 task_failures=task_failures,
                             )
                             score_ingestion.raise_for_errors()
-                        except Exception:
+                        except Exception as exc:
                             recovered = _remote_variant_state(
                                 runtime,
                                 dataset_name=dataset_name,
@@ -2038,7 +2098,25 @@ def run(
                                     dataset_run_id=recovered["run_id"],
                                     dataset_run_url=recovered.get("run_url"),
                                 )
-                            raise
+                            score_ingestion.raise_for_errors()
+                            if not _recover_run_experiment_media_timeout(
+                                exc,
+                                benchmark=benchmark,
+                                pending_items=pending_items,
+                                recovered=recovered,
+                                task_failures=task_failures,
+                            ):
+                                raise
+                            remote = recovered
+                            remote_items = dict(recovered["items"])
+                            completed_remote_item_ids.update(
+                                str(getattr(item, "id", "")) for item in pending_items
+                            )
+                            console.print(
+                                "[yellow]Langfuse run_experiment media uploads are still "
+                                "draining; remote readback confirms every requested Case and "
+                                "required local score, so execution will continue.[/yellow]"
+                            )
                     dataset_run_id = (
                         result.dataset_run_id if result is not None else remote.get("run_id")
                     )
@@ -2060,6 +2138,7 @@ def run(
                         if state.get("trace_id")
                     ]
                     pending_score_case_ids: set[str] = set()
+                    score_values_by_case: dict[str, dict[str, Any]] = {}
                     if result is not None:
                         for item in result.item_results:
                             if item.trace_id:
@@ -2069,6 +2148,8 @@ def run(
                                     benchmark=benchmark,
                                 )
                                 case_id = case_by_item_id.get(str(item.item.id))
+                                if case_id is not None:
+                                    score_values_by_case[case_id] = score_values
                                 if case_id is not None and not _required_local_scores(benchmark).issubset(
                                     score_values
                                 ):
@@ -2097,6 +2178,7 @@ def run(
                                 score_status=(
                                     "pending" if case_id in pending_score_case_ids else "remote"
                                 ),
+                                scores=score_values_by_case.get(case_id, {}),
                                 trace_url=(
                                     f"{runtime.base_url}/project/{project_id}/traces/{trace_id}"
                                     if project_id and trace_id else None

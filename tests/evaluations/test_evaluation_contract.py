@@ -28,7 +28,9 @@ from nanobot.evaluations.failures import classify_evaluation_failure
 from nanobot.evaluations.jobs import EvaluationJobService, EvaluationJobStore
 from nanobot.evaluations.results import (
     LangfuseEvaluationReader,
+    _aggregate_case_scores,
     _latest_experiment_items,
+    _release_case_ids,
     _score_name,
     _score_value,
     _trace_metrics,
@@ -330,6 +332,48 @@ def test_langfuse_run_projection_is_cached_between_ui_polls() -> None:
     assert second["runs"] == [{"dataset_run_id": "run-1"}]
 
 
+def test_langfuse_known_run_projection_reuses_targeted_cache() -> None:
+    reader = LangfuseEvaluationReader(cache_ttl_seconds=60)
+    calls: list[str] = []
+
+    def fake_get_run(run_id: str) -> dict[str, object]:
+        calls.append(run_id)
+        return {
+            "available": True,
+            "error": None,
+            "run": {"dataset_run_id": run_id, "cases": [{"case_id": "1"}]},
+        }
+
+    reader._get_run_uncached = fake_get_run  # type: ignore[method-assign]
+    reader._refresh_run_cache("run-1")
+
+    first = reader.list_runs_by_ids({"run-1"})
+    first["runs"].clear()
+    second = reader.list_runs_by_ids({"run-1"})
+
+    assert calls == ["run-1"]
+    assert second == {
+        "available": True,
+        "refreshing": False,
+        "runs": [{"dataset_run_id": "run-1", "cases": [{"case_id": "1"}]}],
+    }
+
+
+def test_langfuse_known_runs_refresh_serially() -> None:
+    reader = LangfuseEvaluationReader(cache_ttl_seconds=60)
+    calls: list[str] = []
+
+    def fake_get_run(run_id: str) -> dict[str, object]:
+        calls.append(run_id)
+        return {"available": True, "error": None, "run": {"dataset_run_id": run_id}}
+
+    reader._get_run_uncached = fake_get_run  # type: ignore[method-assign]
+    reader._refresh_run_caches(["run-1", "run-2"])
+
+    assert calls == ["run-1", "run-2"]
+    assert set(reader._run_cache) == {"run-1", "run-2"}
+
+
 def test_langfuse_history_keeps_only_latest_attempt_per_case() -> None:
     first_failed = SimpleNamespace(
         id="attempt-1",
@@ -356,6 +400,30 @@ def test_langfuse_history_keeps_only_latest_attempt_per_case() -> None:
     latest = _latest_experiment_items([retry_completed, another_case, first_failed])
 
     assert latest == [retry_completed, another_case]
+
+
+def test_targeted_run_projection_aggregates_scores_and_release_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "benchmarks"
+    cases = root / "cases"
+    cases.mkdir(parents=True)
+    (cases / "office-release-ocb.jsonl").write_text(
+        '\n'.join([
+            json.dumps({"metadata": {"case_id": "1"}}),
+            json.dumps({"metadata": {"case_id": "2"}}),
+        ]) + '\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("nanobot.evaluations.results._BENCHMARK_CACHE_ROOT", root)
+
+    assert _release_case_ids("office-release", "ocb") == {"1", "2"}
+    assert _aggregate_case_scores([
+        {"scores": {"mybot_score": 0.5}},
+        {"scores": {"mybot_score": 1.0}},
+        {"scores": {}},
+    ]) == {"mybot_score": 0.75}
 
 
 def test_langfuse_trace_metrics_aggregate_generation_usage_and_timing() -> None:

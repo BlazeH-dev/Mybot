@@ -152,6 +152,8 @@ WebUI 设置页提供模型配置列表，可新增、编辑、切换和删除�
 
 ## 与原 nanobot 的区别
 
+- 在原有 AgentLoop / AgentRunner 主链上增加 Plan DAG、Policy/HITL、OS Sandbox、文件 OCC、
+  Artifact/Checkpoint、受控 Subagent、Trace/Eval 和 Skill 自进化等 Runtime 能力。
 
 ## 许可证
 

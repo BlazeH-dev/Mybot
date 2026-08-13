@@ -56,6 +56,7 @@
     },
     "apps": "Apps",
     "evaluations": "Evaluations",
+    "skillEvolution": "Skill evolution",
     "skills": {
       "title": "Skills"
     }
@@ -81,6 +82,30 @@
     "noHistory": "No evaluation runs yet.",
     "confirmTitle": "Confirm evaluation launch",
     "confirmRisk": "I reviewed the token estimate and data upload scope."
+  },
+  "skillEvolution": {
+    "title": "Evaluation-driven Skill evolution",
+    "subtitle": "Extract transferable lessons from low-scoring Cases, review a derived Skill, and rerun only the selected Cases.",
+    "refresh": "Refresh",
+    "baselineRun": "Baseline run",
+    "threshold": "Low-score threshold",
+    "improve": "Improve {{count}} selected Cases",
+    "badCases": "Low-scoring Cases",
+    "selectAll": "Select all",
+    "deselectAll": "Deselect all",
+    "loading": "Loading evaluation results",
+    "model": "Model",
+    "score": "Score",
+    "noBadCases": "No eligible low-scoring Cases at this threshold.",
+    "emptyRevision": "Select low-scoring Cases and generate a candidate to review its file changes and test results here.",
+    "test": "Test selected Cases",
+    "revise": "Improve again",
+    "apply": "Approve and apply",
+    "switchBack": "Switch back",
+    "changes": "Candidate changes",
+    "testResults": "Rerun results",
+    "recommended": "Recommended: no selected Case regressed and at least one improved.",
+    "notRecommended": "The system does not recommend applying this revision; the user may still decide after review."
   },
   "settings": {
     "backToChat": "Back to chat",

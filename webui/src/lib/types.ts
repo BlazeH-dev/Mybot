@@ -1074,6 +1074,68 @@ export interface EvaluationRunsPayload {
   };
 }
 
+export interface SkillEvolutionBadCase extends EvaluationCase {
+  case_key: string;
+  score: number;
+}
+
+export interface SkillEvolutionRevision {
+  revision_id: string;
+  parent_revision_id?: string | null;
+  status: string;
+  summary: string;
+  rationale?: string;
+  changed_paths: string[];
+  candidate_digest: string;
+  diff: string;
+  validation: { valid: boolean; errors: string[] };
+  test_results: Array<{
+    case_key: string;
+    case_id: string;
+    benchmark: string;
+    model_preset: string;
+    baseline_score: number | null;
+    evolved_score: number | null;
+    delta: number | null;
+    status: string;
+    trace_url?: string | null;
+    error?: string | null;
+  }>;
+  recommendation?: {
+    recommended: boolean;
+    no_selected_regressions: boolean;
+    at_least_one_improvement: boolean;
+    disclaimer: string;
+  };
+}
+
+export interface SkillEvolutionTask {
+  task_id: string;
+  title: string;
+  source_run_id: string;
+  source_profile: string;
+  base_skill: string;
+  derived_skill: string;
+  optimizer_model: string;
+  threshold: number;
+  status: string;
+  selected_cases: Array<{
+    case_key: string;
+    case_id: string;
+    benchmark: string;
+    model_preset: string;
+    baseline_score: number | null;
+    trace_url?: string | null;
+  }>;
+  revisions: SkillEvolutionRevision[];
+  active_revision_id: string;
+  applied_revision_id?: string | null;
+  error?: string | null;
+  runtime_refresh?: { ok: boolean; message: string; requires_restart: boolean };
+  created_at: string;
+  updated_at: string;
+}
+
 export type EvaluationSocketEvent =
   | { event: "evaluation_started"; request_id?: string; job: EvaluationJob }
   | { event: "evaluation_cancelled"; request_id?: string; job: EvaluationJob }

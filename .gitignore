@@ -3,6 +3,7 @@
 .worktree/
 .assets
 .docs
+docs/
 .env
 .web
 .orion

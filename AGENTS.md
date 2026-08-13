@@ -1,8 +1,9 @@
 This file provides guidance to AI coding agents working with this repository.
 **本文件只维护长期有效的项目协作说明；项目修改记录请写入 `docs/修改记录.md`。**
 
-涉及某个 Runtime 阶段（P0-P8）的方案或代码变更时，除更新 `docs/修改记录.md` 外，
-还必须同步更新 `docs/runtime-code-notes/` 下对应阶段的代码变更说明；不得让阶段笔记与实际代码、计划状态脱节。
+涉及 Agent Runtime、OfficeCLI Skill、评测或 Skill 自进化的方案/代码变更时，除更新
+`docs/修改记录.md` 外，还必须同步更新 `docs/runtime-code-notes/` 下受影响的专题教学笔记；
+新增独立能力时新增专题并更新该目录的 `README.md`。不得让教学笔记与实际代码、测试状态脱节。
 
 ## 项目概述
 

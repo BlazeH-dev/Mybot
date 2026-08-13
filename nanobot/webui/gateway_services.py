@@ -10,6 +10,7 @@ from loguru import logger as default_logger
 
 from nanobot.evaluations import EvaluationCatalog, EvaluationJobService
 from nanobot.evaluations.results import LangfuseEvaluationReader
+from nanobot.evaluations.skill_evolution import SkillEvolutionService
 from nanobot.runtime.interactions import InteractionManager
 from nanobot.webui.gateway_tokens import GatewayTokenStore
 from nanobot.webui.media_gateway import WebUIMediaGateway
@@ -32,6 +33,7 @@ class GatewayServices:
     interactions: InteractionManager
     evaluations: EvaluationJobService
     evaluation_results: LangfuseEvaluationReader
+    skill_evolution: SkillEvolutionService
 
 
 def build_gateway_services(
@@ -64,6 +66,7 @@ def build_gateway_services(
     evaluation_catalog = EvaluationCatalog()
     evaluations = EvaluationJobService(catalog=evaluation_catalog)
     evaluation_results = LangfuseEvaluationReader()
+    skill_evolution = SkillEvolutionService(evaluations, evaluation_results)
     http = GatewayHTTPHandler(
         config=config,
         session_manager=session_manager,
@@ -81,6 +84,7 @@ def build_gateway_services(
         evaluation_catalog=evaluation_catalog,
         evaluations=evaluations,
         evaluation_results=evaluation_results,
+        skill_evolution=skill_evolution,
         log=logger,
     )
     return GatewayServices(
@@ -94,4 +98,5 @@ def build_gateway_services(
         interactions=interactions,
         evaluations=evaluations,
         evaluation_results=evaluation_results,
+        skill_evolution=skill_evolution,
     )

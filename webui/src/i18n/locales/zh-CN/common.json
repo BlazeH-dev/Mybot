@@ -56,6 +56,7 @@
     },
     "apps": "应用",
     "evaluations": "评测",
+    "skillEvolution": "Skill 自进化",
     "skills": {
       "title": "技能"
     }
@@ -81,6 +82,30 @@
     "noHistory": "还没有评测记录。",
     "confirmTitle": "确认启动评测",
     "confirmRisk": "我已核对 token 估算和数据上传范围。"
+  },
+  "skillEvolution": {
+    "title": "评测驱动的 Skill 自进化",
+    "subtitle": "从低分 Case 提取可迁移经验，生成可审阅的派生 Skill，并只重测所选 Case。",
+    "refresh": "刷新",
+    "baselineRun": "基线评测",
+    "threshold": "低分阈值",
+    "improve": "改进所选 {{count}} 个 Case",
+    "badCases": "低分 Case",
+    "selectAll": "全选",
+    "deselectAll": "取消全选",
+    "loading": "正在加载评测结果",
+    "model": "模型",
+    "score": "分数",
+    "noBadCases": "当前阈值下没有可用的低分 Case。",
+    "emptyRevision": "选择低分 Case 并生成候选后，可在这里审阅文件修改与测试结果。",
+    "test": "测试所选 Case",
+    "revise": "继续改进",
+    "apply": "同意并应用",
+    "switchBack": "切回原 Skill",
+    "changes": "候选修改",
+    "testResults": "重测结果",
+    "recommended": "建议应用：所选 Case 无回退且至少一个提升。",
+    "notRecommended": "系统不建议应用，用户仍可根据审阅结果决定。"
   },
   "settings": {
     "backToChat": "返回聊天",

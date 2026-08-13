@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import Lock, Thread
 from time import monotonic
 from typing import Any
@@ -11,6 +13,8 @@ from typing import Any
 from nanobot.config.loader import load_config, resolve_config_env_vars
 from nanobot.evaluations.catalog import OFFICE_BENCHMARKS
 from nanobot.runtime.langfuse import LangfuseRuntime
+
+_BENCHMARK_CACHE_ROOT = Path.home() / ".cache" / "nanobot" / "benchmarks"
 
 
 def _plain(value: Any) -> Any:
@@ -77,6 +81,43 @@ def _usable_history_scores(
 ) -> dict[str, float | int | bool]:
     """Return scores suitable for the compact history summary."""
     return scores
+
+
+def _release_case_ids(profile: str | None, benchmark: str | None) -> set[str] | None:
+    """Return the prepared release manifest identities when one is available."""
+    if profile != "office-release" or not benchmark:
+        return None
+    path = _BENCHMARK_CACHE_ROOT / "cases" / f"{profile}-{benchmark}.jsonl"
+    try:
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    except (OSError, json.JSONDecodeError):
+        return None
+    case_ids = {
+        str((row.get("metadata") or {}).get("case_id") or (row.get("input") or {}).get("case_id") or "")
+        for row in rows
+    }
+    case_ids.discard("")
+    return case_ids or None
+
+
+def _aggregate_case_scores(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, list[float | int | bool]] = {}
+    for row in rows:
+        for name, value in (row.get("scores") or {}).items():
+            payload.setdefault(str(name), []).append(value)
+    aggregate: dict[str, Any] = {}
+    for name, values in payload.items():
+        numeric = [
+            float(value)
+            for value in values
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        ]
+        aggregate[name] = (
+            sum(numeric) / len(numeric)
+            if numeric
+            else values[-1] if values else None
+        )
+    return aggregate
 
 
 def _trace_scores(runtime: LangfuseRuntime, trace_id: str) -> list[Any]:
@@ -197,8 +238,10 @@ class LangfuseEvaluationReader:
     def __init__(self, *, cache_ttl_seconds: float = 15.0) -> None:
         self._cache_ttl_seconds = cache_ttl_seconds
         self._cache: dict[int, tuple[float, dict[str, Any]]] = {}
+        self._run_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._cache_lock = Lock()
         self._refreshing: set[int] = set()
+        self._run_refreshing: set[str] = set()
         # A refresh can overlap a destructive request. Keep tombstones so a
         # stale in-flight response cannot briefly put a deleted Run back.
         self._deleted_run_ids: set[str] = set()
@@ -256,6 +299,45 @@ class LangfuseEvaluationReader:
                 daemon=True,
             ).start()
         return payload
+
+    def list_runs_by_ids(self, run_ids: set[str]) -> dict[str, Any]:
+        """Read known Dataset Runs without scanning every Mybot dataset."""
+        requested = {str(run_id) for run_id in run_ids if str(run_id)}
+        if not requested:
+            return {"available": True, "refreshing": False, "runs": []}
+        rows: list[dict[str, Any]] = []
+        refreshing = False
+        now = monotonic()
+        to_refresh: list[str] = []
+        with self._cache_lock:
+            for run_id in requested:
+                cached = self._run_cache.get(run_id)
+                if cached is not None:
+                    row = deepcopy(cached[1])
+                    if row.get("available") and isinstance(row.get("run"), dict):
+                        rows.append(row["run"])
+                if cached is None or now - cached[0] >= self._cache_ttl_seconds:
+                    refreshing = True
+                    if run_id not in self._run_refreshing:
+                        self._run_refreshing.add(run_id)
+                        to_refresh.append(run_id)
+        if to_refresh:
+            Thread(
+                target=self._refresh_run_caches,
+                args=(to_refresh,),
+                name="nanobot-langfuse-known-evaluations",
+                daemon=True,
+            ).start()
+        return {
+            "available": bool(rows),
+            "refreshing": refreshing,
+            "runs": rows,
+        }
+
+    def _refresh_run_caches(self, run_ids: list[str]) -> None:
+        """Refresh known Runs serially because the shared Langfuse client is not thread-safe."""
+        for run_id in run_ids:
+            self._refresh_run_cache(run_id)
 
     def delete_runs(self, run_ids: list[str]) -> dict[str, Any]:
         """Delete Mybot Dataset Runs from Langfuse and invalidate the history cache.
@@ -325,6 +407,160 @@ class LangfuseEvaluationReader:
             payload["refreshing"] = False
             self._cache[limit] = (monotonic(), payload)
             self._refreshing.discard(limit)
+
+    def _refresh_run_cache(self, run_id: str) -> None:
+        try:
+            result = self._get_run_uncached(run_id)
+        except Exception as exc:
+            result = {"available": False, "error": str(exc)[:300], "run": None}
+        with self._cache_lock:
+            cached = self._run_cache.get(run_id)
+            if result.get("available") or cached is None:
+                payload = deepcopy(result)
+            else:
+                payload = deepcopy(cached[1])
+                payload["refresh_error"] = result.get("error")
+            self._run_cache[run_id] = (monotonic(), payload)
+            self._run_refreshing.discard(run_id)
+
+    def _get_run_uncached(self, run_id: str) -> dict[str, Any]:
+        config = resolve_config_env_vars(load_config()).observability.langfuse
+        if not config.enabled or not config.resolved_public_key() or not config.resolved_secret_key():
+            return {"available": False, "error": "Langfuse is not configured", "run": None}
+        runtime: LangfuseRuntime | None = None
+        try:
+            runtime = LangfuseRuntime(config)
+            if not runtime.client.auth_check():
+                return {
+                    "available": False,
+                    "error": "Langfuse authentication failed",
+                    "run": None,
+                }
+            project_id = runtime.client._get_project_id()
+            experiments = runtime.client.api.experiments.list(
+                from_start_time=datetime(2020, 1, 1, tzinfo=timezone.utc),
+                id=run_id,
+                fields="metadata",
+                limit=2,
+            ).data
+            if not experiments:
+                return {"available": False, "error": "Dataset Run not found", "run": None}
+            experiment = experiments[0]
+            metadata = dict(getattr(experiment, "metadata", None) or {})
+            items: list[Any] = []
+            cursor: str | None = None
+            while True:
+                page = runtime.client.api.experiments.list_items(
+                    from_start_time=experiment.start_time,
+                    experiment_id=run_id,
+                    fields="core,dataset,itemMetadata,experimentMetadata,scores",
+                    limit=100,
+                    score_limit=50,
+                    cursor=cursor,
+                )
+                items.extend(page.data)
+                cursor = page.meta.cursor
+                if not cursor:
+                    break
+            rows: list[dict[str, Any]] = []
+            completed_items = 0
+            failed_items = 0
+            running_items = 0
+            for item in _latest_experiment_items(items):
+                level = str(getattr(item, "level", "")).upper()
+                ended = getattr(item, "end_time", None) is not None
+                completed_items += int(ended)
+                failed_items += int(level.endswith("ERROR"))
+                running_items += int(not ended)
+                item_scores: dict[str, Any] = {}
+                for score in getattr(item, "scores", None) or []:
+                    value = _score_value(score)
+                    if value is not None:
+                        item_scores[_score_name(score)] = value
+                item_metadata = dict(getattr(item, "experiment_item_metadata", None) or {})
+                experiment_metadata = dict(
+                    getattr(item, "experiment_metadata", None) or metadata
+                )
+                trace_id = str(getattr(item, "trace_id", None) or "")
+                rows.append({
+                    "case_id": str(
+                        item_metadata.get("case_id")
+                        or getattr(item, "experiment_item_id", None)
+                        or getattr(item, "id", "")
+                    ),
+                    "benchmark": experiment_metadata.get("benchmark"),
+                    "skill": experiment_metadata.get("skill"),
+                    "model_preset": experiment_metadata.get("model_preset"),
+                    "status": (
+                        "failed"
+                        if level.endswith("ERROR")
+                        else "completed"
+                        if ended
+                        else "running"
+                    ),
+                    "scores": _usable_history_scores(
+                        str(experiment_metadata.get("benchmark") or "") or None,
+                        item_scores,
+                    ),
+                    "trace_url": (
+                        f"{runtime.base_url}/project/{project_id}/traces/{trace_id}"
+                        if project_id and trace_id
+                        else None
+                    ),
+                })
+            release_case_ids = _release_case_ids(
+                str(metadata.get("profile") or "") or None,
+                str(metadata.get("benchmark") or "") or None,
+            )
+            if release_case_ids is not None:
+                rows = [row for row in rows if row["case_id"] in release_case_ids]
+                completed_items = sum(row["status"] != "running" for row in rows)
+                failed_items = sum(row["status"] == "failed" for row in rows)
+                running_items = sum(row["status"] == "running" for row in rows)
+            aggregate_scores = _aggregate_case_scores(rows)
+            scored_items = sum(bool(row.get("scores")) for row in rows)
+            dataset_id = getattr(experiment, "dataset_id", None)
+            deep_link = (
+                f"{runtime.base_url}/project/{project_id}/datasets/{dataset_id}/runs/{run_id}"
+                if project_id and dataset_id
+                else None
+            )
+            return {
+                "available": True,
+                "error": None,
+                "run": {
+                    "source": "langfuse",
+                    "job_id": None,
+                    "dataset_run_id": run_id,
+                    "name": str(experiment.name),
+                    "status": (
+                        "running"
+                        if running_items
+                        else "failed"
+                        if failed_items
+                        else "completed"
+                        if completed_items
+                        else "pending"
+                    ),
+                    "profile": metadata.get("profile"),
+                    "benchmark": metadata.get("benchmark"),
+                    "skill": metadata.get("skill"),
+                    "model_preset": metadata.get("model_preset"),
+                    "item_count": len(rows),
+                    "completed_items": completed_items,
+                    "failed_items": failed_items,
+                    "aggregate_scores": aggregate_scores,
+                    "scored_items": scored_items,
+                    "pending_score_items": max(0, len(rows) - scored_items),
+                    "langfuse_url": deep_link,
+                    "created_at": _plain(getattr(experiment, "start_time", None)),
+                    "updated_at": _plain(getattr(experiment, "end_time", None)),
+                    "cases": rows,
+                },
+            }
+        finally:
+            if runtime is not None:
+                runtime.shutdown()
 
     def _list_runs_uncached(self, *, limit: int) -> dict[str, Any]:
         config = resolve_config_env_vars(load_config()).observability.langfuse

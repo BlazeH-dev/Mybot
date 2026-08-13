@@ -124,6 +124,7 @@ def _consume_progress(path: Path, offset: int, job: dict[str, Any]) -> int:
                     status=event.get("status", "completed"),
                     score_status=event.get("score_status", "remote"),
                     checkpoint_source=event.get("source", "langfuse"),
+                    scores=event.get("scores") or {},
                     trace_url=event.get("trace_url"),
                     langfuse_url=event.get("dataset_run_url"),
                 )
