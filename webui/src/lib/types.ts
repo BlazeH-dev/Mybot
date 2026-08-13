@@ -1076,7 +1076,79 @@ export interface EvaluationRunsPayload {
 
 export interface SkillEvolutionBadCase extends EvaluationCase {
   case_key: string;
+  model_preset: string;
   score: number;
+}
+
+export type SkillEvolutionFixOwner =
+  | "skill"
+  | "runtime"
+  | "provider"
+  | "model_capability"
+  | "benchmark_or_gold"
+  | "input_asset"
+  | "evaluator"
+  | "mixed"
+  | "inconclusive";
+
+export interface SkillEvolutionFinding {
+  finding_id: string;
+  case_ids: string[];
+  root_cause: string;
+  fix_owner: SkillEvolutionFixOwner;
+  confidence: number;
+  evidence_refs: string[];
+  symptoms: string[];
+  skill_gap: string;
+  change_hypothesis: string;
+  expected_effect: string;
+  risk: string;
+  should_modify_skill: boolean;
+}
+
+export interface SkillEvolutionAnalysis {
+  analysis_id: string;
+  parent_analysis_id?: string | null;
+  evidence_digest: string;
+  digest: string;
+  summary: string;
+  findings: SkillEvolutionFinding[];
+  clusters: Array<{
+    root_cause: string;
+    fix_owner: string;
+    finding_ids: string[];
+    case_ids: string[];
+  }>;
+  usage: Record<string, number>;
+  batch_count: number;
+  case_observations?: Array<{
+    case_id: string;
+    score?: number | null;
+    evidence_id: string;
+    resource_comparison: {
+      peer_count?: number;
+      basis?: string;
+      tokens?: { case: number; high_score_median: number; ratio?: number | null };
+      latency_ms?: { case: number; high_score_median: number; ratio?: number | null };
+    };
+    trace_url?: string | null;
+  }>;
+  created_at: string;
+}
+
+export interface SkillEvolutionActivity {
+  seq: number;
+  timestamp: string;
+  phase: "collecting_evidence" | "analyzing" | "editing" | "validating" | "testing";
+  kind: "stage" | "case" | "model" | "tool" | "file" | "validation" | "usage" | "error";
+  status: "started" | "running" | "completed" | "failed" | "cancelled";
+  label: string;
+  detail?: string;
+  caseId?: string;
+  toolName?: string;
+  filePath?: string;
+  usage?: Record<string, number>;
+  traceUrl?: string;
 }
 
 export interface SkillEvolutionRevision {
@@ -1089,6 +1161,15 @@ export interface SkillEvolutionRevision {
   candidate_digest: string;
   diff: string;
   validation: { valid: boolean; errors: string[] };
+  security_smoke?: { valid: boolean; errors: string[] };
+  analysis_id?: string;
+  analysis_digest?: string;
+  finding_ids?: string[];
+  agent?: {
+    tools_used: string[];
+    usage: Record<string, number>;
+    stop_reason: string;
+  };
   test_results: Array<{
     case_key: string;
     case_id: string;
@@ -1098,27 +1179,35 @@ export interface SkillEvolutionRevision {
     evolved_score: number | null;
     delta: number | null;
     status: string;
+    scope?: "selected" | "regression";
     trace_url?: string | null;
     error?: string | null;
+    baseline_usage?: Record<string, number> | null;
+    evolved_usage?: Record<string, number> | null;
   }>;
   recommendation?: {
     recommended: boolean;
     no_selected_regressions: boolean;
     at_least_one_improvement: boolean;
+    no_fixed_regressions?: boolean;
+    mean_token_change?: number | null;
     disclaimer: string;
   };
 }
 
 export interface SkillEvolutionTask {
+  schema_version: number;
   task_id: string;
   title: string;
   source_run_id: string;
   source_profile: string;
+  source_model_preset?: string;
   base_skill: string;
   derived_skill: string;
   optimizer_model: string;
   threshold: number;
   status: string;
+  phase?: string;
   selected_cases: Array<{
     case_key: string;
     case_id: string;
@@ -1127,8 +1216,12 @@ export interface SkillEvolutionTask {
     baseline_score: number | null;
     trace_url?: string | null;
   }>;
+  analyses: SkillEvolutionAnalysis[];
+  active_analysis_id?: string | null;
+  evidence_digest?: string | null;
   revisions: SkillEvolutionRevision[];
-  active_revision_id: string;
+  active_revision_id?: string | null;
+  activity_cursor: number;
   applied_revision_id?: string | null;
   error?: string | null;
   runtime_refresh?: { ok: boolean; message: string; requires_restart: boolean };

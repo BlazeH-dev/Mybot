@@ -106,6 +106,7 @@ temp/
 *.tmp
 exp/
 .playwright-mcp/
+poirot/
 
 # Local nanobot workspace state
 HEARTBEAT.md

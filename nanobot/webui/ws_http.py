@@ -538,33 +538,67 @@ class GatewayHTTPHandler:
                 return _http_json_response(
                     await asyncio.to_thread(self.skill_evolution.bad_cases, run_id, threshold)
                 )
-            if got == "/api/skill-evolution/generate":
+            if got in {"/api/skill-evolution/analyze", "/api/skill-evolution/generate"}:
+                if request.method != "POST":
+                    return _http_error(405, "POST required")
                 run_id = _query_first(query, "run_id") or ""
                 threshold = float(_query_first(query, "threshold") or "0.6")
-                raw_cases = _query_first(query, "case_keys") or "[]"
-                case_keys = json.loads(raw_cases)
-                if not isinstance(case_keys, list):
-                    raise ValueError("case_keys must be an array")
-                task = await asyncio.to_thread(
-                    self.skill_evolution.generate,
+                source_model_preset = _query_first(query, "source_model_preset") or ""
+                optimizer_preset = _query_first(query, "optimizer_preset") or ""
+                raw_cases = _query_first(query, "case_ids") or "[]"
+                case_ids = json.loads(raw_cases)
+                if not isinstance(case_ids, list):
+                    raise ValueError("case_ids must be an array")
+                task = self.skill_evolution.start_analysis(
                     run_id,
-                    [str(value) for value in case_keys],
+                    [str(value) for value in case_ids],
+                    source_model_preset,
+                    optimizer_preset,
                     threshold,
                 )
                 return _http_json_response(task)
+            activity_match = re.match(
+                r"^/api/skill-evolution/tasks/([A-Za-z0-9_-]+)/activities$",
+                got,
+            )
+            if activity_match:
+                after = int(_query_first(query, "after") or "0")
+                return _http_json_response(
+                    self.skill_evolution.activities(activity_match.group(1), after)
+                )
             task_match = re.match(r"^/api/skill-evolution/tasks/([A-Za-z0-9_-]+)$", got)
             if task_match:
                 task = self.skill_evolution.get(task_match.group(1))
                 return _http_json_response(task) if task else _http_error(404, "task not found")
             action_match = re.match(
-                r"^/api/skill-evolution/tasks/([A-Za-z0-9_-]+)/(revise|test|apply|switch-back)$",
+                r"^/api/skill-evolution/tasks/([A-Za-z0-9_-]+)/(evolve|reanalyze|revise|cancel|test|apply|switch-back)$",
                 got,
             )
             if action_match:
+                if request.method != "POST":
+                    return _http_error(405, "POST required")
                 task_id, action = action_match.groups()
                 revision_id = _query_first(query, "revision_id") or "r1"
-                if action == "revise":
-                    task = await asyncio.to_thread(self.skill_evolution.revise, task_id)
+                raw_findings = _query_first(query, "finding_ids") or "[]"
+                finding_ids = json.loads(raw_findings)
+                if not isinstance(finding_ids, list):
+                    raise ValueError("finding_ids must be an array")
+                if action == "evolve":
+                    task = self.skill_evolution.start_evolution(
+                        task_id,
+                        [str(value) for value in finding_ids],
+                        analysis_id=_query_first(query, "analysis_id"),
+                        analysis_digest=_query_first(query, "analysis_digest"),
+                    )
+                elif action == "reanalyze":
+                    task = self.skill_evolution.reanalyze(task_id)
+                elif action == "revise":
+                    task = self.skill_evolution.revise(
+                        task_id,
+                        [str(value) for value in finding_ids] or None,
+                    )
+                elif action == "cancel":
+                    task = self.skill_evolution.cancel(task_id)
                 elif action == "test":
                     task = self.skill_evolution.start_test(task_id, revision_id)
                 elif action == "apply":

@@ -275,19 +275,27 @@ export async function fetchSkillEvolutionBadCases(
   return request(`${base}/api/skill-evolution/bad-cases?${query}`, token, undefined, EVALUATION_READ_TIMEOUT_MS);
 }
 
-export async function generateSkillEvolution(
+export async function analyzeSkillEvolution(
   token: string,
   runId: string,
   threshold: number,
-  caseKeys: string[],
+  sourceModelPreset: string,
+  optimizerPreset: string,
+  caseIds: string[],
   base: string = "",
 ): Promise<import("@/lib/types").SkillEvolutionTask> {
   const query = new URLSearchParams({
     run_id: runId,
     threshold: String(threshold),
-    case_keys: JSON.stringify(caseKeys),
+    source_model_preset: sourceModelPreset,
+    optimizer_preset: optimizerPreset,
+    case_ids: JSON.stringify(caseIds),
   });
-  return request(`${base}/api/skill-evolution/generate?${query}`, token, undefined, 300_000);
+  return request(
+    `${base}/api/skill-evolution/analyze?${query}`,
+    token,
+    { method: "POST" },
+  );
 }
 
 export async function fetchSkillEvolutionTask(
@@ -298,15 +306,59 @@ export async function fetchSkillEvolutionTask(
   return request(`${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}`, token);
 }
 
+export async function fetchSkillEvolutionActivities(
+  token: string,
+  taskId: string,
+  after: number,
+  base: string = "",
+): Promise<{
+  activities: import("@/lib/types").SkillEvolutionActivity[];
+  cursor: number;
+}> {
+  const query = new URLSearchParams({ after: String(after) });
+  return request(
+    `${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}/activities?${query}`,
+    token,
+  );
+}
+
+export async function evolveSkillEvolution(
+  token: string,
+  taskId: string,
+  analysisId: string,
+  analysisDigest: string,
+  findingIds: string[],
+  base: string = "",
+): Promise<import("@/lib/types").SkillEvolutionTask> {
+  const query = new URLSearchParams({
+    analysis_id: analysisId,
+    analysis_digest: analysisDigest,
+    finding_ids: JSON.stringify(findingIds),
+  });
+  return request(
+    `${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}/evolve?${query}`,
+    token,
+    { method: "POST" },
+  );
+}
+
 export async function runSkillEvolutionAction(
   token: string,
   taskId: string,
-  action: "revise" | "test" | "apply" | "switch-back",
-  revisionId: string,
+  action: "reanalyze" | "revise" | "cancel" | "test" | "apply" | "switch-back",
+  revisionId: string = "r1",
+  findingIds: string[] = [],
   base: string = "",
 ): Promise<import("@/lib/types").SkillEvolutionTask> {
-  const query = new URLSearchParams({ revision_id: revisionId });
-  return request(`${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}/${action}?${query}`, token);
+  const query = new URLSearchParams({
+    revision_id: revisionId,
+    finding_ids: JSON.stringify(findingIds),
+  });
+  return request(
+    `${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}/${action}?${query}`,
+    token,
+    { method: "POST" },
+  );
 }
 
 export type DeleteEvaluationRunResult = {
