@@ -883,6 +883,8 @@
         "projectAria": "選擇專案",
         "projectPlaceholder": "選擇專案",
         "default": "預設權限",
+        "defaultDescription": "限制工作區外的檔案寫入",
+        "fullDescription": "不使用 Seatbelt 檔案寫入限制",
         "full": "完全存取權限"
       }
     },

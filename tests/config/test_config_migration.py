@@ -2,6 +2,8 @@ import json
 import socket
 from unittest.mock import patch
 
+import pytest
+
 from nanobot.config.loader import load_config, save_config
 from nanobot.security.network import validate_url_target
 
@@ -13,6 +15,33 @@ def _fake_resolve(host: str, results: list[str]):
             return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (ip, 0)) for ip in results]
         raise socket.gaierror(f"cannot resolve {hostname}")
     return _resolver
+
+
+@pytest.mark.parametrize("legacy_sandbox", ["", "auto", "seatbelt"])
+def test_legacy_seatbelt_backend_selection_is_removed(tmp_path, legacy_sandbox: str) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"tools": {"exec": {"sandbox": legacy_sandbox}}}),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert not hasattr(config.tools.exec, "sandbox")
+    assert config.tools.exec.sandbox_migration_error == ""
+
+
+def test_legacy_bwrap_selection_disables_restricted_execution(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"tools": {"restrictToWorkspace": True, "exec": {"sandbox": "bwrap"}}}),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert "unsupported" in config.tools.exec.sandbox_migration_error
+    assert "macOS Seatbelt" in config.tools.exec.sandbox_migration_error
 
 
 def test_load_config_keeps_max_tokens_and_ignores_legacy_memory_window(tmp_path) -> None:

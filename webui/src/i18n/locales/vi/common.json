@@ -883,6 +883,8 @@
         "projectAria": "Chọn dự án",
         "projectPlaceholder": "Chọn dự án",
         "default": "Default Permission",
+        "defaultDescription": "Giới hạn ghi tệp ngoài workspace",
+        "fullDescription": "Chạy không có giới hạn ghi Seatbelt",
         "full": "Full Access"
       }
     },

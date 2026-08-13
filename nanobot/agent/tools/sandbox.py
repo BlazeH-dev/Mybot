@@ -10,17 +10,13 @@ import os
 import shlex
 from pathlib import Path
 
-from nanobot.config.paths import get_media_dir
 from nanobot.security.sandbox import SandboxLauncher, SandboxManager, SandboxMode
 
 
 def wrap_command(sandbox: str, command: str, workspace: str, cwd: str) -> str:
     """Return a quoted compatibility string built by ``SandboxLauncher``."""
-    systems = {"bwrap": "linux", "seatbelt": "darwin"}
-    if sandbox not in {"auto", *systems}:
-        raise ValueError(
-            f"Unknown sandbox backend {sandbox!r}. Available: ['auto', 'bwrap', 'seatbelt']"
-        )
+    if sandbox not in {"auto", "seatbelt"}:
+        raise ValueError(f"Unknown sandbox backend {sandbox!r}. Available: ['auto', 'seatbelt']")
 
     ws = Path(workspace).expanduser().resolve(strict=False)
     launch_cwd = Path(cwd).expanduser().resolve(strict=False)
@@ -29,7 +25,7 @@ def wrap_command(sandbox: str, command: str, workspace: str, cwd: str) -> str:
     except ValueError:
         launch_cwd = ws
 
-    manager = SandboxManager(system=systems.get(sandbox))
+    manager = SandboxManager()
     launch = SandboxLauncher(manager).prepare_shell(
         command=command,
         workspace=ws,
@@ -40,6 +36,5 @@ def wrap_command(sandbox: str, command: str, workspace: str, cwd: str) -> str:
             "PATH": os.environ.get("PATH", os.defpath),
         },
         mode=SandboxMode.WORKSPACE_WRITE,
-        readable_roots=(get_media_dir().resolve(),),
     )
     return shlex.join(launch.argv)

@@ -107,6 +107,7 @@ temp/
 exp/
 .playwright-mcp/
 poirot/
+deepseek-harness/
 
 # Local nanobot workspace state
 HEARTBEAT.md

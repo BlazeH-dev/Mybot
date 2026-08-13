@@ -1217,7 +1217,6 @@ class AgentRunner:
             return prep_error + hint, event, (
                 RuntimeError(prep_error) if spec.fail_on_tool_error else None
             )
-        execution_context: dict[str, Any] = {}
         if spec.policy_gate is not None and tool is not None:
             try:
                 outcome = await spec.policy_gate(
@@ -1237,7 +1236,6 @@ class AgentRunner:
                 }
                 return payload, event, RuntimeError(payload) if spec.fail_on_tool_error else None
             decision = getattr(outcome, "decision", outcome)
-            execution_context = dict(getattr(outcome, "execution_context", None) or {})
             action = getattr(decision, "action", None)
             reason = str(getattr(decision, "reason", "runtime policy rejected the call"))
             if action == "deny":
@@ -1290,28 +1288,10 @@ class AgentRunner:
                 ) for file_edit_tracker in file_edit_trackers],
             )
         try:
-            network_token = None
-            raw_grant = execution_context.get("network_grant")
-            if isinstance(raw_grant, dict):
-                from nanobot.security.sandbox.network import NetworkGrant, bind_network_grant
-
-                network_token = bind_network_grant(NetworkGrant(
-                    domains=tuple(str(item) for item in raw_grant.get("domains", [])),
-                    ports=tuple(int(item) for item in raw_grant.get("ports", [])),
-                    command_hash=str(raw_grant.get("command_hash") or ""),
-                    expires_at=str(raw_grant.get("expires_at") or ""),
-                    addresses=tuple(str(item) for item in raw_grant.get("addresses", [])),
-                ))
-            try:
-                if tool is not None:
-                    result = await tool.execute(**params)
-                else:
-                    result = await spec.tools.execute(tool_call.name, params)
-            finally:
-                if network_token is not None:
-                    from nanobot.security.sandbox.network import reset_network_grant
-
-                    reset_network_grant(network_token)
+            if tool is not None:
+                result = await tool.execute(**params)
+            else:
+                result = await spec.tools.execute(tool_call.name, params)
             if isinstance(result, ToolSuspensionResult):
                 event = {
                     "name": tool_call.name,

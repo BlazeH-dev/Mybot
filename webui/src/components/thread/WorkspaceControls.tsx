@@ -366,12 +366,14 @@ export function WorkspaceAccessMenu({
         <AccessMenuItem
           icon={<Hand className="h-4 w-4" />}
           label={t("thread.composer.workspace.default")}
+          description={t("thread.composer.workspace.defaultDescription")}
           selected={mode === "restricted"}
           onSelect={() => setMode("restricted")}
         />
         <AccessMenuItem
           icon={<AlertTriangle className="h-4 w-4" />}
           label={t("thread.composer.workspace.full")}
+          description={t("thread.composer.workspace.fullDescription")}
           selected={mode === "full"}
           disabled={!canUseFullAccess}
           warning
@@ -385,6 +387,7 @@ export function WorkspaceAccessMenu({
 function AccessMenuItem({
   icon,
   label,
+  description,
   selected,
   disabled,
   warning,
@@ -392,6 +395,7 @@ function AccessMenuItem({
 }: {
   icon: ReactNode;
   label: string;
+  description: string;
   selected: boolean;
   disabled?: boolean;
   warning?: boolean;
@@ -402,14 +406,17 @@ function AccessMenuItem({
       disabled={disabled}
       onSelect={onSelect}
       className={cn(
-        "flex h-10 items-center gap-3 rounded-xl px-3 text-[13.5px] font-semibold",
+        "flex min-h-12 items-center gap-3 rounded-xl px-3 py-2",
         warning && "text-orange-600 focus:text-orange-600 dark:text-orange-300 dark:focus:text-orange-300",
       )}
     >
       <span className="grid h-5 w-5 shrink-0 place-items-center text-current" aria-hidden>
         {icon}
       </span>
-      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[13.5px] font-semibold">{label}</span>
+        <span className="block text-[11px] font-normal text-muted-foreground">{description}</span>
+      </span>
       {selected ? <Check className="h-4 w-4 shrink-0" aria-hidden /> : null}
     </DropdownMenuItem>
   );

@@ -161,16 +161,6 @@ def test_fs_tool_create_respects_restrict_to_workspace():
     assert tool._allowed_dir == Path("/tmp/test")
 
 
-def test_fs_tool_create_respects_sandbox():
-    from nanobot.agent.tools.filesystem import ReadFileTool
-    mock_config = MagicMock()
-    mock_config.restrict_to_workspace = False
-    mock_config.exec.sandbox = "bwrap"
-    ctx = ToolContext(config=mock_config, workspace="/tmp/test")
-    tool = ReadFileTool.create(ctx)
-    assert tool._allowed_dir == Path("/tmp/test")
-
-
 # --- Task 5: MessageTool, SpawnTool, CronTool ---
 
 

@@ -842,7 +842,6 @@ def settings_payload(
             "ssrf_whitelist_count": len(config.tools.ssrf_whitelist),
             "mcp_server_count": len(config.tools.mcp_servers),
             "exec_enabled": exec_config.enable,
-            "exec_sandbox": exec_config.sandbox or None,
             "exec_path_append_set": bool(exec_config.path_append),
         },
         "requires_restart": requires_restart,

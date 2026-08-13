@@ -231,7 +231,7 @@ class TestPathAppendPlatform:
 class TestSandboxPlatform:
 
     @pytest.mark.asyncio
-    async def test_bwrap_fails_closed_on_windows(self):
+    async def test_restricted_mode_fails_closed_on_windows(self):
         """Native Windows must not silently continue without an OS sandbox."""
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"ok", b"")
@@ -242,20 +242,23 @@ class TestSandboxPlatform:
             patch.object(ExecTool, "_spawn", return_value=mock_proc) as mock_spawn,
             patch.object(ExecTool, "_guard_command", return_value=None),
         ):
-            tool = ExecTool(sandbox="bwrap")
+            tool = ExecTool(restrict_to_workspace=True)
             result = await tool.execute(command="dir")
 
         assert "sandbox_unavailable" in result
         mock_spawn.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_bwrap_applied_on_unix(self):
-        """On Unix, sandbox wrapping should still happen normally."""
+    async def test_seatbelt_applied_on_restricted_unix(self):
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"sandboxed", b"")
         mock_proc.returncode = 0
 
-        launch = _launch(("bwrap", "--", "sh", "-c", "ls"), cwd="/workspace", provider="bwrap")
+        launch = _launch(
+            ("sandbox-exec", "-p", "profile", "sh", "-c", "ls"),
+            cwd="/workspace",
+            provider="seatbelt",
+        )
         with (
             patch("nanobot.agent.tools.shell._IS_WINDOWS", False),
             patch(
@@ -265,12 +268,12 @@ class TestSandboxPlatform:
             patch.object(ExecTool, "_spawn", return_value=mock_proc) as mock_spawn,
             patch.object(ExecTool, "_guard_command", return_value=None),
         ):
-            tool = ExecTool(sandbox="bwrap", working_dir="/workspace")
+            tool = ExecTool(restrict_to_workspace=True, working_dir="/workspace")
             await tool.execute(command="ls")
 
         mock_prepare.assert_called_once()
         spawned_launch = mock_spawn.call_args.args[0]
-        assert spawned_launch.argv[0] == "bwrap"
+        assert spawned_launch.argv[0] == "sandbox-exec"
 
     def test_restricted_launch_ignores_login_and_uses_workspace_home(self, tmp_path):
         launch = _launch(
@@ -318,7 +321,33 @@ class TestSandboxPlatform:
                 restrict_to_workspace=True,
             ).execute(command="true")
 
-        assert result == "Error: sandbox_start_failed: sandbox-exec"
+        assert result == "Error: sandbox_unavailable: sandbox-exec"
+
+    @pytest.mark.asyncio
+    async def test_runner_failure_and_write_denial_are_distinct(self, tmp_path):
+        launch = _launch(
+            ("sandbox-exec", "-p", "profile", "--", "/bin/sh", "-c", "true"),
+            cwd=str(tmp_path),
+            provider="seatbelt",
+        )
+        runner = AsyncMock()
+        runner.communicate.return_value = (b"", b"sandbox-exec: sandbox_init failed")
+        runner.returncode = 1
+        denied = AsyncMock()
+        denied.communicate.return_value = (b"", b"write: Operation not permitted")
+        denied.returncode = 1
+        tool = ExecTool(working_dir=str(tmp_path), restrict_to_workspace=True)
+
+        with (
+            patch("nanobot.agent.tools.shell.SandboxLauncher.prepare_shell", return_value=launch),
+            patch.object(tool, "_spawn", side_effect=[runner, denied]),
+        ):
+            runner_result = await tool.execute(command="true")
+            denied_result = await tool.execute(command="true")
+
+        assert runner_result == "Error: sandbox_unavailable: sandbox-exec runner failed"
+        assert "Sandbox: denied" in denied_result
+        assert "Exit code: 1" in denied_result
 
 
 # ---------------------------------------------------------------------------

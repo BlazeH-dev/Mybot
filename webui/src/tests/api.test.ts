@@ -38,6 +38,26 @@ import {
 } from "@/lib/api";
 
 describe("webui API helpers", () => {
+  function expectJsonCall(
+    url: string,
+    method: string,
+    body?: Record<string, unknown>,
+    callIndex: number = -1,
+  ) {
+    const call = vi.mocked(fetch).mock.calls.at(callIndex);
+    expect(call?.[0]).toBe(url);
+    expect(call?.[1]).toEqual(expect.objectContaining({
+      method,
+      headers: {
+        Authorization: "Bearer tok",
+        "Content-Type": "application/json",
+      },
+    }));
+    if (body !== undefined) {
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject(body);
+    }
+  }
+
   beforeEach(() => {
     vi.stubGlobal(
       "fetch",
@@ -125,25 +145,16 @@ describe("webui API helpers", () => {
 
   it("updates a Skill's enabled state", async () => {
     await updateSkillEnabled("tok", "officecli", false);
-
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/skills/update?name=officecli&enabled=false",
-      expect.objectContaining({ headers: { Authorization: "Bearer tok" } }),
-    );
+    expectJsonCall("/api/settings/skills/officecli", "PUT", { enabled: false });
   });
 
   it("percent-encodes websocket keys when deleting a session", async () => {
     await deleteSession("tok", "websocket:chat-1");
 
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/sessions/websocket%3Achat-1/delete",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/sessions/websocket%3Achat-1", "DELETE");
   });
 
-  it("serializes settings updates as a narrow query string", async () => {
+  it("serializes settings updates as JSON", async () => {
     await updateSettings("tok", {
       modelPreset: "default",
       model: "openrouter/test",
@@ -155,12 +166,16 @@ describe("webui API helpers", () => {
       toolHintMaxLength: 120,
     });
 
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/update?model_preset=default&model=openrouter%2Ftest&provider=openrouter&context_window_tokens=262144&timezone=Asia%2FShanghai&bot_name=nanobot&bot_icon=nb&tool_hint_max_length=120",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/settings", "PATCH", {
+      model_preset: "default",
+      model: "openrouter/test",
+      provider: "openrouter",
+      context_window_tokens: 262144,
+      timezone: "Asia/Shanghai",
+      bot_name: "nanobot",
+      bot_icon: "nb",
+      tool_hint_max_length: 120,
+    });
   });
 
   it("fetches token usage through the lightweight settings endpoint", async () => {
@@ -182,23 +197,18 @@ describe("webui API helpers", () => {
       contextWindowTokens: 262144,
     });
 
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/model-configurations/create?label=Fast+writing&provider=openai&model=openai%2Fgpt-4.1-mini&context_window_tokens=262144",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/settings/model-configurations", "POST", {
+      label: "Fast writing",
+      provider: "openai",
+      model: "openai/gpt-4.1-mini",
+      context_window_tokens: 262144,
+    });
   });
 
   it("serializes model configuration deletion", async () => {
     await deleteModelConfiguration("tok", "fast-writing");
 
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/model-configurations/delete?name=fast-writing",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/settings/model-configurations/fast-writing", "DELETE");
   });
 
   it("serializes model configuration updates", async () => {
@@ -210,12 +220,12 @@ describe("webui API helpers", () => {
       contextWindowTokens: 65536,
     });
 
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/model-configurations/update?name=codex&label=Codex&provider=openai_codex&model=openai-codex%2Fgpt-5.5&context_window_tokens=65536",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/settings/model-configurations/codex", "PATCH", {
+      label: "Codex",
+      provider: "openai_codex",
+      model: "openai-codex/gpt-5.5",
+      context_window_tokens: 65536,
+    });
   });
 
   it("reports HTML API fallbacks as gateway mismatch errors", async () => {
@@ -256,6 +266,21 @@ describe("webui API helpers", () => {
     });
   });
 
+  it("extracts FastAPI detail errors", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        text: async () => JSON.stringify({ detail: "invalid optimizer preset" }),
+      }),
+    );
+    await expect(runCliAppAction("tok", "test", "missing")).rejects.toMatchObject({
+      status: 422,
+      message: "invalid optimizer preset",
+    });
+  });
+
   it("times out when an API request never responds", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
@@ -275,12 +300,12 @@ describe("webui API helpers", () => {
       apiBase: "https://openrouter.ai/api/v1",
     });
 
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/provider/update?provider=openrouter&api_key=sk-or-test&api_base=https%3A%2F%2Fopenrouter.ai%2Fapi%2Fv1",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/settings/provider", "PATCH", {
+      provider: "openrouter",
+      api_key: "sk-or-test",
+      api_base: "https://openrouter.ai/api/v1",
+    });
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).not.toContain("sk-or-test");
   });
 
   it("fetches provider model lists", async () => {
@@ -296,20 +321,14 @@ describe("webui API helpers", () => {
 
   it("serializes provider OAuth login and logout actions", async () => {
     await loginProviderOAuth("tok", "openai_codex");
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/provider/oauth-login?provider=openai_codex",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/settings/provider/oauth/login", "POST", {
+      provider: "openai_codex",
+    });
 
     await logoutProviderOAuth("tok", "openai_codex");
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/provider/oauth-logout?provider=openai_codex",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/settings/provider/oauth/logout", "POST", {
+      provider: "openai_codex",
+    });
   });
 
   it("serializes web search settings updates", async () => {
@@ -321,12 +340,13 @@ describe("webui API helpers", () => {
       useJinaReader: false,
     });
 
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/web-search/update?provider=searxng&base_url=https%3A%2F%2Fsearch.example.com&max_results=8&timeout=45&use_jina_reader=false",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/settings/web-search", "PATCH", {
+      provider: "searxng",
+      base_url: "https://search.example.com",
+      max_results: 8,
+      timeout: 45,
+      use_jina_reader: false,
+    });
   });
 
   it("serializes network safety settings updates", async () => {
@@ -335,23 +355,18 @@ describe("webui API helpers", () => {
       webuiDefaultAccessMode: "full",
     });
 
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/network-safety/update?webui_allow_local_service_access=false&webui_default_access_mode=full",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/settings/network-safety", "PATCH", {
+      webui_allow_local_service_access: false,
+      webui_default_access_mode: "full",
+    });
   });
 
   it("serializes observability settings updates", async () => {
     await updateObservabilitySettings("tok", { langfuseEnabled: false });
 
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/observability/update?langfuse_enabled=false",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/settings/observability", "PATCH", {
+      langfuse_enabled: false,
+    });
   });
 
   it("serializes image generation settings updates", async () => {
@@ -364,12 +379,14 @@ describe("webui API helpers", () => {
       maxImagesPerTurn: 3,
     });
 
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/image-generation/update?enabled=true&provider=openrouter&model=openai%2Fgpt-5.4-image-2&default_aspect_ratio=16%3A9&default_image_size=2K&max_images_per_turn=3",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/settings/image-generation", "PATCH", {
+      enabled: true,
+      provider: "openrouter",
+      model: "openai/gpt-5.4-image-2",
+      default_aspect_ratio: "16:9",
+      default_image_size: "2K",
+      max_images_per_turn: 3,
+    });
   });
 
   it("reads CLI Apps catalog and serializes actions", async () => {
@@ -391,12 +408,7 @@ describe("webui API helpers", () => {
     );
 
     await runCliAppAction("tok", "install", "gimp");
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/cli-apps/install?name=gimp",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-      }),
-    );
+    expectJsonCall("/api/settings/cli-apps/install", "POST", { name: "gimp" });
   });
 
   it("reads MCP presets and serializes actions", async () => {
@@ -419,17 +431,10 @@ describe("webui API helpers", () => {
     await runMcpPresetAction("tok", "enable", "browserbase", {
       browserbase_api_key: "bb_live_test",
     });
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/mcp-presets/enable?name=browserbase",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer tok",
-          "X-Nanobot-MCP-Values": JSON.stringify({
-            browserbase_api_key: "bb_live_test",
-          }),
-        }),
-      }),
-    );
+    expectJsonCall("/api/settings/mcp-presets/enable", "POST", {
+      name: "browserbase",
+      browserbase_api_key: "bb_live_test",
+    });
   });
 
   it("serializes custom MCP, mcp.json import, and tool allowlist actions", async () => {
@@ -440,48 +445,24 @@ describe("webui API helpers", () => {
       args: '["-y","docs-mcp"]',
       env: '{"API_KEY":"secret"}',
     });
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/mcp-presets/custom",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer tok",
-          "X-Nanobot-MCP-Values": JSON.stringify({
-            name: "docs",
-            transport: "stdio",
-            command: "npx",
-            args: '["-y","docs-mcp"]',
-            env: '{"API_KEY":"secret"}',
-          }),
-        }),
-      }),
-    );
+    expectJsonCall("/api/settings/mcp-presets/custom", "POST", {
+      name: "docs",
+      transport: "stdio",
+      command: "npx",
+      args: '["-y","docs-mcp"]',
+      env: '{"API_KEY":"secret"}',
+    });
 
     await importMcpConfig("tok", '{"mcpServers":{"docs":{"command":"npx"}}}');
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/mcp-presets/import",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer tok",
-          "X-Nanobot-MCP-Values": JSON.stringify({
-            config: '{"mcpServers":{"docs":{"command":"npx"}}}',
-          }),
-        }),
-      }),
-    );
+    expectJsonCall("/api/settings/mcp-presets/import", "POST", {
+      config: '{"mcpServers":{"docs":{"command":"npx"}}}',
+    });
 
     await updateMcpServerTools("tok", "docs", ["search", "fetch"]);
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/mcp-presets/tools",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer tok",
-          "X-Nanobot-MCP-Values": JSON.stringify({
-            name: "docs",
-            enabled_tools: ["search", "fetch"],
-          }),
-        }),
-      }),
-    );
+    expectJsonCall("/api/settings/mcp-presets/tools", "POST", {
+      name: "docs",
+      enabled_tools: ["search", "fetch"],
+    });
   });
 
   it("reads and writes persisted sidebar state", async () => {
@@ -516,14 +497,7 @@ describe("webui API helpers", () => {
     );
 
     await updateSidebarState("tok", state);
-    const [url, init] = vi.mocked(fetch).mock.calls.at(-1)!;
-    expect(String(url).startsWith("/api/webui/sidebar-state/update?")).toBe(true);
-    expect(init).toEqual(expect.objectContaining({
-      headers: { Authorization: "Bearer tok" },
-    }));
-    const encodedState = new URLSearchParams(String(url).split("?", 2)[1]).get("state");
-    expect(encodedState).toBeTruthy();
-    expect(JSON.parse(encodedState ?? "{}")).toMatchObject({
+    expectJsonCall("/api/webui/sidebar-state", "PUT", {
       pinned_keys: ["websocket:chat-1"],
       title_overrides: { "websocket:chat-1": "Release" },
       project_name_overrides: { "/Users/me/nanobot": "Core" },

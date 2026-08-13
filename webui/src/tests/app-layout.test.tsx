@@ -124,7 +124,6 @@ function baseSettingsPayload() {
       ssrf_whitelist_count: 0,
       mcp_server_count: 0,
       exec_enabled: true,
-      exec_sandbox: null,
       exec_path_append_set: false,
     },
     requires_restart: false,
@@ -548,17 +547,13 @@ describe("App layout", () => {
     };
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockImplementation(async (url: string | URL | Request) => {
+      vi.fn().mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
         const href = String(url);
         if (href === "/api/webui/sidebar-state") {
+          if (init?.method === "PUT") {
+            return { ok: true, json: async () => JSON.parse(String(init.body ?? "{}")) };
+          }
           return { ok: true, json: async () => initialState };
-        }
-        if (href.startsWith("/api/webui/sidebar-state/update?")) {
-          const encoded = new URLSearchParams(href.split("?", 2)[1]).get("state");
-          return {
-            ok: true,
-            json: async () => JSON.parse(encoded ?? "{}"),
-          };
         }
         return { ok: false, status: 404 };
       }),
@@ -579,12 +574,10 @@ describe("App layout", () => {
       expect(within(sidebar).getByText("Archived")).toBeInTheDocument(),
     );
     expect(within(sidebar).getByRole("button", { name: /^First chat$/ })).toBeInTheDocument();
-    const updateUrl = vi.mocked(fetch).mock.calls
-      .map(([url]) => String(url))
-      .find((url) => url.startsWith("/api/webui/sidebar-state/update?"));
-    expect(updateUrl).toBeTruthy();
-    const encoded = new URLSearchParams(updateUrl?.split("?", 2)[1]).get("state");
-    expect(JSON.parse(encoded ?? "{}").view.show_archived).toBe(true);
+    const updateInit = vi.mocked(fetch).mock.calls
+      .find(([url, init]) => String(url) === "/api/webui/sidebar-state" && init?.method === "PUT")?.[1];
+    expect(updateInit).toBeTruthy();
+    expect(JSON.parse(String(updateInit?.body ?? "{}")).view.show_archived).toBe(true);
 
     expect(within(sidebar).queryByRole("button", { name: "View" })).not.toBeInTheDocument();
   });
@@ -1045,7 +1038,6 @@ describe("App layout", () => {
                 ssrf_whitelist_count: 0,
                 mcp_server_count: 0,
                 exec_enabled: true,
-                exec_sandbox: null,
                 exec_path_append_set: false,
               },
               requires_restart: false,
@@ -1360,7 +1352,6 @@ describe("App layout", () => {
                 ssrf_whitelist_count: 0,
                 mcp_server_count: 0,
                 exec_enabled: true,
-                exec_sandbox: null,
                 exec_path_append_set: false,
               },
               requires_restart: false,

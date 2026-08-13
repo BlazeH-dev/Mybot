@@ -250,7 +250,6 @@ function modelSettings(model: string, provider: string): SettingsPayload {
       ssrf_whitelist_count: 0,
       mcp_server_count: 0,
       exec_enabled: true,
-      exec_sandbox: null,
       exec_path_append_set: false,
     },
     requires_restart: false,
@@ -482,9 +481,9 @@ describe("ThreadShell", () => {
         active: preset.name === "deepseek-v4-flash",
       })),
     };
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/api/settings/update?model_preset=deepseek-v4-flash") {
+      if (url === "/api/settings" && init?.method === "PATCH") {
         return httpJson(nextSettings);
       }
       return { ok: false, status: 404, json: async () => ({}) };
@@ -510,8 +509,10 @@ describe("ThreadShell", () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/settings/update?model_preset=deepseek-v4-flash",
+        "/api/settings",
         expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ model_preset: "deepseek-v4-flash" }),
           headers: expect.objectContaining({ Authorization: "Bearer tok" }),
         }),
       ),

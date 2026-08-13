@@ -34,14 +34,15 @@ from nanobot.agent.tools.schema import (
 )
 from nanobot.config.paths import get_media_dir
 from nanobot.config.schema import Base
+from nanobot.runtime.trace import emit_trace_event
 from nanobot.security.sandbox import (
     LaunchSpec,
     SandboxLauncher,
-    SandboxManager,
     SandboxMode,
     SandboxUnavailableError,
+    command_hash,
+    seatbelt,
 )
-from nanobot.security.sandbox.network import command_hash
 from nanobot.security.workspace_access import current_scope_allows_loopback, current_tool_workspace
 from nanobot.security.workspace_policy import is_path_within
 
@@ -63,7 +64,7 @@ class ExecToolConfig(Base):
     enable: bool = True
     timeout: int = Field(default=60, ge=0)  # Hard timeout (s); 0 = no limit. Not capped by the per-call max.
     path_append: str = ""
-    sandbox: str = ""
+    sandbox_migration_error: str = ""
     allowed_env_keys: list[str] = Field(default_factory=list)
     allow_patterns: list[str] = Field(default_factory=list)
     deny_patterns: list[str] = Field(default_factory=list)
@@ -153,7 +154,7 @@ class ExecTool(Tool):
             timeout=cfg.timeout,
             restrict_to_workspace=ctx.config.restrict_to_workspace,
             webui_allow_local_service_access=ctx.config.webui_allow_local_service_access,
-            sandbox=cfg.sandbox,
+            sandbox_migration_error=cfg.sandbox_migration_error,
             path_append=cfg.path_append,
             allowed_env_keys=cfg.allowed_env_keys,
             allow_patterns=cfg.allow_patterns,
@@ -169,14 +170,14 @@ class ExecTool(Tool):
         restrict_to_workspace: bool = False,
         webui_allow_local_service_access: bool = True,
         allow_local_preview_access: bool | None = None,
-        sandbox: str = "",
+        sandbox_migration_error: str = "",
         path_append: str = "",
         allowed_env_keys: list[str] | None = None,
         session_manager: Any | None = None,
     ):
         self.timeout = timeout
         self.working_dir = working_dir
-        self.sandbox = sandbox
+        self.sandbox_migration_error = sandbox_migration_error
         self.deny_patterns = (deny_patterns or []) + [
             r"\brm\s+-[rf]{1,2}\b",          # rm -r, rm -rf, rm -fr
             r"\bdel\s+/[fq]\b",              # del /f, del /q
@@ -267,7 +268,6 @@ class ExecTool(Tool):
             timeout,
             shell,
             login,
-            allow_network_grant=yield_time_ms is None,
         )
         if isinstance(prepared, str):
             return prepared
@@ -282,7 +282,7 @@ class ExecTool(Tool):
                 raise
             except Exception as exc:
                 if prepared.launch.mode != SandboxMode.DANGER_FULL_ACCESS:
-                    raise SandboxUnavailableError("sandbox_start_failed", str(exc)) from exc
+                    raise SandboxUnavailableError("sandbox_unavailable", str(exc)) from exc
                 raise
 
             try:
@@ -306,6 +306,28 @@ class ExecTool(Tool):
                 stderr_text = stderr.decode("utf-8", errors="replace")
                 if stderr_text.strip():
                     output_parts.append(f"STDERR:\n{stderr_text}")
+            else:
+                stderr_text = ""
+
+            sandbox_failure = (
+                seatbelt.classify_failure(process.returncode, stderr_text)
+                if prepared.launch.provider == "seatbelt"
+                else None
+            )
+            if sandbox_failure is not None:
+                emit_trace_event(
+                    "mybot.sandbox.result",
+                    {
+                        "provider": prepared.launch.provider,
+                        "mode": prepared.launch.mode.value,
+                        "classification": sandbox_failure,
+                        "command_hash": prepared.launch.command_hash,
+                    },
+                )
+            if sandbox_failure == "runner_failed":
+                return "Error: sandbox_unavailable: sandbox-exec runner failed"
+            if sandbox_failure == "denied":
+                output_parts.append("Sandbox: denied (file write blocked by macOS Seatbelt)")
 
             output_parts.append(f"\nExit code: {process.returncode}")
 
@@ -378,13 +400,11 @@ class ExecTool(Tool):
         timeout: int | None = None,
         shell: str | None = None,
         login: bool | None = None,
-        *,
-        allow_network_grant: bool = True,
     ) -> _PreparedCommand | str:
         access = current_tool_workspace(
             self.working_dir,
             restrict_to_workspace=self.restrict_to_workspace,
-            sandbox_restricts_workspace=bool(self.sandbox),
+            sandbox_restricts_workspace=False,
         )
         workspace_root = str(access.project_path) if access.project_path is not None else self.working_dir
         cwd = working_dir or workspace_root or os.getcwd()
@@ -427,24 +447,23 @@ class ExecTool(Tool):
         if shell_error:
             return shell_error
 
-        sandbox = self.sandbox or ("auto" if access.restrict_to_workspace else "")
-        mode = SandboxMode.WORKSPACE_WRITE if sandbox else SandboxMode.DANGER_FULL_ACCESS
+        restricted = access.restrict_to_workspace
+        mode = SandboxMode.WORKSPACE_WRITE if restricted else SandboxMode.DANGER_FULL_ACCESS
         workspace = str(Path(workspace_root or cwd).expanduser().resolve(strict=False))
         launch_cwd = str(Path(cwd).expanduser().resolve(strict=False))
-        effective_login = (True if login is None else login) and not sandbox
-        if sandbox:
+        effective_login = (True if login is None else login) and not restricted
+        if restricted:
             # Host login profiles are ambient executable configuration and may
             # contain credentials. Restricted commands get a workspace-local
             # HOME and a deterministic non-login shell instead.
             env["HOME"] = workspace
 
         try:
+            if restricted and self.sandbox_migration_error:
+                return f"Error: sandbox_unavailable: {self.sandbox_migration_error}"
             if _IS_WINDOWS:
-                if sandbox:
-                    return (
-                        "Error: sandbox_unavailable: native Windows sandboxing is unsupported; "
-                        "use WSL2 or explicitly select Full Access."
-                    )
+                if restricted:
+                    return "Error: sandbox_unavailable: restricted execution requires macOS Seatbelt"
                 launch = self._windows_launch_spec(
                     command=command,
                     cwd=launch_cwd,
@@ -452,8 +471,7 @@ class ExecTool(Tool):
                 )
             else:
                 shell_program = shell_program or shutil.which("bash") or "/bin/bash"
-                manager = self._sandbox_manager(sandbox)
-                launch = SandboxLauncher(manager).prepare_shell(
+                launch = SandboxLauncher().prepare_shell(
                     command=command,
                     workspace=workspace,
                     cwd=launch_cwd,
@@ -461,8 +479,6 @@ class ExecTool(Tool):
                     mode=mode,
                     shell=shell_program,
                     login=effective_login,
-                    readable_roots=(get_media_dir().resolve(),),
-                    allow_network_grant=allow_network_grant,
                 )
         except Exception as exc:
             code = getattr(exc, "code", "sandbox_unavailable")
@@ -489,18 +505,6 @@ class ExecTool(Tool):
             cwd=launch.cwd,
             env=launch.env,
         )
-
-    @staticmethod
-    def _sandbox_manager(sandbox: str) -> SandboxManager:
-        if sandbox in {"", "auto"}:
-            return SandboxManager()
-        systems = {"seatbelt": "darwin", "bwrap": "linux"}
-        system = systems.get(sandbox)
-        if system is None:
-            raise ValueError(
-                f"Unknown sandbox backend {sandbox!r}. Available: ['auto', 'bwrap', 'seatbelt']"
-            )
-        return SandboxManager(system=system)
 
     @staticmethod
     def _windows_launch_spec(*, command: str, cwd: str, env: dict[str, str]) -> LaunchSpec:

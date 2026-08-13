@@ -30,11 +30,11 @@ def _session_id(output: str) -> str:
 
 def test_restricted_session_start_failure_is_structured(tmp_path):
     launch = LaunchSpec(
-        argv=("bwrap", "--", "/bin/sh", "-c", "true"),
+        argv=("sandbox-exec", "-p", "profile", "/bin/sh", "-c", "true"),
         cwd=str(tmp_path),
         env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
         mode=SandboxMode.WORKSPACE_WRITE,
-        provider="bwrap",
+        provider="seatbelt",
         enforced=True,
         command_hash="hash",
     )
@@ -51,11 +51,42 @@ def test_restricted_session_start_failure_is_structured(tmp_path):
                 "nanobot.agent.tools.shell.SandboxLauncher.prepare_shell",
                 return_value=launch,
             ),
-            patch.object(manager, "_spawn", side_effect=FileNotFoundError("bwrap")),
+            patch.object(manager, "_spawn", side_effect=FileNotFoundError("sandbox-exec")),
         ):
             return await tool.execute(command="true", yield_time_ms=0)
 
-    assert asyncio.run(run()) == "Error: sandbox_start_failed: bwrap"
+    assert asyncio.run(run()) == "Error: sandbox_unavailable: sandbox-exec"
+
+
+def test_session_remembers_earlier_seatbelt_denial(tmp_path):
+    async def run() -> str:
+        manager = ExecSessionManager()
+        tool = ExecTool(
+            working_dir=str(tmp_path),
+            restrict_to_workspace=True,
+            session_manager=manager,
+        )
+        stdin_tool = WriteStdinTool(manager=manager)
+        command = "echo 'Operation not permitted' >&2; sleep .2"
+        result = await tool.execute(command=command, yield_time_ms=50)
+        sid = _session_id(result)
+        await asyncio.sleep(0.3)
+        return await stdin_tool.execute(session_id=sid, chars="", yield_time_ms=0)
+
+    with patch("nanobot.agent.tools.shell.SandboxLauncher.prepare_shell") as prepare:
+        command = "echo 'Operation not permitted' >&2; sleep .2"
+        prepare.return_value = LaunchSpec(
+            argv=("/bin/sh", "-c", command),
+            cwd=str(tmp_path),
+            env={"PATH": "/usr/bin:/bin"},
+            mode=SandboxMode.WORKSPACE_WRITE,
+            provider="seatbelt",
+            enforced=True,
+            command_hash="hash",
+        )
+        result = asyncio.run(run())
+
+    assert "Sandbox: denied" in result
 
 
 def test_exec_keeps_one_shot_behavior_without_yield_time_ms(tmp_path):

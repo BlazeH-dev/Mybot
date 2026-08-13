@@ -178,7 +178,6 @@ def test_approval_is_bound_to_params_plan_and_one_shot(tmp_path: Path) -> None:
         reason="high-risk local command requires approval in Default Permission",
         sandbox_mode="workspace_write",
         chat_id="chat-1",
-        command_hash="cmd-1",
     )
     request = approvals.request(binding, tool_call_id="call-1", turn_id="turn-1")
     assert request.payload["reason_i18n_key"] == (
@@ -195,9 +194,6 @@ def test_approval_is_bound_to_params_plan_and_one_shot(tmp_path: Path) -> None:
         **binding.as_dict(),
         "normalized_params_hash": normalized_params_hash({"command": "git push"}),
         "writable_roots": (),
-        "network_domains": (),
-        "ports": (),
-        "network_addresses": (),
     })
     assert not approvals.matches(approved, changed)
     manager.consume(

@@ -883,6 +883,8 @@
         "projectAria": "프로젝트 선택",
         "projectPlaceholder": "프로젝트 선택",
         "default": "Default Permission",
+        "defaultDescription": "작업공간 외부 파일 쓰기를 제한",
+        "fullDescription": "Seatbelt 파일 쓰기 제한 없이 실행",
         "full": "Full Access"
       }
     },

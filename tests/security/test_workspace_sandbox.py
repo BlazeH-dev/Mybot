@@ -13,7 +13,13 @@ def test_workspace_sandbox_disabled(tmp_path: Path) -> None:
     assert status.level == "off"
     assert status.enforced is False
     assert status.provider == "none"
-    assert status.as_dict()["workspace_root"] == str(tmp_path.resolve())
+    payload = status.as_dict()
+    assert payload["workspace_root"] == str(tmp_path.resolve())
+    assert payload["mode"] == "danger-full-access"
+    assert payload["file_write_restricted"] is False
+    assert payload["file_read_restricted"] is False
+    assert payload["network_restricted"] is False
+    assert payload["uncovered_processes"] == ["stdio_mcp", "officecli_internal", "gateway"]
 
 
 def test_workspace_sandbox_application_guard(tmp_path: Path) -> None:
@@ -40,6 +46,9 @@ def test_workspace_sandbox_system_provider_from_compact_env(tmp_path: Path) -> N
     assert status.enforced is True
     assert status.provider == "macos_app_sandbox"
     assert status.provider_label == "macOS App Sandbox"
+    assert status.file_write_restricted is True
+    assert status.file_read_restricted is False
+    assert status.network_restricted is False
 
 
 def test_workspace_sandbox_system_provider_from_boolean_env(tmp_path: Path) -> None:

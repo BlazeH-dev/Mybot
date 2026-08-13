@@ -883,6 +883,8 @@
         "projectAria": "プロジェクトを選択",
         "projectPlaceholder": "プロジェクトを選択",
         "default": "Default Permission",
+        "defaultDescription": "ワークスペース外へのファイル書き込みを制限",
+        "fullDescription": "Seatbelt のファイル書き込み制限なしで実行",
         "full": "Full Access"
       }
     },

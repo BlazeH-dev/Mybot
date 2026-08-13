@@ -36,12 +36,6 @@ from nanobot.runtime.langfuse import LangfuseRuntime
 from nanobot.runtime.policy import PermissionDecision, PolicyEngine, PolicyGateOutcome
 from nanobot.runtime.trace import TraceContext, TraceHook, current_trace_context, emit_trace_event
 from nanobot.security.sandbox import SandboxMode
-from nanobot.security.sandbox.network import (
-    command_hash,
-    command_network_targets,
-    encode_address_binding,
-    resolve_public_addresses,
-)
 from nanobot.security.workspace_access import (
     WorkspaceScope,
     bind_workspace_scope,
@@ -478,42 +472,6 @@ class SubagentManager:
         if decision.action != "ask":
             return PolicyGateOutcome(decision=decision)
 
-        raw_command = str(params.get("command") or params.get("cmd") or "")
-        network_domains: tuple[str, ...] = ()
-        network_ports: tuple[int, ...] = ()
-        network_addresses: tuple[str, ...] = ()
-        if tool.name == "exec" and raw_command:
-            try:
-                network_domains, network_ports, minimal_network_command = (
-                    command_network_targets(raw_command)
-                )
-                if network_domains and not minimal_network_command:
-                    return PolicyGateOutcome(decision=PermissionDecision(
-                        action="deny",
-                        reason=(
-                            "network escalation only supports a single direct curl command "
-                            "without shell composition or redirects"
-                        ),
-                        matched_rules=("hard.network_command_shape",),
-                        risk_level="critical",
-                        target=raw_command[:500],
-                        hard_deny=True,
-                    ))
-                network_addresses = tuple(
-                    encode_address_binding(domain, address)
-                    for domain in network_domains
-                    for address in resolve_public_addresses(domain)
-                )
-            except ValueError as exc:
-                return PolicyGateOutcome(decision=PermissionDecision(
-                    action="deny",
-                    reason=str(exc),
-                    matched_rules=("hard.ssrf",),
-                    risk_level="critical",
-                    target=raw_command[:500],
-                    hard_deny=True,
-                ))
-
         binding = ApprovalBinding(
             tool_name=tool.name,
             normalized_params_hash=normalized_params_hash(params),
@@ -527,11 +485,7 @@ class SubagentManager:
             sandbox_mode=SandboxMode.WORKSPACE_WRITE.value,
             chat_id=chat_id,
             provider=child_scope.sandbox_status.provider,
-            command_hash=command_hash(raw_command) if raw_command else None,
             writable_roots=(str(child_scope.project_path),),
-            network_domains=network_domains,
-            ports=network_ports,
-            network_addresses=network_addresses,
         )
         approved = self.approvals.find_approved(binding)
         if approved is not None:
@@ -547,19 +501,6 @@ class SubagentManager:
                     matched_rules=("approval.child_one_shot",),
                     risk_level=decision.risk_level,
                     target=decision.target,
-                ),
-                execution_context=(
-                    {
-                        "network_grant": {
-                            "domains": list(binding.network_domains),
-                            "ports": list(binding.ports),
-                            "command_hash": binding.command_hash,
-                            "expires_at": approved.expires_at,
-                            "addresses": list(binding.network_addresses),
-                        }
-                    }
-                    if binding.network_domains and binding.command_hash
-                    else None
                 ),
             )
 

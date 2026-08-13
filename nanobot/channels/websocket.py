@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Self
 
 from pydantic import Field, field_validator, model_validator
-from websockets.asyncio.server import ServerConnection, serve, unix_serve
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request as WsRequest
 
@@ -54,7 +53,6 @@ from nanobot.webui.http_utils import (
 )
 from nanobot.webui.mcp_presets_api import normalize_mcp_preset_mentions
 from nanobot.webui.transcription_ws import webui_transcription_event
-from nanobot.webui.websocket_logging import websockets_server_logger
 
 
 class WebSocketConfig(Base):
@@ -351,6 +349,7 @@ class WebSocketChannel(BaseChannel):
         self._conn_default: dict[Any, str] = {}
         self._stop_event: asyncio.Event | None = None
         self._server_task: asyncio.Task[None] | None = None
+        self._asgi_server: Any | None = None
 
         self.gateway = gateway
         self._http_router = gateway.http
@@ -519,26 +518,19 @@ class WebSocketChannel(BaseChannel):
     # -- Server lifecycle and connection ingress ---------------------------
 
     async def start(self) -> None:
-        from nanobot.utils.logging_bridge import redirect_lib_logging
+        from uvicorn import Config, Server
 
-        redirect_lib_logging("websockets", level="WARNING")
-        ws_logger = websockets_server_logger()
+        from nanobot.utils.logging_bridge import redirect_lib_logging
+        from nanobot.webui.asgi_gateway import create_gateway_app
+
+        redirect_lib_logging("uvicorn", level="WARNING")
 
         self._running = True
         self._evaluation_loop = asyncio.get_running_loop()
         self._stop_event = asyncio.Event()
 
-        ssl_context = self._build_ssl_context()
-        scheme = "wss" if ssl_context else "ws"
-
-        async def process_request(
-            connection: ServerConnection,
-            request: WsRequest,
-        ) -> Any:
-            return await self._dispatch_http(connection, request)
-
-        async def handler(connection: ServerConnection) -> None:
-            await self._connection_loop(connection)
+        self._build_ssl_context()  # Validate the configured certificate pair before binding.
+        scheme = "wss" if self.config.ssl_certfile.strip() else "ws"
 
         self.logger.info(
             "WebSocket server listening on {}",
@@ -562,41 +554,39 @@ class WebSocketChannel(BaseChannel):
             )
 
         async def runner() -> None:
-            socket_path = self.config.unix_socket_path
+            socket_path = self.config.unix_socket_path or None
             if socket_path:
                 path_obj = Path(socket_path)
                 path_obj.parent.mkdir(parents=True, exist_ok=True)
                 with suppress(FileNotFoundError):
                     path_obj.unlink()
-                server = await unix_serve(
-                    handler,
-                    socket_path,
-                    process_request=process_request,
-                    max_size=self.config.max_message_bytes,
-                    ping_interval=self.config.ping_interval_s,
-                    ping_timeout=self.config.ping_timeout_s,
-                    logger=ws_logger,
-                )
-                with suppress(OSError):
-                    path_obj.chmod(0o600)
-            else:
-                server = await serve(
-                    handler,
-                    self.config.host,
-                    self.config.port,
-                    process_request=process_request,
-                    max_size=self.config.max_message_bytes,
-                    ping_interval=self.config.ping_interval_s,
-                    ping_timeout=self.config.ping_timeout_s,
-                    ssl=ssl_context,
-                    logger=ws_logger,
-                )
+            uvicorn_config = Config(
+                create_gateway_app(self),
+                host=self.config.host,
+                port=self.config.port,
+                uds=socket_path,
+                ws_max_size=self.config.max_message_bytes,
+                ws_ping_interval=self.config.ping_interval_s,
+                ws_ping_timeout=self.config.ping_timeout_s,
+                ssl_certfile=self.config.ssl_certfile or None,
+                ssl_keyfile=self.config.ssl_keyfile or None,
+                lifespan="off",
+                access_log=False,
+                log_config=None,
+            )
+            server = Server(uvicorn_config)
+            self._asgi_server = server
             try:
-                assert self._stop_event is not None
-                await self._stop_event.wait()
+                serve_task = asyncio.create_task(server.serve())
+                if socket_path:
+                    while not server.started and not serve_task.done():
+                        await asyncio.sleep(0)
+                    if server.started:
+                        with suppress(OSError):
+                            Path(socket_path).chmod(0o600)
+                await serve_task
             finally:
-                server.close()
-                await server.wait_closed()
+                self._asgi_server = None
                 if socket_path:
                     with suppress(FileNotFoundError):
                         Path(socket_path).unlink()
@@ -1091,6 +1081,8 @@ class WebSocketChannel(BaseChannel):
         self._running = False
         if self._stop_event:
             self._stop_event.set()
+        if self._asgi_server is not None:
+            self._asgi_server.should_exit = True
         if self._server_task:
             try:
                 await self._server_task

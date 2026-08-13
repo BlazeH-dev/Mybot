@@ -20,7 +20,7 @@ import httpx
 
 from nanobot.apps.protocol import app_manifest, compact_dict
 from nanobot.config.paths import get_runtime_subdir
-from nanobot.security.sandbox import SandboxLauncher, SandboxMode, SandboxUnavailableError
+from nanobot.security.sandbox import SandboxLauncher, SandboxMode, SandboxUnavailableError, seatbelt
 from nanobot.security.workspace_policy import is_path_within
 
 CLI_ANYTHING_REGISTRY_URL = "https://hkuds.github.io/CLI-Anything/registry.json"
@@ -1259,8 +1259,30 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
                 timeout=effective_timeout,
                 env=launch.env,
             )
+            sandbox_failure = (
+                seatbelt.classify_failure(result.returncode, result.stderr)
+                if launch.provider == "seatbelt"
+                else None
+            )
+            if sandbox_failure == "runner_failed":
+                from nanobot.runtime.trace import emit_trace_event
+
+                emit_trace_event(
+                    "mybot.sandbox.result",
+                    {
+                        "provider": launch.provider,
+                        "mode": launch.mode.value,
+                        "classification": sandbox_failure,
+                        "command_hash": launch.command_hash,
+                    },
+                )
+                raise CliAppError("sandbox_unavailable: sandbox-exec runner failed")
         except SandboxUnavailableError as exc:
             raise CliAppError(f"{exc.code}: {exc.message}") from exc
+        except OSError as exc:
+            if mode != SandboxMode.DANGER_FULL_ACCESS:
+                raise CliAppError(f"sandbox_unavailable: {exc}") from exc
+            raise
         except subprocess.TimeoutExpired:
             return f"CLI app '{name}' timed out after {effective_timeout}s"
         output = [
@@ -1271,6 +1293,19 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
             output.append("\nSTDOUT:\n" + result.stdout.rstrip())
         if result.stderr:
             output.append("\nSTDERR:\n" + result.stderr.rstrip())
+        if sandbox_failure == "denied":
+            from nanobot.runtime.trace import emit_trace_event
+
+            emit_trace_event(
+                "mybot.sandbox.result",
+                {
+                    "provider": launch.provider,
+                    "mode": launch.mode.value,
+                    "classification": sandbox_failure,
+                    "command_hash": launch.command_hash,
+                },
+            )
+            output.append("\nSandbox: denied (file write blocked by macOS Seatbelt)")
         artifacts = self._changed_artifacts(cwd, artifact_snapshot)
         if artifacts:
             output.append(

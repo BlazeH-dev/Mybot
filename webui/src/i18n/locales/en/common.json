@@ -939,6 +939,8 @@
         "projectAria": "Choose project",
         "projectPlaceholder": "Select project",
         "default": "Default Permission",
+        "defaultDescription": "Restricts file writes outside the workspace",
+        "fullDescription": "Runs without Seatbelt file-write limits",
         "full": "Full Access"
       }
     },

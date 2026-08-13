@@ -2380,6 +2380,12 @@ def test_settings_payload_reports_workspace_sandbox(monkeypatch, tmp_path) -> No
     assert sandbox["enforced"] is True
     assert sandbox["provider"] == "seatbelt"
     assert sandbox["provider_label"] == "macOS Seatbelt"
+    assert sandbox["mode"] == "workspace_write"
+    assert sandbox["file_write_restricted"] is True
+    assert sandbox["file_read_restricted"] is False
+    assert sandbox["network_restricted"] is False
+    assert sandbox["uncovered_processes"] == ["stdio_mcp", "officecli_internal", "gateway"]
+    assert "exec_sandbox" not in body["advanced"]
 
 
 def test_settings_payload_includes_native_runtime_surface(monkeypatch, tmp_path) -> None:

@@ -189,9 +189,26 @@ def _migrate_config(data: dict) -> dict:
 
     # Move tools.exec.restrictToWorkspace → tools.restrictToWorkspace
     tools = data.get("tools", {})
+    if not isinstance(tools, dict):
+        return data
     exec_cfg = tools.get("exec", {})
+    if not isinstance(exec_cfg, dict):
+        exec_cfg = {}
     if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:
         tools["restrictToWorkspace"] = exec_cfg.pop("restrictToWorkspace")
+
+    # The sandbox backend is no longer configurable. Restricted execution uses
+    # macOS Seatbelt, while Full Access runs directly on the host.
+    sandbox_key = "sandbox" if "sandbox" in exec_cfg else None
+    if sandbox_key is not None:
+        legacy_sandbox = str(exec_cfg.pop(sandbox_key) or "").strip().lower()
+        if legacy_sandbox not in {"", "auto", "seatbelt"}:
+            message = (
+                f"legacy tools.exec.sandbox={legacy_sandbox!r} is unsupported; "
+                "restricted execution now requires macOS Seatbelt"
+            )
+            exec_cfg["sandboxMigrationError"] = message
+            logger.warning(message)
 
     # Move tools.myEnabled / tools.mySet → tools.my.{enable, allowSet}.
     # The old flat keys shipped in the initial MyTool landing; wrapping them in a

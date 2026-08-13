@@ -49,11 +49,7 @@ class ApprovalBinding:
     sandbox_mode: str
     chat_id: str | None = None
     provider: str | None = None
-    command_hash: str | None = None
     writable_roots: tuple[str, ...] = ()
-    network_domains: tuple[str, ...] = ()
-    ports: tuple[int, ...] = ()
-    network_addresses: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -69,11 +65,7 @@ class ApprovalBinding:
             "sandbox_mode": self.sandbox_mode,
             "chat_id": self.chat_id,
             "provider": self.provider,
-            "command_hash": self.command_hash,
             "writable_roots": list(self.writable_roots),
-            "network_domains": list(self.network_domains),
-            "ports": list(self.ports),
-            "network_addresses": list(self.network_addresses),
         }
 
 

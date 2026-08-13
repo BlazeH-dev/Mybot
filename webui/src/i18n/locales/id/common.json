@@ -883,6 +883,8 @@
         "projectAria": "Pilih proyek",
         "projectPlaceholder": "Pilih proyek",
         "default": "Default Permission",
+        "defaultDescription": "Membatasi penulisan di luar workspace",
+        "fullDescription": "Berjalan tanpa batas penulisan Seatbelt",
         "full": "Full Access"
       }
     },

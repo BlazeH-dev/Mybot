@@ -92,7 +92,6 @@ function settingsPayload(): SettingsPayload {
       ssrf_whitelist_count: 0,
       mcp_server_count: 0,
       exec_enabled: true,
-      exec_sandbox: null,
       exec_path_append_set: false,
     },
     requires_restart: false,
@@ -184,7 +183,7 @@ describe("SettingsView observability", () => {
       requires_restart: true,
       restart_required_sections: ["observability"],
     };
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/api/settings") return jsonResponse(initial);
       if (url === "/api/settings/cli-apps") {
@@ -193,7 +192,7 @@ describe("SettingsView observability", () => {
       if (url === "/api/settings/mcp-presets") {
         return jsonResponse({ presets: [], installed_count: 0 });
       }
-      if (url === "/api/settings/observability/update?langfuse_enabled=false") {
+      if (url === "/api/settings/observability" && init?.method === "PATCH") {
         return jsonResponse(updated);
       }
       return { ok: false, status: 404, json: async () => ({}) } as Response;
@@ -214,8 +213,12 @@ describe("SettingsView observability", () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/settings/observability/update?langfuse_enabled=false",
-        expect.objectContaining({ headers: { Authorization: "Bearer tok" } }),
+        "/api/settings/observability",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ langfuse_enabled: false }),
+          headers: { Authorization: "Bearer tok", "Content-Type": "application/json" },
+        }),
       ),
     );
     expect(await screen.findByText("Saved. Restart when ready.")).toBeInTheDocument();
@@ -229,7 +232,7 @@ describe("SettingsView Apps catalog", () => {
   });
 
   it("shows a visible uninstall button for installed CLI apps and calls uninstall", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/api/settings") {
         return jsonResponse(settingsPayload());
@@ -244,7 +247,7 @@ describe("SettingsView Apps catalog", () => {
       if (url === "/api/settings/mcp-presets") {
         return jsonResponse({ presets: [], installed_count: 0 });
       }
-      if (url === "/api/settings/cli-apps/uninstall?name=anygen") {
+      if (url === "/api/settings/cli-apps/uninstall" && init?.method === "POST") {
         return jsonResponse({
           apps: [{ ...installedAnyGen, installed: false, status: "available" }],
           installed_count: 0,
@@ -270,9 +273,11 @@ describe("SettingsView Apps catalog", () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/settings/cli-apps/uninstall?name=anygen",
+        "/api/settings/cli-apps/uninstall",
         expect.objectContaining({
-          headers: { Authorization: "Bearer tok" },
+          method: "POST",
+          body: JSON.stringify({ name: "anygen" }),
+          headers: { Authorization: "Bearer tok", "Content-Type": "application/json" },
         }),
       ),
     );
@@ -880,7 +885,7 @@ describe("SettingsView Apps catalog", () => {
       if (url === "/api/settings") return jsonResponse(payload);
       if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
       if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-      if (url === "/api/settings/model-configurations/delete?name=custom-writing") {
+      if (url === "/api/settings/model-configurations/custom-writing" && init?.method === "DELETE") {
         return jsonResponse(deletedPayload);
       }
       return { ok: false, status: 404, json: async () => ({}) } as Response;
@@ -897,8 +902,11 @@ describe("SettingsView Apps catalog", () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/settings/model-configurations/delete?name=custom-writing",
-        expect.objectContaining({ headers: { Authorization: "Bearer tok" } }),
+        "/api/settings/model-configurations/custom-writing",
+        expect.objectContaining({
+          method: "DELETE",
+          headers: { Authorization: "Bearer tok", "Content-Type": "application/json" },
+        }),
       ),
     );
     await waitFor(() => expect(screen.queryByText("Custom writing")).not.toBeInTheDocument());
@@ -946,7 +954,7 @@ describe("SettingsView Apps catalog", () => {
         },
       ],
     };
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/api/settings") return jsonResponse(payload);
       if (url === "/api/settings/cli-apps") {
@@ -969,7 +977,7 @@ describe("SettingsView Apps catalog", () => {
           fetched_at: 1,
         });
       }
-      if (url === "/api/settings/update?model_preset=default&model=deepseek-reasoner&provider=deepseek&context_window_tokens=65536") {
+      if (url === "/api/settings" && init?.method === "PATCH") {
         return jsonResponse(updatedPayload);
       }
       return { ok: false, status: 404, json: async () => ({}) } as Response;
@@ -998,9 +1006,19 @@ describe("SettingsView Apps catalog", () => {
     );
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/settings/update?model_preset=default&model=deepseek-reasoner&provider=deepseek&context_window_tokens=65536",
+        "/api/settings",
         expect.objectContaining({
-          headers: { Authorization: "Bearer tok" },
+          method: "PATCH",
+          body: JSON.stringify({
+            model_preset: "default",
+            model: "deepseek-reasoner",
+            provider: "deepseek",
+            context_window_tokens: 65536,
+          }),
+          headers: {
+            Authorization: "Bearer tok",
+            "Content-Type": "application/json",
+          },
         }),
       ),
     );
@@ -1017,7 +1035,7 @@ describe("SettingsView Apps catalog", () => {
       if (url === "/api/settings/mcp-presets") {
         return jsonResponse({ presets: [], installed_count: 0 });
       }
-      if (url === "/api/settings/network-safety/update?webui_allow_local_service_access=false&webui_default_access_mode=default") {
+      if (url === "/api/settings/network-safety" && init?.method === "PATCH") {
         return jsonResponse({
           ...payload,
           advanced: { ...payload.advanced, webui_allow_local_service_access: false },
@@ -1044,9 +1062,14 @@ describe("SettingsView Apps catalog", () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/settings/network-safety/update?webui_allow_local_service_access=false&webui_default_access_mode=default",
+        "/api/settings/network-safety",
         expect.objectContaining({
-          headers: { Authorization: "Bearer tok" },
+          method: "PATCH",
+          body: JSON.stringify({
+            webui_allow_local_service_access: false,
+            webui_default_access_mode: "default",
+          }),
+          headers: { Authorization: "Bearer tok", "Content-Type": "application/json" },
         }),
       ),
     );
@@ -1109,7 +1132,7 @@ describe("SettingsView Apps catalog", () => {
       if (url === "/api/settings") return jsonResponse(payload);
       if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
       if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-      if (url === "/api/settings/network-safety/update?webui_allow_local_service_access=false&webui_default_access_mode=default") {
+      if (url === "/api/settings/network-safety" && init?.method === "PATCH") {
         return jsonResponse(restartedPayload);
       }
       return { ok: false, status: 404, json: async () => ({}) } as Response;

@@ -619,6 +619,12 @@ export interface SettingsPayload {
       provider: string;
       provider_label: string;
       summary: string;
+      mode: "read_only" | "workspace_write" | "danger_full_access" | string;
+      available: boolean;
+      file_write_restricted: boolean;
+      file_read_restricted: boolean;
+      network_restricted: boolean;
+      uncovered_processes: string[];
     };
     ssrf_whitelist_count: number;
     webui_allow_local_service_access: boolean;
@@ -627,7 +633,6 @@ export interface SettingsPayload {
     private_service_protection_enabled: boolean;
     mcp_server_count: number;
     exec_enabled: boolean;
-    exec_sandbox?: string | null;
     exec_path_append_set: boolean;
   };
   requires_restart: boolean;

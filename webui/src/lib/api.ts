@@ -64,7 +64,19 @@ async function request<T>(
   );
   if (!res.ok) {
     const text = typeof res.text === "function" ? (await res.text()).trim() : "";
-    throw new ApiError(res.status, text || `HTTP ${res.status}`);
+    let detail = text;
+    try {
+      const parsed = JSON.parse(text) as { detail?: unknown };
+      if (typeof parsed.detail === "string") detail = parsed.detail;
+      else if (Array.isArray(parsed.detail)) {
+        detail = parsed.detail
+          .map((item) => typeof item?.msg === "string" ? item.msg : "Invalid request")
+          .join("; ");
+      }
+    } catch {
+      // Preserve plain-text errors from compatibility endpoints.
+    }
+    throw new ApiError(res.status, detail || `HTTP ${res.status}`);
   }
   const contentType = res.headers?.get?.("content-type") ?? "";
   if (contentType && !contentType.toLowerCase().includes("application/json")) {
@@ -80,19 +92,12 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
-function mcpValuesHeader(values: Record<string, unknown>): HeadersInit | undefined {
-  const payload: Record<string, unknown> = {};
-  Object.entries(values).forEach(([key, value]) => {
-    if (value === null || value === undefined) return;
-    if (typeof value === "string") {
-      const trimmed = value.trim();
-      if (trimmed) payload[key] = trimmed;
-      return;
-    }
-    payload[key] = value;
-  });
-  if (!Object.keys(payload).length) return undefined;
-  return { "X-Nanobot-MCP-Values": JSON.stringify(payload) };
+function jsonInit(method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown): RequestInit {
+  return {
+    method,
+    headers: { "Content-Type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  };
 }
 
 function splitKey(key: string): { channel: string; chatId: string } {
@@ -284,17 +289,17 @@ export async function analyzeSkillEvolution(
   caseIds: string[],
   base: string = "",
 ): Promise<import("@/lib/types").SkillEvolutionTask> {
-  const query = new URLSearchParams({
+  const body = {
     run_id: runId,
-    threshold: String(threshold),
+    threshold,
     source_model_preset: sourceModelPreset,
     optimizer_preset: optimizerPreset,
-    case_ids: JSON.stringify(caseIds),
-  });
+    case_ids: caseIds,
+  };
   return request(
-    `${base}/api/skill-evolution/analyze?${query}`,
+    `${base}/api/skill-evolution/analyze`,
     token,
-    { method: "POST" },
+    jsonInit("POST", body),
   );
 }
 
@@ -330,15 +335,15 @@ export async function evolveSkillEvolution(
   findingIds: string[],
   base: string = "",
 ): Promise<import("@/lib/types").SkillEvolutionTask> {
-  const query = new URLSearchParams({
+  const body = {
     analysis_id: analysisId,
     analysis_digest: analysisDigest,
-    finding_ids: JSON.stringify(findingIds),
-  });
+    finding_ids: findingIds,
+  };
   return request(
-    `${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}/evolve?${query}`,
+    `${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}/evolve`,
     token,
-    { method: "POST" },
+    jsonInit("POST", body),
   );
 }
 
@@ -350,14 +355,15 @@ export async function runSkillEvolutionAction(
   findingIds: string[] = [],
   base: string = "",
 ): Promise<import("@/lib/types").SkillEvolutionTask> {
-  const query = new URLSearchParams({
-    revision_id: revisionId,
-    finding_ids: JSON.stringify(findingIds),
-  });
+  const body = action === "revise"
+    ? { finding_ids: findingIds.length ? findingIds : undefined }
+    : action === "test" || action === "apply"
+      ? { revision_id: revisionId }
+      : {};
   return request(
-    `${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}/${action}?${query}`,
+    `${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}/${action}`,
     token,
-    { method: "POST" },
+    jsonInit("POST", body),
   );
 }
 
@@ -372,11 +378,9 @@ export async function deleteEvaluationRun(
   base: string = "",
 ): Promise<DeleteEvaluationRunResult> {
   const payload = await request<DeleteEvaluationRunResult>(
-    `${base}/api/evaluations/runs/${encodeURIComponent(runId)}/delete?confirm=1`,
+    `${base}/api/evaluations/runs/${encodeURIComponent(runId)}`,
     token,
-    // The embedded websockets HTTP parser accepts GET requests only. Keep
-    // this destructive route explicit and uncached with a confirmation query.
-    { cache: "no-store" },
+    { ...jsonInit("DELETE"), cache: "no-store" },
     API_READ_TIMEOUT_MS,
   );
   return payload;
@@ -401,8 +405,9 @@ export async function deleteSession(
   base: string = "",
 ): Promise<boolean> {
   const body = await request<{ deleted: boolean }>(
-    `${base}/api/sessions/${encodeURIComponent(key)}/delete`,
+    `${base}/api/sessions/${encodeURIComponent(key)}`,
     token,
+    jsonInit("DELETE"),
   );
   return body.deleted;
 }
@@ -477,9 +482,11 @@ export async function runCliAppAction(
   name: string,
   base: string = "",
 ): Promise<CliAppsPayload> {
-  const query = new URLSearchParams();
-  query.set("name", name);
-  return request<CliAppsPayload>(`${base}/api/settings/cli-apps/${action}?${query}`, token);
+  return request<CliAppsPayload>(
+    `${base}/api/settings/cli-apps/${action}`,
+    token,
+    jsonInit("POST", { name }),
+  );
 }
 
 export async function fetchMcpPresets(
@@ -516,12 +523,10 @@ export async function runMcpPresetAction(
   values: Record<string, string> = {},
   base: string = "",
 ): Promise<McpPresetsPayload> {
-  const query = new URLSearchParams();
-  query.set("name", name);
   return request<McpPresetsPayload>(
-    `${base}/api/settings/mcp-presets/${action}?${query}`,
+    `${base}/api/settings/mcp-presets/${action}`,
     token,
-    { headers: mcpValuesHeader(values) },
+    jsonInit("POST", { name, ...values }),
   );
 }
 
@@ -533,7 +538,7 @@ export async function saveCustomMcpServer(
   return request<McpPresetsPayload>(
     `${base}/api/settings/mcp-presets/custom`,
     token,
-    { headers: mcpValuesHeader(values) },
+    jsonInit("POST", values),
   );
 }
 
@@ -545,7 +550,7 @@ export async function importMcpConfig(
   return request<McpPresetsPayload>(
     `${base}/api/settings/mcp-presets/import`,
     token,
-    { headers: mcpValuesHeader({ config }) },
+    jsonInit("POST", { config }),
   );
 }
 
@@ -558,7 +563,7 @@ export async function updateMcpServerTools(
   return request<McpPresetsPayload>(
     `${base}/api/settings/mcp-presets/tools`,
     token,
-    { headers: mcpValuesHeader({ name, enabled_tools: enabledTools }) },
+    jsonInit("POST", { name, enabled_tools: enabledTools }),
   );
 }
 
@@ -607,11 +612,10 @@ export async function updateSidebarState(
   state: SidebarStatePayload,
   base: string = "",
 ): Promise<SidebarStatePayload> {
-  const query = new URLSearchParams();
-  query.set("state", JSON.stringify(state));
   return request<SidebarStatePayload>(
-    `${base}/api/webui/sidebar-state/update?${query}`,
+    `${base}/api/webui/sidebar-state`,
     token,
+    jsonInit("PUT", state),
   );
 }
 
@@ -620,22 +624,22 @@ export async function updateSettings(
   update: SettingsUpdate,
   base: string = "",
 ): Promise<SettingsPayload> {
-  const query = new URLSearchParams();
+  const body: Record<string, unknown> = {};
   if (update.modelPreset !== undefined) {
-    query.set("model_preset", update.modelPreset ?? "default");
+    body.model_preset = update.modelPreset ?? "default";
   }
-  if (update.model !== undefined) query.set("model", update.model);
-  if (update.provider !== undefined) query.set("provider", update.provider);
+  if (update.model !== undefined) body.model = update.model;
+  if (update.provider !== undefined) body.provider = update.provider;
   if (update.contextWindowTokens !== undefined) {
-    query.set("context_window_tokens", String(update.contextWindowTokens));
+    body.context_window_tokens = update.contextWindowTokens;
   }
-  if (update.timezone !== undefined) query.set("timezone", update.timezone);
-  if (update.botName !== undefined) query.set("bot_name", update.botName);
-  if (update.botIcon !== undefined) query.set("bot_icon", update.botIcon);
+  if (update.timezone !== undefined) body.timezone = update.timezone;
+  if (update.botName !== undefined) body.bot_name = update.botName;
+  if (update.botIcon !== undefined) body.bot_icon = update.botIcon;
   if (update.toolHintMaxLength !== undefined) {
-    query.set("tool_hint_max_length", String(update.toolHintMaxLength));
+    body.tool_hint_max_length = update.toolHintMaxLength;
   }
-  return request<SettingsPayload>(`${base}/api/settings/update?${query}`, token);
+  return request<SettingsPayload>(`${base}/api/settings`, token, jsonInit("PATCH", body));
 }
 
 export async function updateSkillEnabled(
@@ -644,8 +648,11 @@ export async function updateSkillEnabled(
   enabled: boolean,
   base: string = "",
 ): Promise<SkillsPayload> {
-  const query = new URLSearchParams({ name, enabled: String(enabled) });
-  return request<SkillsPayload>(`${base}/api/settings/skills/update?${query}`, token);
+  return request<SkillsPayload>(
+    `${base}/api/settings/skills/${encodeURIComponent(name)}`,
+    token,
+    jsonInit("PUT", { enabled }),
+  );
 }
 
 export async function createModelConfiguration(
@@ -653,17 +660,17 @@ export async function createModelConfiguration(
   configuration: ModelConfigurationCreate,
   base: string = "",
 ): Promise<SettingsPayload> {
-  const query = new URLSearchParams();
-  if (configuration.name !== undefined) query.set("name", configuration.name);
-  query.set("label", configuration.label);
-  query.set("provider", configuration.provider);
-  query.set("model", configuration.model);
-  if (configuration.contextWindowTokens !== undefined) {
-    query.set("context_window_tokens", String(configuration.contextWindowTokens));
-  }
+  const body = {
+    name: configuration.name,
+    label: configuration.label,
+    provider: configuration.provider,
+    model: configuration.model,
+    context_window_tokens: configuration.contextWindowTokens,
+  };
   return request<SettingsPayload>(
-    `${base}/api/settings/model-configurations/create?${query}`,
+    `${base}/api/settings/model-configurations`,
     token,
+    jsonInit("POST", body),
   );
 }
 
@@ -672,17 +679,16 @@ export async function updateModelConfiguration(
   configuration: ModelConfigurationUpdate,
   base: string = "",
 ): Promise<SettingsPayload> {
-  const query = new URLSearchParams();
-  query.set("name", configuration.name);
-  if (configuration.label !== undefined) query.set("label", configuration.label);
-  if (configuration.provider !== undefined) query.set("provider", configuration.provider);
-  if (configuration.model !== undefined) query.set("model", configuration.model);
-  if (configuration.contextWindowTokens !== undefined) {
-    query.set("context_window_tokens", String(configuration.contextWindowTokens));
-  }
+  const body = {
+    label: configuration.label,
+    provider: configuration.provider,
+    model: configuration.model,
+    context_window_tokens: configuration.contextWindowTokens,
+  };
   return request<SettingsPayload>(
-    `${base}/api/settings/model-configurations/update?${query}`,
+    `${base}/api/settings/model-configurations/${encodeURIComponent(configuration.name)}`,
     token,
+    jsonInit("PATCH", body),
   );
 }
 
@@ -691,10 +697,10 @@ export async function deleteModelConfiguration(
   name: string,
   base: string = "",
 ): Promise<SettingsPayload> {
-  const query = new URLSearchParams({ name });
   return request<SettingsPayload>(
-    `${base}/api/settings/model-configurations/delete?${query}`,
+    `${base}/api/settings/model-configurations/${encodeURIComponent(name)}`,
     token,
+    jsonInit("DELETE"),
   );
 }
 
@@ -703,14 +709,16 @@ export async function updateProviderSettings(
   update: ProviderSettingsUpdate,
   base: string = "",
 ): Promise<SettingsPayload> {
-  const query = new URLSearchParams();
-  query.set("provider", update.provider);
-  if (update.apiKey !== undefined) query.set("api_key", update.apiKey);
-  if (update.apiBase !== undefined) query.set("api_base", update.apiBase);
-  if (update.apiType !== undefined) query.set("api_type", update.apiType);
+  const body = {
+    provider: update.provider,
+    api_key: update.apiKey,
+    api_base: update.apiBase,
+    api_type: update.apiType,
+  };
   return request<SettingsPayload>(
-    `${base}/api/settings/provider/update?${query}`,
+    `${base}/api/settings/provider`,
     token,
+    jsonInit("PATCH", body),
   );
 }
 
@@ -719,11 +727,10 @@ export async function loginProviderOAuth(
   provider: string,
   base: string = "",
 ): Promise<SettingsPayload> {
-  const query = new URLSearchParams();
-  query.set("provider", provider);
   return request<SettingsPayload>(
-    `${base}/api/settings/provider/oauth-login?${query}`,
+    `${base}/api/settings/provider/oauth/login`,
     token,
+    jsonInit("POST", { provider }),
   );
 }
 
@@ -732,11 +739,10 @@ export async function logoutProviderOAuth(
   provider: string,
   base: string = "",
 ): Promise<SettingsPayload> {
-  const query = new URLSearchParams();
-  query.set("provider", provider);
   return request<SettingsPayload>(
-    `${base}/api/settings/provider/oauth-logout?${query}`,
+    `${base}/api/settings/provider/oauth/logout`,
     token,
+    jsonInit("POST", { provider }),
   );
 }
 
@@ -745,18 +751,18 @@ export async function updateWebSearchSettings(
   update: WebSearchSettingsUpdate,
   base: string = "",
 ): Promise<SettingsPayload> {
-  const query = new URLSearchParams();
-  query.set("provider", update.provider);
-  if (update.apiKey !== undefined) query.set("api_key", update.apiKey);
-  if (update.baseUrl !== undefined) query.set("base_url", update.baseUrl);
-  if (update.maxResults !== undefined) query.set("max_results", String(update.maxResults));
-  if (update.timeout !== undefined) query.set("timeout", String(update.timeout));
-  if (update.useJinaReader !== undefined) {
-    query.set("use_jina_reader", String(update.useJinaReader));
-  }
+  const body = {
+    provider: update.provider,
+    api_key: update.apiKey,
+    base_url: update.baseUrl,
+    max_results: update.maxResults,
+    timeout: update.timeout,
+    use_jina_reader: update.useJinaReader,
+  };
   return request<SettingsPayload>(
-    `${base}/api/settings/web-search/update?${query}`,
+    `${base}/api/settings/web-search`,
     token,
+    jsonInit("PATCH", body),
   );
 }
 
@@ -765,12 +771,13 @@ export async function updateNetworkSafetySettings(
   update: NetworkSafetySettingsUpdate,
   base: string = "",
 ): Promise<SettingsPayload> {
-  const query = new URLSearchParams();
-  query.set("webui_allow_local_service_access", String(update.webuiAllowLocalServiceAccess));
-  query.set("webui_default_access_mode", update.webuiDefaultAccessMode);
   return request<SettingsPayload>(
-    `${base}/api/settings/network-safety/update?${query}`,
+    `${base}/api/settings/network-safety`,
     token,
+    jsonInit("PATCH", {
+      webui_allow_local_service_access: update.webuiAllowLocalServiceAccess,
+      webui_default_access_mode: update.webuiDefaultAccessMode,
+    }),
   );
 }
 
@@ -779,10 +786,10 @@ export async function updateObservabilitySettings(
   update: ObservabilitySettingsUpdate,
   base: string = "",
 ): Promise<SettingsPayload> {
-  const query = new URLSearchParams({ langfuse_enabled: String(update.langfuseEnabled) });
   return request<SettingsPayload>(
-    `${base}/api/settings/observability/update?${query}`,
+    `${base}/api/settings/observability`,
     token,
+    jsonInit("PATCH", { langfuse_enabled: update.langfuseEnabled }),
   );
 }
 
@@ -791,16 +798,17 @@ export async function updateImageGenerationSettings(
   update: ImageGenerationSettingsUpdate,
   base: string = "",
 ): Promise<SettingsPayload> {
-  const query = new URLSearchParams();
-  query.set("enabled", String(update.enabled));
-  query.set("provider", update.provider);
-  query.set("model", update.model);
-  query.set("default_aspect_ratio", update.defaultAspectRatio);
-  query.set("default_image_size", update.defaultImageSize);
-  query.set("max_images_per_turn", String(update.maxImagesPerTurn));
   return request<SettingsPayload>(
-    `${base}/api/settings/image-generation/update?${query}`,
+    `${base}/api/settings/image-generation`,
     token,
+    jsonInit("PATCH", {
+      enabled: update.enabled,
+      provider: update.provider,
+      model: update.model,
+      default_aspect_ratio: update.defaultAspectRatio,
+      default_image_size: update.defaultImageSize,
+      max_images_per_turn: update.maxImagesPerTurn,
+    }),
   );
 }
 
@@ -809,15 +817,16 @@ export async function updateTranscriptionSettings(
   update: TranscriptionSettingsUpdate,
   base: string = "",
 ): Promise<SettingsPayload> {
-  const query = new URLSearchParams();
-  query.set("enabled", String(update.enabled));
-  query.set("provider", update.provider);
-  query.set("model", update.model);
-  query.set("language", update.language);
-  query.set("max_duration_sec", String(update.maxDurationSec));
-  query.set("max_upload_mb", String(update.maxUploadMb));
   return request<SettingsPayload>(
-    `${base}/api/settings/transcription/update?${query}`,
+    `${base}/api/settings/transcription`,
     token,
+    jsonInit("PATCH", {
+      enabled: update.enabled,
+      provider: update.provider,
+      model: update.model,
+      language: update.language,
+      max_duration_sec: update.maxDurationSec,
+      max_upload_mb: update.maxUploadMb,
+    }),
   );
 }

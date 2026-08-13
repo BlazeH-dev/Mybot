@@ -883,6 +883,8 @@
         "projectAria": "Choisir un projet",
         "projectPlaceholder": "Sélectionner un projet",
         "default": "Default Permission",
+        "defaultDescription": "Limite les écritures hors du workspace",
+        "fullDescription": "Exécute sans limites d’écriture Seatbelt",
         "full": "Full Access"
       }
     },

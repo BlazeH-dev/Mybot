@@ -939,6 +939,8 @@
         "projectAria": "选择项目",
         "projectPlaceholder": "选择项目",
         "default": "默认权限",
+        "defaultDescription": "限制工作区外文件写入",
+        "fullDescription": "不使用 Seatbelt 文件写入限制",
         "full": "完全访问权限"
       }
     },

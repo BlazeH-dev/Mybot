@@ -18,7 +18,6 @@ _PROVIDER_LABELS = {
     "none": "None",
     "unknown": "Unknown system sandbox",
     "macos_app_sandbox": "macOS App Sandbox",
-    "bwrap": "Bubblewrap",
     "seatbelt": "macOS Seatbelt",
     "unsupported": "Unsupported platform",
 }
@@ -51,6 +50,16 @@ class WorkspaceSandboxStatus:
     provider: str
     provider_label: str
     summary: str
+    mode: str
+    available: bool
+    file_write_restricted: bool
+    file_read_restricted: bool = False
+    network_restricted: bool = False
+    uncovered_processes: tuple[str, ...] = (
+        "stdio_mcp",
+        "officecli_internal",
+        "gateway",
+    )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -61,6 +70,12 @@ class WorkspaceSandboxStatus:
             "provider": self.provider,
             "provider_label": self.provider_label,
             "summary": self.summary,
+            "mode": self.mode,
+            "available": self.available,
+            "file_write_restricted": self.file_write_restricted,
+            "file_read_restricted": self.file_read_restricted,
+            "network_restricted": self.network_restricted,
+            "uncovered_processes": list(self.uncovered_processes),
         }
 
 
@@ -183,6 +198,9 @@ def workspace_sandbox_status(
             provider="none",
             provider_label=_provider_label("none"),
             summary="Workspace restriction is disabled.",
+            mode="danger-full-access",
+            available=True,
+            file_write_restricted=False,
         )
 
     # Explicit environments are retained as a compatibility/test seam. Real
@@ -197,7 +215,10 @@ def workspace_sandbox_status(
             enforced=True,
             provider=provider,
             provider_label=label,
-            summary=f"Workspace restriction is system-enforced by {label}.",
+            summary=f"{label} restricts file writes outside the workspace.",
+            mode="workspace-write",
+            available=True,
+            file_write_restricted=True,
         )
 
     if environ is None:
@@ -215,10 +236,16 @@ def workspace_sandbox_status(
             provider=status.provider,
             provider_label=_provider_label(status.provider),
             summary=(
-                f"Workspace restriction is system-enforced by {_provider_label(status.provider)}."
+                f"{_provider_label(status.provider)} restricts file writes outside the workspace."
                 if status.enforced
                 else f"Workspace sandbox unavailable: {status.reason or status.provider}."
             ),
+            mode=status.mode.value,
+            available=status.available,
+            file_write_restricted=status.file_write_restricted,
+            file_read_restricted=status.file_read_restricted,
+            network_restricted=status.network_restricted,
+            uncovered_processes=status.uncovered_processes,
         )
 
     return WorkspaceSandboxStatus(
@@ -229,6 +256,9 @@ def workspace_sandbox_status(
         provider="none",
         provider_label=_provider_label("none"),
         summary="Workspace restriction uses nanobot application-level guards.",
+        mode="workspace-write",
+        available=False,
+        file_write_restricted=False,
     )
 
 

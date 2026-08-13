@@ -3,27 +3,11 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 from pathlib import Path
+from typing import Literal
 
 from nanobot.security.sandbox.types import SandboxMode, SandboxUnavailableError
-
-_SYSTEM_RUNTIME_ROOTS = (
-    Path("/usr"),
-    Path("/bin"),
-    Path("/sbin"),
-    Path("/System"),
-    Path("/Library"),
-    Path("/etc"),
-    Path("/opt/homebrew"),
-    Path("/usr/local"),
-)
-
-
-def runtime_readable_roots() -> tuple[Path, ...]:
-    """Roots needed to execute platform tools without exposing user home data."""
-    return tuple(
-        dict.fromkeys(root.resolve(strict=False) for root in _SYSTEM_RUNTIME_ROOTS if root.exists())
-    )
 
 
 def _quote(value: str | Path) -> str:
@@ -34,48 +18,43 @@ def profile_text(
     *,
     mode: SandboxMode,
     workspace: Path,
-    readable_roots: tuple[Path, ...] = (),
-    writable_roots: tuple[Path, ...] = (),
-    allow_network: bool = False,
 ) -> str:
-    """Build a deny-by-default Seatbelt profile for one task launch."""
+    """Build a file-write-only Seatbelt profile for one process launch."""
     ws = workspace.expanduser().resolve(strict=False)
-    reads = tuple(dict.fromkeys((*runtime_readable_roots(), ws, *readable_roots)))
-    writes = () if mode == SandboxMode.READ_ONLY else tuple(dict.fromkeys((ws, *writable_roots)))
+    writes: tuple[Path, ...] = ()
+    if mode == SandboxMode.WORKSPACE_WRITE:
+        writes = tuple(
+            dict.fromkeys(
+                path.expanduser().resolve(strict=False)
+                for path in (ws, Path("/tmp"), Path(tempfile.gettempdir()))
+            )
+        )
 
     lines = [
         "(version 1)",
-        "(deny default)",
-        '(import "system.sb")',
-        "(allow process*)",
-        "(allow signal (target self))",
-        "(allow sysctl-read)",
-        "(allow mach-lookup)",
-        "(allow ipc-posix-shm-read-data)",
-        "(allow file-read-metadata)",
-        "(allow network-outbound)" if allow_network else "(deny network*)",
+        "(allow default)",
+        "(deny file-write*)",
+        f'(allow file-write* (literal "{_quote(Path("/dev/null"))}"))',
     ]
-    for root in reads:
-        lines.append(f'(allow file-read* (subpath "{_quote(root)}"))')
     for root in writes:
         lines.append(f'(allow file-write* (subpath "{_quote(root)}"))')
-
-    protected = (
-        ws / ".git",
-        ws / ".nanobot-runtime" / "interactions",
-        ws / ".nanobot-runtime" / "checkpoints",
-        ws / ".nanobot-runtime" / "trace",
-    )
-    for root in protected:
-        lines.append(f'(deny file-read* (literal "{_quote(root)}"))')
-        lines.append(f'(deny file-read* (subpath "{_quote(root)}"))')
-        lines.append(f'(deny file-write* (literal "{_quote(root)}"))')
-        lines.append(f'(deny file-write* (subpath "{_quote(root)}"))')
     return "\n".join(lines) + "\n"
+
+
+def classify_failure(returncode: int | None, stderr: str) -> Literal["runner_failed", "denied"] | None:
+    """Classify Seatbelt infrastructure failure before ordinary write denial."""
+    if returncode is None:
+        return None
+    lowered = stderr.lower()
+    if "sandbox-exec:" in lowered:
+        return "runner_failed"
+    if "operation not permitted" in lowered:
+        return "denied"
+    return None
 
 
 def wrap_argv(profile: str, argv: tuple[str, ...]) -> tuple[str, ...]:
     binary = shutil.which("sandbox-exec")
     if not binary:
         raise SandboxUnavailableError("sandbox_unavailable", "macOS sandbox-exec is unavailable")
-    return (binary, "-p", profile, *argv)
+    return (binary, "-p", profile, "--", *argv)

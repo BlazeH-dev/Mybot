@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 
 
@@ -22,7 +24,31 @@ class ApprovalsReviewer(StrEnum):
     USER = "user"
 
 
-NetworkMode = Literal["denied", "approved_domains", "unrestricted"]
+NetworkMode = Literal["unrestricted"]
+SandboxEnforcement = Literal["full", "none"]
+
+
+def command_hash(command: str) -> str:
+    """Return the stable digest used to identify one process launch."""
+    return hashlib.sha256(command.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxExecutionPolicy:
+    """Complete file-write policy resolved for one process launch."""
+
+    mode: SandboxMode
+    workspace_root: str
+
+    @classmethod
+    def resolve(
+        cls,
+        *,
+        mode: SandboxMode,
+        workspace: str | Path,
+    ) -> "SandboxExecutionPolicy":
+        root = Path(workspace).expanduser().resolve(strict=False)
+        return cls(mode=mode, workspace_root=str(root))
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,11 +60,15 @@ class SandboxStatus:
     reason: str | None
     writable_roots: tuple[str, ...] = ()
     readable_roots: tuple[str, ...] = ()
-    network: NetworkMode = "denied"
+    enforcement: SandboxEnforcement = "none"
+    file_write_restricted: bool = False
+    file_read_restricted: bool = False
+    network_restricted: bool = False
+    network: NetworkMode = "unrestricted"
     uncovered_processes: tuple[str, ...] = (
+        "stdio_mcp",
+        "officecli_internal",
         "gateway",
-        "channels",
-        "preconfigured_stdio_mcp",
     )
 
     def as_dict(self) -> dict[str, object]:
@@ -67,10 +97,9 @@ class LaunchSpec:
     provider: str
     enforced: bool
     command_hash: str
+    enforcement: SandboxEnforcement = "none"
     writable_roots: tuple[str, ...] = ()
     readable_roots: tuple[str, ...] = ()
-    network_domains: tuple[str, ...] = ()
-    network_ports: tuple[int, ...] = ()
     metadata: dict[str, object] = field(default_factory=dict)
 
     def summary(self) -> dict[str, object]:
@@ -79,11 +108,10 @@ class LaunchSpec:
             "mode": self.mode.value,
             "provider": self.provider,
             "enforced": self.enforced,
+            "enforcement": self.enforcement,
             "command_hash": self.command_hash,
             "writable_roots": list(self.writable_roots),
             "readable_roots": list(self.readable_roots),
-            "network_domains": list(self.network_domains),
-            "network_ports": list(self.network_ports),
             **self.metadata,
         }
 

@@ -17,7 +17,8 @@ from nanobot.agent.tools.schema import (
     StringSchema,
     tool_parameters_schema,
 )
-from nanobot.security.sandbox import LaunchSpec, SandboxMode, SandboxUnavailableError
+from nanobot.runtime.trace import emit_trace_event
+from nanobot.security.sandbox import LaunchSpec, SandboxMode, SandboxUnavailableError, seatbelt
 
 DEFAULT_YIELD_MS = 1000
 MAX_YIELD_MS = 30_000
@@ -38,6 +39,7 @@ class _SessionPoll:
     terminated: bool = False
     stdin_closed: bool = False
     truncated_chars: int = 0
+    sandbox_failure: str | None = None
 
 
 @dataclass(slots=True)
@@ -62,17 +64,20 @@ class _ExecSession:
         cwd: str,
         timeout: int | None,
         owner_session_key: str | None = None,
+        launch: LaunchSpec,
     ) -> None:
         self.session_id = session_id
         self.process = process
         self.command = command
         self.cwd = cwd
         self.owner_session_key = owner_session_key
+        self.launch = launch
         self.started_at = time.monotonic()
         # timeout None/0 means no limit; an infinite deadline is never reached.
         self.deadline = time.monotonic() + timeout if timeout else float("inf")
         self.last_access = time.monotonic()
         self._chunks: list[str] = []
+        self._sandbox_stderr_tail = ""
         self._lock = asyncio.Lock()
         self._timed_out = False
         self._stdout_task = asyncio.create_task(self._read_stream(process.stdout, ""))
@@ -96,6 +101,8 @@ class _ExecSession:
                 first = False
             async with self._lock:
                 self._chunks.append(text)
+                if prefix:
+                    self._sandbox_stderr_tail = (self._sandbox_stderr_tail + text)[-8192:]
 
     async def write(self, chars: str) -> str | None:
         if self.process.returncode is not None:
@@ -149,6 +156,22 @@ class _ExecSession:
             self._chunks.clear()
 
         output, truncated = _truncate_output(output, max_output_chars)
+        sandbox_failure = (
+            seatbelt.classify_failure(self.process.returncode, self._sandbox_stderr_tail)
+            if self.launch.provider == "seatbelt"
+            else None
+        )
+        if sandbox_failure is not None:
+            emit_trace_event(
+                "mybot.sandbox.result",
+                {
+                    "provider": self.launch.provider,
+                    "mode": self.launch.mode.value,
+                    "classification": sandbox_failure,
+                    "command_hash": self.launch.command_hash,
+                    "session_id": self.session_id,
+                },
+            )
         return _SessionPoll(
             output=output,
             done=self.process.returncode is not None,
@@ -158,6 +181,7 @@ class _ExecSession:
             terminated=terminated,
             stdin_closed=stdin_closed,
             truncated_chars=truncated,
+            sandbox_failure=sandbox_failure,
         )
 
     async def kill(self) -> None:
@@ -203,7 +227,7 @@ class ExecSessionManager:
                 raise
             except Exception as exc:
                 if launch.mode != SandboxMode.DANGER_FULL_ACCESS:
-                    raise SandboxUnavailableError("sandbox_start_failed", str(exc)) from exc
+                    raise SandboxUnavailableError("sandbox_unavailable", str(exc)) from exc
                 raise
             session_id = uuid.uuid4().hex[:12]
             session = _ExecSession(
@@ -213,6 +237,7 @@ class ExecSessionManager:
                 cwd=launch.cwd,
                 timeout=timeout,
                 owner_session_key=owner_session_key,
+                launch=launch,
             )
             self._sessions[session_id] = session
 
@@ -335,7 +360,11 @@ def _truncate_output(output: str, max_output_chars: int) -> tuple[str, int]:
 
 
 def format_session_poll(session_id: str, poll: _SessionPoll) -> str:
+    if poll.sandbox_failure == "runner_failed":
+        return "Error: sandbox_unavailable: sandbox-exec runner failed"
     parts = [poll.output] if poll.output else []
+    if poll.sandbox_failure == "denied":
+        parts.append("Sandbox: denied (file write blocked by macOS Seatbelt)")
     if poll.truncated_chars:
         parts.append(f"(output truncated by {poll.truncated_chars:,} chars)")
     if poll.timed_out:

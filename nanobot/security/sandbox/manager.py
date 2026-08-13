@@ -1,10 +1,11 @@
-"""Sandbox provider detection, capability reporting, and fail-closed selection."""
+"""Seatbelt capability reporting and fail-closed platform selection."""
 
 from __future__ import annotations
 
 import platform
 import shutil
 import subprocess
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 
@@ -17,13 +18,7 @@ class SandboxManager:
 
     @property
     def provider(self) -> str:
-        if self.system == "darwin":
-            return "seatbelt"
-        if self.system == "linux":
-            return "bwrap"
-        if self.system == "windows":
-            return "unsupported"
-        return "unsupported"
+        return "seatbelt" if self.system == "darwin" else "unsupported"
 
     @lru_cache(maxsize=8)
     def provider_available(self) -> tuple[bool, str | None]:
@@ -32,33 +27,17 @@ class SandboxManager:
             binary = shutil.which("sandbox-exec")
             if not binary:
                 return False, "sandbox-exec not found"
-            result = subprocess.run(
-                [binary, "-p", "(version 1) (allow default)", "/usr/bin/true"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            return (
-                result.returncode == 0,
-                None if result.returncode == 0 else (result.stderr.strip() or "Seatbelt smoke failed"),
-            )
-        if provider == "bwrap":
-            binary = shutil.which("bwrap")
-            if not binary:
-                return False, "bwrap not found"
             try:
                 result = subprocess.run(
                     [
                         binary,
-                        "--new-session",
-                        "--die-with-parent",
-                        "--ro-bind",
-                        "/",
-                        "/",
-                        "--unshare-net",
+                        "-p",
+                        (
+                            "(version 1) (allow default) (deny file-write*) "
+                            '(allow file-write* (literal "/dev/null"))'
+                        ),
                         "--",
-                        "/bin/true",
+                        "/usr/bin/true",
                     ],
                     capture_output=True,
                     text=True,
@@ -69,17 +48,15 @@ class SandboxManager:
                 return False, str(exc)
             return (
                 result.returncode == 0,
-                None if result.returncode == 0 else (result.stderr.strip() or "Bubblewrap smoke failed"),
+                None if result.returncode == 0 else (result.stderr.strip() or "Seatbelt smoke failed"),
             )
-        return False, "native Windows/unknown OS provider is unsupported"
+        return False, "restricted process execution is supported only on macOS Seatbelt"
 
     def status(
         self,
         *,
         mode: SandboxMode,
         workspace: str | Path,
-        readable_roots: tuple[str | Path, ...] = (),
-        writable_roots: tuple[str | Path, ...] = (),
     ) -> SandboxStatus:
         ws = str(Path(workspace).expanduser().resolve(strict=False))
         if mode == SandboxMode.DANGER_FULL_ACCESS:
@@ -89,19 +66,23 @@ class SandboxManager:
                 enforced=False,
                 available=True,
                 reason="User explicitly selected Full Access.",
-                writable_roots=(ws,),
-                readable_roots=(ws,),
+                writable_roots=("/",),
+                readable_roots=("/",),
+                enforcement="none",
                 network="unrestricted",
             )
         available, reason = self.provider_available()
-        writes = () if mode == SandboxMode.READ_ONLY else (
-            ws,
-            *(str(Path(p).expanduser().resolve(strict=False)) for p in writable_roots),
-        )
-        reads = (
-            ws,
-            *(str(Path(p).expanduser().resolve(strict=False)) for p in readable_roots),
-        )
+        writes = (str(Path("/dev/null").resolve(strict=False)),)
+        if mode == SandboxMode.WORKSPACE_WRITE:
+            writes = tuple(
+                dict.fromkeys(
+                    (
+                        ws,
+                        str(Path("/tmp").resolve(strict=False)),
+                        str(Path(tempfile.gettempdir()).resolve(strict=False)),
+                    )
+                )
+            )
         return SandboxStatus(
             mode=mode,
             provider=self.provider,
@@ -109,6 +90,10 @@ class SandboxManager:
             available=available,
             reason=reason,
             writable_roots=tuple(dict.fromkeys(writes)),
-            readable_roots=tuple(dict.fromkeys(reads)),
-            network="denied",
+            readable_roots=("/",),
+            enforcement="full" if available else "none",
+            file_write_restricted=available,
+            file_read_restricted=False,
+            network_restricted=False,
+            network="unrestricted",
         )
