@@ -56,11 +56,56 @@
     },
     "apps": "應用",
     "evaluations": "評測",
+    "skillEvolution": "Skill evolution",
     "skills": {
       "title": "技能"
     }
   },
   "evaluations": {"title": "評測中心", "subtitle": "Benchmark 執行、評分進度與 Langfuse 跳轉", "refresh": "重新整理", "suite": "評測套件", "profile": "Profile", "action": "操作", "benchmarks": "Benchmark", "skills": "技能", "models": "模型 preset", "runtimeProfiles": "Runtime profile", "licensedPrepare": "準備已授權內容", "estimate": "估算與硬門", "start": "啟動評測", "startPrepare": "開始準備", "current": "目前佇列", "noCurrent": "沒有執行中或排隊中的評測。", "history": "歷史結果", "noHistory": "還沒有評測記錄。", "confirmTitle": "確認啟動評測", "confirmRisk": "我已核對 token 估算和資料上傳範圍。"},
+  "skillEvolution": {
+    "title": "Evaluation-driven Skill evolution",
+    "subtitle": "Extract transferable lessons from low-scoring Cases, review a derived Skill, and rerun only the selected Cases.",
+    "refresh": "Refresh",
+    "baselineRun": "Baseline run",
+    "threshold": "Low-score threshold",
+    "optimizerModel": "Optimizer model",
+    "evaluationModel": "Evaluation model",
+    "analyze": "Analyze {{count}} low-scoring Cases",
+    "cancel": "Cancel",
+    "badCases": "Bad Cases",
+    "selectAll": "Select all",
+    "deselectAll": "Deselect all",
+    "loading": "Loading...",
+    "model": "Model",
+    "score": "Score",
+    "noBadCases": "No Cases are below the selected threshold.",
+    "emptyAnalysis": "Select low-scoring Cases and run analysis.",
+    "activity": "Activity",
+    "waitingActivity": "Waiting for activity...",
+    "analysis": "Root-cause analysis",
+    "reanalyze": "Reanalyze",
+    "evolve": "Modify Skill from {{count}} reason categories",
+    "risk": "Risk",
+    "trigger": "Trigger",
+    "requiredAction": "Required action",
+    "entrypoint": "Entrypoint",
+    "requiredOutputs": "Required outputs",
+    "interventionValidation": "Interventions and deterministic probes",
+    "probesPassed": "Probes passed",
+    "probesFailed": "Probes failed",
+    "probePassed": "passed",
+    "probeFailed": "failed",
+    "test": "Test selected Cases",
+    "revise": "Revise",
+    "apply": "Apply",
+    "switchBack": "Switch back",
+    "changes": "Candidate changes",
+    "testResults": "Retest results",
+    "recommended": "Recommended: the overall mean score improved across target Cases.",
+    "notRecommended": "The system does not recommend applying this revision; the user may still decide after review.",
+    "meanDelta": "Mean change: {{value}}",
+    "tokenChange": "Mean token change: {{value}}"
+  },
   "settings": {
     "backToChat": "返回聊天",
     "sidebar": {
@@ -104,7 +149,8 @@
       "nativeHost": "原生宿主",
       "observability": "可觀測性",
       "hostSafety": "App 安全",
-      "voiceInput": "語音辨識"
+      "voiceInput": "語音辨識",
+      "toolCalling": "Tool calling"
     },
     "rows": {
       "theme": "主題",
@@ -154,7 +200,8 @@
       "transcriptionModel": "模型",
       "transcriptionLanguage": "語言",
       "voiceLimits": "限制",
-      "langfuseTrace": "傳送 Trace 到 Langfuse"
+      "langfuseTrace": "傳送 Trace 到 Langfuse",
+      "toolCallingMode": "Mode"
     },
     "help": {
       "theme": "在淺色與深色外觀之間切換。",
@@ -201,7 +248,8 @@
       "transcriptionLanguage": "可選 ISO-639 語言提示，例如 en、zh、ja 或 ko。",
       "langfuseEnabled": "重新啟動後，新對話 Trace 將傳送到 Langfuse。",
       "langfuseDisabled": "重新啟動後，對話 Trace 僅儲存在本機 JSONL 檔案中。",
-      "langfuseNotConfigured": "請先在 config.json 中設定 Langfuse public key 與 secret key。"
+      "langfuseNotConfigured": "請先在 config.json 中設定 Langfuse public key 與 secret key。",
+      "toolCallingMode": "Select the tool interface used from the next model turn."
     },
     "values": {
       "light": "淺色",
@@ -225,7 +273,10 @@
       "configured": "已配置",
       "notConfigured": "未配置",
       "pending": "等待中",
-      "restartingEngine": "正在重啟"
+      "restartingEngine": "正在重啟",
+      "native": "Native",
+      "code": "Code",
+      "both": "Both"
     },
     "status": {
       "loading": "正在載入設定...",

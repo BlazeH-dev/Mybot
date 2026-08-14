@@ -199,6 +199,8 @@ class SubagentManager:
         return ToolsConfig(
             exec=self.tools_config.exec,
             web=self.tools_config.web,
+            mode=self.tools_config.mode,
+            ptc=self.tools_config.ptc,
             restrict_to_workspace=self.restrict_to_workspace,
         )
 
@@ -701,6 +703,9 @@ class SubagentManager:
                         actor=f"child:{task_id}",
                         task_id=safe_parent_task,
                         plan_hash=parent_plan_hash,
+                        tool_mode=cfg.mode,
+                        ptc_config=cfg.ptc,
+                        sandbox_mode=SandboxMode.WORKSPACE_WRITE,
                     ))
                     for key, value in result.usage.items():
                         cumulative_usage[key] = cumulative_usage.get(key, 0) + int(value)

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pyarrow as pa
 import pyarrow.parquet as parquet
 import pytest
+from pydantic import BaseModel
 from typer.testing import CliRunner
 
 from nanobot.benchmark_adapters import materialize_ocb
@@ -24,6 +25,7 @@ from nanobot.cli.benchmark import (
     _deterministic_stratified_rows,
     _download_hf_snapshot,
     _download_ocb_references,
+    _emit_evaluation_progress,
     _enqueue_review_items,
     _ensure_experiment_complete,
     _flush_benchmark_runtime,
@@ -49,6 +51,26 @@ from nanobot.runtime.langfuse import LangfuseFlushTimeoutError
 
 def _response(data, **meta):
     return SimpleNamespace(data=data, meta=SimpleNamespace(**meta))
+
+
+def test_evaluation_progress_serializes_pydantic_scores(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Score(BaseModel):
+        name: str
+        value: float
+
+    progress = tmp_path / "progress.jsonl"
+    monkeypatch.setenv("NANOBOT_EVALUATION_PROGRESS_LOG", str(progress))
+
+    _emit_evaluation_progress(
+        "case_reconciled",
+        scores={"mybot_score": Score(name="mybot_score", value=0.75)},
+    )
+
+    event = json.loads(progress.read_text(encoding="utf-8"))
+    assert event["scores"]["mybot_score"] == {"name": "mybot_score", "value": 0.75}
 
 
 class _FakeCloudRuntime:

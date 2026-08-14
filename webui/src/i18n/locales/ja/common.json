@@ -56,11 +56,56 @@
     },
     "apps": "アプリ",
     "evaluations": "Evaluations",
+    "skillEvolution": "Skill evolution",
     "skills": {
       "title": "スキル"
     }
   },
   "evaluations": {"title": "Evaluation center", "subtitle": "Benchmark runs, scoring progress, and Langfuse handoff", "refresh": "Refresh", "suite": "Suite", "profile": "Profile", "action": "Action", "benchmarks": "Benchmarks", "skills": "Skills", "models": "Model presets", "runtimeProfiles": "Runtime profiles", "licensedPrepare": "Prepare licensed content", "estimate": "Estimate and gates", "start": "Start evaluation", "startPrepare": "Start prepare", "current": "Current queue", "noCurrent": "No active or queued evaluations.", "history": "Run history", "noHistory": "No evaluation runs yet.", "confirmTitle": "Confirm evaluation launch", "confirmRisk": "I reviewed the token estimate and data upload scope."},
+  "skillEvolution": {
+    "title": "Evaluation-driven Skill evolution",
+    "subtitle": "Extract transferable lessons from low-scoring Cases, review a derived Skill, and rerun only the selected Cases.",
+    "refresh": "Refresh",
+    "baselineRun": "Baseline run",
+    "threshold": "Low-score threshold",
+    "optimizerModel": "Optimizer model",
+    "evaluationModel": "Evaluation model",
+    "analyze": "Analyze {{count}} low-scoring Cases",
+    "cancel": "Cancel",
+    "badCases": "Bad Cases",
+    "selectAll": "Select all",
+    "deselectAll": "Deselect all",
+    "loading": "Loading...",
+    "model": "Model",
+    "score": "Score",
+    "noBadCases": "No Cases are below the selected threshold.",
+    "emptyAnalysis": "Select low-scoring Cases and run analysis.",
+    "activity": "Activity",
+    "waitingActivity": "Waiting for activity...",
+    "analysis": "Root-cause analysis",
+    "reanalyze": "Reanalyze",
+    "evolve": "Modify Skill from {{count}} reason categories",
+    "risk": "Risk",
+    "trigger": "Trigger",
+    "requiredAction": "Required action",
+    "entrypoint": "Entrypoint",
+    "requiredOutputs": "Required outputs",
+    "interventionValidation": "Interventions and deterministic probes",
+    "probesPassed": "Probes passed",
+    "probesFailed": "Probes failed",
+    "probePassed": "passed",
+    "probeFailed": "failed",
+    "test": "Test selected Cases",
+    "revise": "Revise",
+    "apply": "Apply",
+    "switchBack": "Switch back",
+    "changes": "Candidate changes",
+    "testResults": "Retest results",
+    "recommended": "Recommended: the overall mean score improved across target Cases.",
+    "notRecommended": "The system does not recommend applying this revision; the user may still decide after review.",
+    "meanDelta": "Mean change: {{value}}",
+    "tokenChange": "Mean token change: {{value}}"
+  },
   "settings": {
     "backToChat": "チャットに戻る",
     "sidebar": {
@@ -104,7 +149,8 @@
       "nativeHost": "ネイティブホスト",
       "observability": "可観測性",
       "hostSafety": "アプリの安全性",
-      "voiceInput": "音声入力"
+      "voiceInput": "音声入力",
+      "toolCalling": "Tool calling"
     },
     "rows": {
       "theme": "テーマ",
@@ -154,7 +200,8 @@
       "transcriptionModel": "モデル",
       "transcriptionLanguage": "言語",
       "voiceLimits": "制限",
-      "langfuseTrace": "トレースを Langfuse に送信"
+      "langfuseTrace": "トレースを Langfuse に送信",
+      "toolCallingMode": "Mode"
     },
     "help": {
       "theme": "ライト表示とダーク表示を切り替えます。",
@@ -201,7 +248,8 @@
       "transcriptionLanguage": "en、zh、ja、ko などの任意の ISO-639 ヒント。",
       "langfuseEnabled": "再起動後、新しい会話のトレースを Langfuse に送信します。",
       "langfuseDisabled": "再起動後、会話のトレースをローカル JSONL ファイルに保存します。",
-      "langfuseNotConfigured": "先に config.json で Langfuse の公開キーと秘密キーを設定してください。"
+      "langfuseNotConfigured": "先に config.json で Langfuse の公開キーと秘密キーを設定してください。",
+      "toolCallingMode": "Select the tool interface used from the next model turn."
     },
     "values": {
       "light": "ライト",
@@ -225,7 +273,10 @@
       "configured": "設定済み",
       "notConfigured": "未設定",
       "pending": "保留中",
-      "restartingEngine": "再起動中"
+      "restartingEngine": "再起動中",
+      "native": "Native",
+      "code": "Code",
+      "both": "Both"
     },
     "status": {
       "loading": "設定を読み込んでいます...",

@@ -583,10 +583,15 @@ class GatewayHTTPHandler:
                 finding_ids = json.loads(raw_findings)
                 if not isinstance(finding_ids, list):
                     raise ValueError("finding_ids must be an array")
+                raw_categories = _query_first(query, "category_ids") or "[]"
+                category_ids = json.loads(raw_categories)
+                if not isinstance(category_ids, list):
+                    raise ValueError("category_ids must be an array")
                 if action == "evolve":
                     task = self.skill_evolution.start_evolution(
                         task_id,
                         [str(value) for value in finding_ids],
+                        category_ids=[str(value) for value in category_ids],
                         analysis_id=_query_first(query, "analysis_id"),
                         analysis_digest=_query_first(query, "analysis_digest"),
                     )
@@ -596,6 +601,7 @@ class GatewayHTTPHandler:
                     task = self.skill_evolution.revise(
                         task_id,
                         [str(value) for value in finding_ids] or None,
+                        [str(value) for value in category_ids] or None,
                     )
                 elif action == "cancel":
                     task = self.skill_evolution.cancel(task_id)

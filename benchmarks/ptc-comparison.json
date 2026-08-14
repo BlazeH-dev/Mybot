@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "measurement_kind": "deterministic_fake_provider",
+  "native": {
+    "success_rate": 1.0,
+    "wall_clock_ms": 150,
+    "llm_round_trips": 4,
+    "tool_calls": 3,
+    "model_visible_tool_result_chars": 3000,
+    "input_tokens": 900,
+    "output_tokens": 180,
+    "failures": 0
+  },
+  "ptc": {
+    "success_rate": 1.0,
+    "wall_clock_ms": 70,
+    "llm_round_trips": 2,
+    "tool_calls": 3,
+    "model_visible_tool_result_chars": 240,
+    "input_tokens": 620,
+    "output_tokens": 130,
+    "failures": 0
+  },
+  "delta": {
+    "success_rate": 0.0,
+    "wall_clock_ms": -80.0,
+    "llm_round_trips": -2.0,
+    "tool_calls": 0.0,
+    "model_visible_tool_result_chars": -2760.0,
+    "input_tokens": -280.0,
+    "output_tokens": -50.0,
+    "failures": 0.0
+  }
+}

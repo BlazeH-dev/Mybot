@@ -56,11 +56,56 @@
     },
     "apps": "앱",
     "evaluations": "Evaluations",
+    "skillEvolution": "Skill evolution",
     "skills": {
       "title": "스킬"
     }
   },
   "evaluations": {"title": "Evaluation center", "subtitle": "Benchmark runs, scoring progress, and Langfuse handoff", "refresh": "Refresh", "suite": "Suite", "profile": "Profile", "action": "Action", "benchmarks": "Benchmarks", "skills": "Skills", "models": "Model presets", "runtimeProfiles": "Runtime profiles", "licensedPrepare": "Prepare licensed content", "estimate": "Estimate and gates", "start": "Start evaluation", "startPrepare": "Start prepare", "current": "Current queue", "noCurrent": "No active or queued evaluations.", "history": "Run history", "noHistory": "No evaluation runs yet.", "confirmTitle": "Confirm evaluation launch", "confirmRisk": "I reviewed the token estimate and data upload scope."},
+  "skillEvolution": {
+    "title": "Evaluation-driven Skill evolution",
+    "subtitle": "Extract transferable lessons from low-scoring Cases, review a derived Skill, and rerun only the selected Cases.",
+    "refresh": "Refresh",
+    "baselineRun": "Baseline run",
+    "threshold": "Low-score threshold",
+    "optimizerModel": "Optimizer model",
+    "evaluationModel": "Evaluation model",
+    "analyze": "Analyze {{count}} low-scoring Cases",
+    "cancel": "Cancel",
+    "badCases": "Bad Cases",
+    "selectAll": "Select all",
+    "deselectAll": "Deselect all",
+    "loading": "Loading...",
+    "model": "Model",
+    "score": "Score",
+    "noBadCases": "No Cases are below the selected threshold.",
+    "emptyAnalysis": "Select low-scoring Cases and run analysis.",
+    "activity": "Activity",
+    "waitingActivity": "Waiting for activity...",
+    "analysis": "Root-cause analysis",
+    "reanalyze": "Reanalyze",
+    "evolve": "Modify Skill from {{count}} reason categories",
+    "risk": "Risk",
+    "trigger": "Trigger",
+    "requiredAction": "Required action",
+    "entrypoint": "Entrypoint",
+    "requiredOutputs": "Required outputs",
+    "interventionValidation": "Interventions and deterministic probes",
+    "probesPassed": "Probes passed",
+    "probesFailed": "Probes failed",
+    "probePassed": "passed",
+    "probeFailed": "failed",
+    "test": "Test selected Cases",
+    "revise": "Revise",
+    "apply": "Apply",
+    "switchBack": "Switch back",
+    "changes": "Candidate changes",
+    "testResults": "Retest results",
+    "recommended": "Recommended: the overall mean score improved across target Cases.",
+    "notRecommended": "The system does not recommend applying this revision; the user may still decide after review.",
+    "meanDelta": "Mean change: {{value}}",
+    "tokenChange": "Mean token change: {{value}}"
+  },
   "settings": {
     "backToChat": "채팅으로 돌아가기",
     "sidebar": {
@@ -104,7 +149,8 @@
       "nativeHost": "네이티브 호스트",
       "observability": "관측 가능성",
       "hostSafety": "앱 보안",
-      "voiceInput": "음성 입력"
+      "voiceInput": "음성 입력",
+      "toolCalling": "Tool calling"
     },
     "rows": {
       "theme": "테마",
@@ -154,7 +200,8 @@
       "transcriptionModel": "모델",
       "transcriptionLanguage": "언어",
       "voiceLimits": "제한",
-      "langfuseTrace": "Trace를 Langfuse로 전송"
+      "langfuseTrace": "Trace를 Langfuse로 전송",
+      "toolCallingMode": "Mode"
     },
     "help": {
       "theme": "밝은 모드와 어두운 모드를 전환합니다.",
@@ -201,7 +248,8 @@
       "transcriptionLanguage": "en, zh, ja, ko 같은 선택적 ISO-639 힌트입니다.",
       "langfuseEnabled": "재시작 후 새 대화 Trace가 Langfuse로 전송됩니다.",
       "langfuseDisabled": "재시작 후 대화 Trace가 로컬 JSONL 파일에 저장됩니다.",
-      "langfuseNotConfigured": "먼저 config.json에서 Langfuse public key와 secret key를 설정하세요."
+      "langfuseNotConfigured": "먼저 config.json에서 Langfuse public key와 secret key를 설정하세요.",
+      "toolCallingMode": "Select the tool interface used from the next model turn."
     },
     "values": {
       "light": "라이트",
@@ -225,7 +273,10 @@
       "configured": "구성됨",
       "notConfigured": "미구성",
       "pending": "대기 중",
-      "restartingEngine": "재시작 중"
+      "restartingEngine": "재시작 중",
+      "native": "Native",
+      "code": "Code",
+      "both": "Both"
     },
     "status": {
       "loading": "설정을 불러오는 중...",

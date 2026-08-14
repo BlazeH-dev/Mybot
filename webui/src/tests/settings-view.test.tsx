@@ -225,6 +225,80 @@ describe("SettingsView observability", () => {
   });
 });
 
+describe("SettingsView PTC mode", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("saves the selected tool calling mode for the next model turn", async () => {
+    const initial: SettingsPayload = {
+      ...settingsPayload(),
+      tools: {
+        mode: "native",
+        ptc: {
+          max_parallel_sub_calls: 10,
+          compute_timeout_seconds: 60,
+          wall_timeout_seconds: 600,
+          max_output_chars: 65_536,
+          sandbox: "auto",
+        },
+      },
+    };
+    const updated: SettingsPayload = {
+      ...initial,
+      tools: { ...initial.tools!, mode: "code" },
+      requires_restart: false,
+      restart_required_sections: [],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings" && init?.method === "PATCH") {
+        return jsonResponse(updated);
+      }
+      if (url === "/api/settings") return jsonResponse(initial);
+      if (url === "/api/settings/cli-apps") {
+        return jsonResponse({ apps: [], installed_count: 0 });
+      }
+      if (url === "/api/settings/mcp-presets") {
+        return jsonResponse({ presets: [], installed_count: 0 });
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSettingsView({ initialSection: "runtime", initialSettings: initial });
+
+    const mode = await screen.findByRole("group", { name: "Mode" });
+    expect(within(mode).getByRole("button", { name: "Native" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(within(mode).getByRole("button", { name: "Code" }));
+
+    const save = screen
+      .getAllByRole("button", { name: "Save" })
+      .find((button) => !button.hasAttribute("disabled"));
+    expect(save).toBeDefined();
+    fireEvent.click(save!);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/settings",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ tool_mode: "code" }),
+          headers: { Authorization: "Bearer tok", "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    expect(within(mode).getByRole("button", { name: "Code" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getAllByRole("button", { name: "Restart nanobot" })).toHaveLength(1);
+  });
+});
+
 describe("SettingsView Apps catalog", () => {
   afterEach(() => {
     vi.useRealTimers();

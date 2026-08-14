@@ -252,6 +252,21 @@ export interface ToolProgressEvent {
   error?: unknown;
   files?: unknown[];
   embeds?: unknown[];
+  type?: string;
+  parent_call_id?: string;
+  sub_call_id?: string;
+  duration_ms?: number;
+  result_summary?: string;
+  ptc_metrics?: {
+    subcall_count?: number;
+    peak_parallel?: number;
+    duration_ms?: number;
+    llm_round_trips?: number;
+    output_chars?: number;
+    intermediate_result_chars?: number;
+    saved_intermediate_result_chars?: number;
+    failure_kind?: string | null;
+  };
 }
 
 export type SubagentActivityStatus = "running" | "completed" | "failed" | "cancelled";
@@ -565,6 +580,16 @@ export interface SettingsPayload {
     };
     unified_session: boolean;
   };
+  tools?: {
+    mode: ToolCallingMode;
+    ptc: {
+      max_parallel_sub_calls: number;
+      compute_timeout_seconds: number;
+      wall_timeout_seconds: number;
+      max_output_chars: number;
+      sandbox: "auto" | "none";
+    };
+  };
   observability?: {
     langfuse: {
       enabled: boolean;
@@ -804,7 +829,10 @@ export interface SettingsUpdate {
   botName?: string;
   botIcon?: string;
   toolHintMaxLength?: number;
+  toolMode?: ToolCallingMode;
 }
+
+export type ToolCallingMode = "native" | "code" | "both";
 
 export interface ModelConfigurationCreate {
   name?: string;
@@ -1111,6 +1139,34 @@ export interface SkillEvolutionFinding {
   should_modify_skill: boolean;
 }
 
+export type SkillEvolutionRepairMode =
+  | "script_required"
+  | "workflow_required"
+  | "not_skill_repairable";
+
+export interface SkillEvolutionIntervention {
+  repair_mode: SkillEvolutionRepairMode;
+  trigger: string;
+  required_action: string;
+  entrypoint: string;
+  required_outputs: string[];
+  final_answer_check: string[];
+  observable_success: string;
+}
+
+export interface SkillEvolutionReasonCategory {
+  category_id: string;
+  title: string;
+  root_cause: string;
+  fix_owner: SkillEvolutionFixOwner;
+  confidence: number;
+  finding_ids: string[];
+  case_ids: string[];
+  risk: string;
+  should_modify_skill: boolean;
+  intervention: SkillEvolutionIntervention;
+}
+
 export interface SkillEvolutionAnalysis {
   analysis_id: string;
   parent_analysis_id?: string | null;
@@ -1118,6 +1174,7 @@ export interface SkillEvolutionAnalysis {
   digest: string;
   summary: string;
   findings: SkillEvolutionFinding[];
+  categories?: SkillEvolutionReasonCategory[];
   clusters: Array<{
     root_cause: string;
     fix_owner: string;
@@ -1167,9 +1224,26 @@ export interface SkillEvolutionRevision {
   diff: string;
   validation: { valid: boolean; errors: string[] };
   security_smoke?: { valid: boolean; errors: string[] };
+  intervention_validation?: {
+    valid: boolean;
+    errors: string[];
+    probe_results: Array<{
+      category_id: string;
+      case_id: string;
+      assets: string[];
+      returncode: number;
+      valid?: boolean;
+      missing_fields?: string[];
+      semantic_errors?: string[];
+      error?: string;
+    }>;
+  };
   analysis_id?: string;
   analysis_digest?: string;
   finding_ids?: string[];
+  category_ids?: string[];
+  target_case_ids?: string[];
+  interventions?: SkillEvolutionIntervention[];
   agent?: {
     tools_used: string[];
     usage: Record<string, number>;
@@ -1184,17 +1258,42 @@ export interface SkillEvolutionRevision {
     evolved_score: number | null;
     delta: number | null;
     status: string;
-    scope?: "selected" | "regression";
+    scope?: "target" | "selected" | "regression";
+    category_ids?: string[];
     trace_url?: string | null;
     error?: string | null;
     baseline_usage?: Record<string, number> | null;
     evolved_usage?: Record<string, number> | null;
+    candidate_output?: string;
+    judge_reasoning?: string[];
+    tool_sequence?: string[];
+    tool_errors?: string[];
+    stop_reason?: string | null;
+    intervention_feedback?: Array<{
+      category_id: string;
+      repair_mode?: SkillEvolutionRepairMode;
+      entrypoint: string;
+      entrypoint_observed: boolean;
+      required_outputs: string[];
+      required_outputs_observed: string[];
+      final_answer_check: string[];
+    }>;
   }>;
   recommendation?: {
     recommended: boolean;
-    no_selected_regressions: boolean;
-    at_least_one_improvement: boolean;
-    no_fixed_regressions?: boolean;
+    all_target_cases_scored?: boolean;
+    mean_delta?: number | null;
+    improved_cases?: number;
+    unchanged_cases?: number;
+    regressed_cases?: number;
+    category_summaries?: Array<{
+      category_id: string;
+      case_count: number;
+      mean_delta: number;
+      improved_cases: number;
+      unchanged_cases: number;
+      regressed_cases: number;
+    }>;
     mean_token_change?: number | null;
     disclaimer: string;
   };

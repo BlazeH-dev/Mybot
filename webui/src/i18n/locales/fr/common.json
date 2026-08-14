@@ -56,11 +56,56 @@
     },
     "apps": "Apps",
     "evaluations": "Evaluations",
+    "skillEvolution": "Skill evolution",
     "skills": {
       "title": "Compétences"
     }
   },
   "evaluations": {"title": "Evaluation center", "subtitle": "Benchmark runs, scoring progress, and Langfuse handoff", "refresh": "Refresh", "suite": "Suite", "profile": "Profile", "action": "Action", "benchmarks": "Benchmarks", "skills": "Skills", "models": "Model presets", "runtimeProfiles": "Runtime profiles", "licensedPrepare": "Prepare licensed content", "estimate": "Estimate and gates", "start": "Start evaluation", "startPrepare": "Start prepare", "current": "Current queue", "noCurrent": "No active or queued evaluations.", "history": "Run history", "noHistory": "No evaluation runs yet.", "confirmTitle": "Confirm evaluation launch", "confirmRisk": "I reviewed the token estimate and data upload scope."},
+  "skillEvolution": {
+    "title": "Evaluation-driven Skill evolution",
+    "subtitle": "Extract transferable lessons from low-scoring Cases, review a derived Skill, and rerun only the selected Cases.",
+    "refresh": "Refresh",
+    "baselineRun": "Baseline run",
+    "threshold": "Low-score threshold",
+    "optimizerModel": "Optimizer model",
+    "evaluationModel": "Evaluation model",
+    "analyze": "Analyze {{count}} low-scoring Cases",
+    "cancel": "Cancel",
+    "badCases": "Bad Cases",
+    "selectAll": "Select all",
+    "deselectAll": "Deselect all",
+    "loading": "Loading...",
+    "model": "Model",
+    "score": "Score",
+    "noBadCases": "No Cases are below the selected threshold.",
+    "emptyAnalysis": "Select low-scoring Cases and run analysis.",
+    "activity": "Activity",
+    "waitingActivity": "Waiting for activity...",
+    "analysis": "Root-cause analysis",
+    "reanalyze": "Reanalyze",
+    "evolve": "Modify Skill from {{count}} reason categories",
+    "risk": "Risk",
+    "trigger": "Trigger",
+    "requiredAction": "Required action",
+    "entrypoint": "Entrypoint",
+    "requiredOutputs": "Required outputs",
+    "interventionValidation": "Interventions and deterministic probes",
+    "probesPassed": "Probes passed",
+    "probesFailed": "Probes failed",
+    "probePassed": "passed",
+    "probeFailed": "failed",
+    "test": "Test selected Cases",
+    "revise": "Revise",
+    "apply": "Apply",
+    "switchBack": "Switch back",
+    "changes": "Candidate changes",
+    "testResults": "Retest results",
+    "recommended": "Recommended: the overall mean score improved across target Cases.",
+    "notRecommended": "The system does not recommend applying this revision; the user may still decide after review.",
+    "meanDelta": "Mean change: {{value}}",
+    "tokenChange": "Mean token change: {{value}}"
+  },
   "settings": {
     "backToChat": "Retour au chat",
     "sidebar": {
@@ -104,7 +149,8 @@
       "nativeHost": "Hôte natif",
       "observability": "Observabilite",
       "hostSafety": "Sécurité de l’app",
-      "voiceInput": "Saisie vocale"
+      "voiceInput": "Saisie vocale",
+      "toolCalling": "Tool calling"
     },
     "rows": {
       "theme": "Thème",
@@ -154,7 +200,8 @@
       "transcriptionModel": "Modele",
       "transcriptionLanguage": "Langue",
       "voiceLimits": "Limites",
-      "langfuseTrace": "Envoyer les traces a Langfuse"
+      "langfuseTrace": "Envoyer les traces a Langfuse",
+      "toolCallingMode": "Mode"
     },
     "help": {
       "theme": "Basculer entre l’apparence claire et sombre.",
@@ -201,7 +248,8 @@
       "transcriptionLanguage": "Indice ISO-639 facultatif, comme en, zh, ja ou ko.",
       "langfuseEnabled": "Les traces des nouvelles conversations seront envoyees a Langfuse apres redemarrage.",
       "langfuseDisabled": "Les traces resteront dans des fichiers JSONL locaux apres redemarrage.",
-      "langfuseNotConfigured": "Configurez d'abord les cles publique et secrete Langfuse dans config.json."
+      "langfuseNotConfigured": "Configurez d'abord les cles publique et secrete Langfuse dans config.json.",
+      "toolCallingMode": "Select the tool interface used from the next model turn."
     },
     "values": {
       "light": "Clair",
@@ -225,7 +273,10 @@
       "configured": "Configuré",
       "notConfigured": "Non configuré",
       "pending": "En attente",
-      "restartingEngine": "Redémarrage"
+      "restartingEngine": "Redémarrage",
+      "native": "Native",
+      "code": "Code",
+      "both": "Both"
     },
     "status": {
       "loading": "Chargement des réglages...",

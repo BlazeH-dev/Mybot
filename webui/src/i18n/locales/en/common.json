@@ -104,17 +104,37 @@
     "activity": "Execution activity",
     "waitingActivity": "Waiting for activity",
     "analysis": "Low-score analysis",
-    "reanalyze": "Analyze again",
-    "evolve": "Modify Skill from {{count}} findings",
+    "reanalyze": "Reanalyze Bad Cases",
+    "reanalyzeStarting": "Starting a fresh Bad Case analysis",
+    "reanalyzeRunning": "Reanalyzing Bad Cases",
+    "reanalyzeRunningDetail": "Evidence is being refreshed and a new cause classification is being generated. Previous analysis and candidate controls are hidden until this run finishes or is cancelled.",
+    "continueCategorization": "Continue reason categorization",
+    "categorizationStarting": "Starting reason categorization",
+    "categorizationRunning": "Generating reason categories",
+    "categorizationRunningDetail": "Existing findings are being reused and grouped by owner. Evidence collection and batched analysis will not run again.",
+    "categorizationIncomplete": "Cross-batch reason categorization is incomplete. Finish categorization before editing the Skill; existing findings will be reused.",
+    "analysisRunning": "Analyzing selected Bad Cases",
+    "analysisRunningDetail": "Evidence collection and batched analysis are running in the background. Current progress appears below.",
+    "evolve": "Modify Skill from {{count}} reason categories",
     "risk": "Risk",
+    "trigger": "Trigger",
+    "requiredAction": "Required action",
+    "entrypoint": "Entrypoint",
+    "requiredOutputs": "Required outputs",
+    "interventionValidation": "Interventions and deterministic probes",
+    "probesPassed": "Probes passed",
+    "probesFailed": "Probes failed; rerun is blocked",
+    "probePassed": "passed",
+    "probeFailed": "failed",
     "test": "Test selected Cases",
-    "revise": "Improve again",
+    "revise": "Continue editing this candidate",
     "apply": "Approve and apply",
     "switchBack": "Switch back",
     "changes": "Candidate changes",
     "testResults": "Rerun results",
-    "recommended": "Recommended: no selected Case regressed and at least one improved.",
+    "recommended": "Recommended: the target Cases improved on average.",
     "notRecommended": "The system does not recommend applying this revision; the user may still decide after review.",
+    "meanDelta": "Mean change: {{value}}",
     "tokenChange": "Mean token change: {{value}}"
   },
   "settings": {
@@ -160,7 +180,8 @@
       "nativeHost": "Native host",
       "observability": "Observability",
       "hostSafety": "App safety",
-      "voiceInput": "Voice input"
+      "voiceInput": "Voice input",
+      "toolCalling": "Tool calling"
     },
     "models": {
       "selectModel": "Select model",
@@ -242,7 +263,8 @@
       "transcriptionModel": "Model",
       "transcriptionLanguage": "Language",
       "voiceLimits": "Limits",
-      "langfuseTrace": "Send traces to Langfuse"
+      "langfuseTrace": "Send traces to Langfuse",
+      "toolCallingMode": "Mode"
     },
     "help": {
       "theme": "Switch between light and dark appearance.",
@@ -289,7 +311,8 @@
       "transcriptionLanguage": "Optional ISO-639 hint such as en, zh, ja, or ko.",
       "langfuseEnabled": "New conversation traces are sent to Langfuse after restart.",
       "langfuseDisabled": "Conversation traces stay in local JSONL files after restart.",
-      "langfuseNotConfigured": "Configure the Langfuse public and secret keys in config.json first."
+      "langfuseNotConfigured": "Configure the Langfuse public and secret keys in config.json first.",
+      "toolCallingMode": "Select the tool interface used from the next model turn."
     },
     "timezone": {
       "select": "Select timezone",
@@ -402,7 +425,10 @@
       "configured": "Configured",
       "notConfigured": "Not configured",
       "pending": "Pending",
-      "restartingEngine": "Restarting"
+      "restartingEngine": "Restarting",
+      "native": "Native",
+      "code": "Code",
+      "both": "Both"
     },
     "status": {
       "loading": "Loading settings...",

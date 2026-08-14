@@ -311,6 +311,17 @@ export async function fetchSkillEvolutionTask(
   return request(`${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}`, token);
 }
 
+export async function fetchSkillEvolutionTasks(
+  token: string,
+  base: string = "",
+): Promise<import("@/lib/types").SkillEvolutionTask[]> {
+  const payload = await request<{ tasks: import("@/lib/types").SkillEvolutionTask[] }>(
+    `${base}/api/skill-evolution/tasks`,
+    token,
+  );
+  return payload.tasks;
+}
+
 export async function fetchSkillEvolutionActivities(
   token: string,
   taskId: string,
@@ -332,13 +343,15 @@ export async function evolveSkillEvolution(
   taskId: string,
   analysisId: string,
   analysisDigest: string,
-  findingIds: string[],
+  selectionIds: string[],
+  selectionType: "categories" | "findings" = "categories",
   base: string = "",
 ): Promise<import("@/lib/types").SkillEvolutionTask> {
   const body = {
     analysis_id: analysisId,
     analysis_digest: analysisDigest,
-    finding_ids: findingIds,
+    category_ids: selectionType === "categories" ? selectionIds : undefined,
+    finding_ids: selectionType === "findings" ? selectionIds : undefined,
   };
   return request(
     `${base}/api/skill-evolution/tasks/${encodeURIComponent(taskId)}/evolve`,
@@ -352,11 +365,15 @@ export async function runSkillEvolutionAction(
   taskId: string,
   action: "reanalyze" | "revise" | "cancel" | "test" | "apply" | "switch-back",
   revisionId: string = "r1",
-  findingIds: string[] = [],
+  selectionIds: string[] = [],
+  selectionType: "categories" | "findings" = "categories",
   base: string = "",
 ): Promise<import("@/lib/types").SkillEvolutionTask> {
   const body = action === "revise"
-    ? { finding_ids: findingIds.length ? findingIds : undefined }
+    ? {
+        category_ids: selectionType === "categories" && selectionIds.length ? selectionIds : undefined,
+        finding_ids: selectionType === "findings" && selectionIds.length ? selectionIds : undefined,
+      }
     : action === "test" || action === "apply"
       ? { revision_id: revisionId }
       : {};
@@ -639,6 +656,7 @@ export async function updateSettings(
   if (update.toolHintMaxLength !== undefined) {
     body.tool_hint_max_length = update.toolHintMaxLength;
   }
+  if (update.toolMode !== undefined) body.tool_mode = update.toolMode;
   return request<SettingsPayload>(`${base}/api/settings`, token, jsonInit("PATCH", body));
 }
 

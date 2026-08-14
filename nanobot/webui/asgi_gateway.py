@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from fastapi import Body, FastAPI, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.websockets import WebSocketDisconnect
 from websockets.datastructures import Headers
 
@@ -43,7 +43,14 @@ class EvolveSkillRequest(BaseModel):
 
     analysis_id: str = Field(min_length=1)
     analysis_digest: str = Field(min_length=1)
-    finding_ids: list[str] = Field(min_length=1)
+    category_ids: list[str] | None = None
+    finding_ids: list[str] | None = None
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "EvolveSkillRequest":
+        if not self.category_ids and not self.finding_ids:
+            raise ValueError("select at least one reason category or finding")
+        return self
 
 
 class RevisionRequest(BaseModel):
@@ -56,6 +63,7 @@ class ReviseSkillRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     finding_ids: list[str] | None = None
+    category_ids: list[str] | None = None
 
 
 class EmptyRequest(BaseModel):

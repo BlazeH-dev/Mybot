@@ -62,6 +62,49 @@ def test_skill_analysis_rejects_invalid_json() -> None:
     assert not router.requests
 
 
+def test_skill_evolution_forwards_reason_category_selection() -> None:
+    client, router = _client()
+    response = client.post(
+        "/api/skill-evolution/tasks/task-1/evolve",
+        json={
+            "analysis_id": "a1",
+            "analysis_digest": "digest",
+            "category_ids": ["c1", "c2"],
+        },
+    )
+
+    assert response.status_code == 200
+    request = router.requests[-1]
+    assert "category_ids=%5B%22c1%22%2C%22c2%22%5D" in request.path
+    assert "finding_ids=" not in request.path
+
+
+def test_skill_evolution_keeps_legacy_finding_selection_compatible() -> None:
+    client, router = _client()
+    response = client.post(
+        "/api/skill-evolution/tasks/task-1/evolve",
+        json={
+            "analysis_id": "a1",
+            "analysis_digest": "digest",
+            "finding_ids": ["f1"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "finding_ids=%5B%22f1%22%5D" in router.requests[-1].path
+
+
+def test_skill_evolution_rejects_empty_selection() -> None:
+    client, router = _client()
+    response = client.post(
+        "/api/skill-evolution/tasks/task-1/evolve",
+        json={"analysis_id": "a1", "analysis_digest": "digest"},
+    )
+
+    assert response.status_code == 422
+    assert not router.requests
+
+
 def test_legacy_query_write_is_supported_with_deprecation_headers() -> None:
     client, router = _client()
     response = client.post(
@@ -105,6 +148,16 @@ def test_settings_secret_is_forwarded_without_appearing_in_route_path() -> None:
     request = router.requests[-1]
     assert request.path.startswith("/api/settings/provider/update?")
     assert "sk-secret" in request.path  # Internal adapter only; never an HTTP URL or access log.
+
+
+def test_settings_tool_mode_is_forwarded_from_json_body() -> None:
+    client, router = _client()
+    response = client.patch("/api/settings", json={"tool_mode": "code"})
+
+    assert response.status_code == 200
+    request = router.requests[-1]
+    assert request.method == "PATCH"
+    assert request.path == "/api/settings/update?tool_mode=code"
 
 
 def test_openapi_and_docs_are_not_exposed() -> None:

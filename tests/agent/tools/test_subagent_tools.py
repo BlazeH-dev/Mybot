@@ -264,6 +264,27 @@ def test_subagent_default_max_iterations_matches_agent_defaults(tmp_path):
     assert mgr.max_iterations == AgentDefaults().max_tool_iterations
 
 
+def test_subagent_inherits_ptc_tool_presentation(tmp_path):
+    from nanobot.agent.subagent import SubagentManager
+    from nanobot.bus.queue import MessageBus
+    from nanobot.config.schema import PtcConfig, ToolsConfig
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    ptc = PtcConfig(sandbox="none", max_parallel_sub_calls=3)
+    manager = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=MessageBus(),
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        tools_config=ToolsConfig(mode="code", ptc=ptc),
+    )
+
+    child_config = manager._subagent_tools_config()
+    assert child_config.mode == "code"
+    assert child_config.ptc.max_parallel_sub_calls == 3
+
+
 def test_agent_loop_passes_max_iterations_to_subagents(tmp_path):
     """AgentLoop's configured limit should be shared with spawned subagents."""
     from nanobot.agent.loop import AgentLoop

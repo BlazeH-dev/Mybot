@@ -31,6 +31,7 @@ from nanobot.agent.execution_mode import (
 from nanobot.agent.hook import AgentHook, CompositeHook
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.progress_hook import AgentProgressHook
+from nanobot.agent.ptc import PtcRuntime
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
@@ -47,7 +48,7 @@ from nanobot.bus.runtime_events import (
     ensure_runtime_event_publisher,
 )
 from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
-from nanobot.config.schema import AgentDefaults, ModelPresetConfig
+from nanobot.config.schema import AgentDefaults, ModelPresetConfig, ToolsConfig
 from nanobot.providers.base import LLMProvider
 from nanobot.providers.factory import ProviderSnapshot
 from nanobot.runtime.approvals import ApprovalBinding, ApprovalManager, normalized_params_hash
@@ -235,6 +236,7 @@ class AgentLoop:
         image_generation_provider_config: ProviderConfig | None = None,
         image_generation_provider_configs: dict[str, ProviderConfig] | None = None,
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
+        tools_config_loader: Callable[[], ToolsConfig] | None = None,
         provider_signature: tuple[object, ...] | None = None,
         model_presets: dict[str, ModelPresetConfig] | None = None,
         model_preset: str | None = None,
@@ -243,8 +245,6 @@ class AgentLoop:
         runtime_model_publisher: Callable[[str, str | None], None] | None = None,
         observability: LangfuseRuntime | None = None,
     ):
-        from nanobot.config.schema import ToolsConfig
-
         _tc = tools_config or ToolsConfig()
         defaults = AgentDefaults()
         self.bus = bus
@@ -253,6 +253,7 @@ class AgentLoop:
         self.channels_config = channels_config
         self.provider = provider
         self._provider_snapshot_loader = provider_snapshot_loader
+        self._tools_config_loader = tools_config_loader
         self._preset_snapshot_loader = preset_snapshot_loader
         self._runtime_model_publisher = runtime_model_publisher
         self._provider_signature = provider_signature
@@ -285,6 +286,22 @@ class AgentLoop:
             else defaults.tool_hint_max_length
         )
         self.tools_config = _tc
+        if _tc.mode != "native":
+            try:
+                PtcRuntime(_tc.ptc, workspace)._launch()
+            except Exception as exc:
+                raise RuntimeError(
+                    f'tools.mode="{_tc.mode}" requires an available PTC runtime: {exc}'
+                ) from exc
+        logger.info(
+            "Tool presentation mode: {}{}",
+            _tc.mode,
+            (
+                f" (PTC parallel={_tc.ptc.max_parallel_sub_calls}, "
+                f"wall={_tc.ptc.wall_timeout_seconds}s, sandbox={_tc.ptc.sandbox})"
+                if _tc.mode != "native" else ""
+            ),
+        )
         self.web_config = _tc.web
         self.exec_config = _tc.exec
         self._image_generation_provider_configs = dict(image_generation_provider_configs or {})
@@ -399,6 +416,7 @@ class AgentLoop:
             model = extra.pop("model", None) or resolved.model
             context_window_tokens = extra.pop("context_window_tokens", None) or resolved.context_window_tokens
             provider_snapshot_loader = extra.pop("provider_snapshot_loader", None)
+            tools_config_loader = extra.pop("tools_config_loader", None)
             preset_snapshot_loader = extra.pop("preset_snapshot_loader", None) or preset_helpers.make_preset_snapshot_loader(
                 config,
                 provider_snapshot_loader,
@@ -428,6 +446,7 @@ class AgentLoop:
                 model_presets=preset_helpers.configured_model_presets(config),
                 model_preset=defaults.model_preset,
                 provider_snapshot_loader=provider_snapshot_loader,
+                tools_config_loader=tools_config_loader,
                 preset_snapshot_loader=preset_snapshot_loader,
                 observability=observability,
                 **extra,
@@ -506,6 +525,33 @@ class AgentLoop:
             return
         self._default_selection_signature = preset_helpers.default_selection_signature(snapshot.signature)
         self._apply_provider_snapshot(snapshot)
+
+    def _refresh_tool_presentation_snapshot(self) -> None:
+        """Apply Code Mode projection changes for the next model turn."""
+        if self._tools_config_loader is None:
+            return
+        try:
+            snapshot = self._tools_config_loader()
+            if (
+                snapshot.mode == self.tools_config.mode
+                and snapshot.ptc == self.tools_config.ptc
+            ):
+                return
+            if snapshot.mode != "native":
+                PtcRuntime(snapshot.ptc, self.workspace)._launch()
+        except Exception:
+            logger.exception("Failed to refresh tool presentation config")
+            return
+        old_mode = self.tools_config.mode
+        self.tools_config.mode = snapshot.mode
+        self.tools_config.ptc = snapshot.ptc
+        self.subagents.tools_config.mode = snapshot.mode
+        self.subagents.tools_config.ptc = snapshot.ptc
+        logger.info(
+            "Tool presentation mode switched for next turn: {} -> {}",
+            old_mode,
+            snapshot.mode,
+        )
 
     @property
     def model_preset(self) -> str | None:
@@ -1051,6 +1097,9 @@ class AgentLoop:
                 context_window_tokens=self.context_window_tokens,
                 context_block_limit=self.context_block_limit,
                 provider_retry_mode=self.provider_retry_mode,
+                tool_mode=self.tools_config.mode,
+                ptc_config=self.tools_config.ptc,
+                sandbox_mode=sandbox_mode,
                 progress_callback=on_progress,
                 stream_progress_deltas=on_stream is not None,
                 retry_wait_callback=on_retry_wait,
@@ -1499,6 +1548,7 @@ class AgentLoop:
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
         self._refresh_provider_snapshot()
+        self._refresh_tool_presentation_snapshot()
 
         if msg.channel == "system":
             return await self._process_system_message(

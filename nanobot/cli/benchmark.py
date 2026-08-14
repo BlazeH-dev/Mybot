@@ -81,8 +81,8 @@ def _emit_evaluation_progress(event: str, **fields: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with _PROGRESS_LOCK:
             with path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except OSError:
+                handle.write(json.dumps(_to_plain(payload), ensure_ascii=False) + "\n")
+    except (OSError, TypeError, ValueError):
         # Progress is best-effort and must never change benchmark results.
         return
 

@@ -97,10 +97,15 @@ def build_tool_event_finish_payloads(context: AgentHookContext) -> list[dict[str
             "files": files,
             "embeds": embeds,
         }
+        if isinstance(event.get("ptc_metrics"), dict):
+            payload["ptc_metrics"] = event["ptc_metrics"]
         if phase == "error":
             if isinstance(result, str) and result.strip():
                 payload["error"] = result.strip()
             else:
                 payload["error"] = str(event.get("detail") or "Tool execution failed")
         payloads.append(payload)
+        nested = event.get("ptc_subcalls")
+        if isinstance(nested, list):
+            payloads.extend(item for item in nested if isinstance(item, dict))
     return payloads

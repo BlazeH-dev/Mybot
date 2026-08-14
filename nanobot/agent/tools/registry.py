@@ -1,6 +1,7 @@
 """Tool registry for dynamic tool management."""
 
 import json
+from copy import deepcopy
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
@@ -19,6 +20,8 @@ class ToolRegistry:
 
     def register(self, tool: Tool) -> None:
         """Register a tool."""
+        if tool.name == "run_code":
+            raise ValueError("tool name 'run_code' is reserved for PTC Code Mode")
         self._tools[tool.name] = tool
         self._cached_definitions = None
 
@@ -88,6 +91,18 @@ class ToolRegistry:
         mcp_tools.sort(key=self._schema_name)
         self._cached_definitions = builtins + mcp_tools
         return self._cached_definitions
+
+    def get_ptc_definitions(self) -> list[dict[str, Any]]:
+        """Return provider schemas enriched with PTC-only output contracts."""
+        definitions = deepcopy(self.get_definitions())
+        for schema in definitions:
+            name = self._schema_name(schema)
+            tool = self._tools.get(name)
+            output_schema = tool.output_schema if tool is not None else None
+            function = schema.get("function")
+            if output_schema is not None and isinstance(function, dict):
+                function["x-output-schema"] = deepcopy(output_schema)
+        return definitions
 
     def prepare_call(
         self,

@@ -130,6 +130,7 @@ import type {
   ProviderModelsPayload,
   SettingsPayload,
   SkillSummary,
+  ToolCallingMode,
   TranscriptionSettingsUpdate,
   WebSearchSettingsUpdate,
   WebuiDefaultAccessMode,
@@ -551,6 +552,7 @@ export function SettingsView({
   const [transcriptionSaving, setTranscriptionSaving] = useState(false);
   const [networkSafetySaving, setNetworkSafetySaving] = useState(false);
   const [observabilitySaving, setObservabilitySaving] = useState(false);
+  const [toolModeSaving, setToolModeSaving] = useState(false);
   const [hostEngineApplying, setHostEngineApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSectionKey>(initialSection);
@@ -593,6 +595,9 @@ export function SettingsView({
       ? observabilityFormFromPayload(initialSettings)
       : DEFAULT_OBSERVABILITY_FORM,
   );
+  const [toolMode, setToolMode] = useState<ToolCallingMode>(
+    () => initialSettings?.tools?.mode ?? "native",
+  );
 
   useEffect(() => {
     setActiveSection(initialSection);
@@ -625,6 +630,7 @@ export function SettingsView({
     setTranscriptionForm(transcriptionFormFromPayload(payload));
     setNetworkSafetyForm(networkSafetyFormFromPayload(payload));
     setObservabilityForm(observabilityFormFromPayload(payload));
+    setToolMode(payload.tools?.mode ?? "native");
     if (payload.restart_required_sections) {
       setPendingRestartSections(pendingRestartSectionsFromPayload(payload));
     }
@@ -806,6 +812,11 @@ export function SettingsView({
       (settings.observability?.langfuse.enabled ?? false)
     );
   }, [observabilityForm, settings]);
+
+  const toolModeDirty = useMemo(
+    () => !!settings && toolMode !== (settings.tools?.mode ?? "native"),
+    [settings, toolMode],
+  );
 
   const configuredModelProviderOptions = useMemo(
     () =>
@@ -1004,6 +1015,20 @@ export function SettingsView({
       setError((err as Error).message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveToolMode = async () => {
+    if (!settings || !toolModeDirty || toolModeSaving) return;
+    setToolModeSaving(true);
+    try {
+      const payload = await updateSettings(token, { toolMode });
+      applyPayload(payload);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setToolModeSaving(false);
     }
   };
 
@@ -1581,7 +1606,12 @@ export function SettingsView({
             saving={saving}
             observabilityDirty={observabilityDirty}
             observabilitySaving={observabilitySaving}
+            toolMode={toolMode}
+            setToolMode={setToolMode}
+            toolModeDirty={toolModeDirty}
+            toolModeSaving={toolModeSaving}
             onSave={saveRuntimeSettings}
+            onSaveToolMode={saveToolMode}
             onSaveObservability={saveObservabilitySettings}
             onRestart={restartViaSettingsSurface}
             isRestarting={isRestarting || hostEngineApplying}
@@ -4373,7 +4403,12 @@ function RuntimeSettings({
   saving,
   observabilityDirty,
   observabilitySaving,
+  toolMode,
+  setToolMode,
+  toolModeDirty,
+  toolModeSaving,
   onSave,
+  onSaveToolMode,
   onSaveObservability,
   onRestart,
   isRestarting,
@@ -4389,7 +4424,12 @@ function RuntimeSettings({
   saving: boolean;
   observabilityDirty: boolean;
   observabilitySaving: boolean;
+  toolMode: ToolCallingMode;
+  setToolMode: Dispatch<SetStateAction<ToolCallingMode>>;
+  toolModeDirty: boolean;
+  toolModeSaving: boolean;
   onSave: () => void;
+  onSaveToolMode: () => void;
   onSaveObservability: () => void;
   onRestart?: () => void;
   isRestarting?: boolean;
@@ -4487,6 +4527,38 @@ function RuntimeSettings({
             onSave={onSave}
             onRestart={onRestart}
             isRestarting={isRestarting}
+          />
+        </SettingsGroup>
+      </section>
+
+      <section>
+        <SettingsSectionTitle>
+          {tx("settings.sections.toolCalling", "Tool calling")}
+        </SettingsSectionTitle>
+        <SettingsGroup>
+          <SettingsRow
+            title={tx("settings.rows.toolCallingMode", "Mode")}
+            description={tx(
+              "settings.help.toolCallingMode",
+              "Select the tool interface used from the next model turn.",
+            )}
+          >
+            <SegmentedControl
+              value={toolMode}
+              ariaLabel={tx("settings.rows.toolCallingMode", "Tool calling mode")}
+              options={[
+                { value: "native", label: tx("settings.values.native", "Native") },
+                { value: "code", label: tx("settings.values.code", "Code") },
+                { value: "both", label: tx("settings.values.both", "Both") },
+              ]}
+              onChange={(mode) => setToolMode(mode as ToolCallingMode)}
+            />
+          </SettingsRow>
+          <RestartSettingsFooter
+            dirty={toolModeDirty}
+            saving={toolModeSaving}
+            pendingRestart={false}
+            onSave={onSaveToolMode}
           />
         </SettingsGroup>
       </section>
@@ -5864,17 +5936,24 @@ function SegmentedControl({
   value,
   options,
   onChange,
+  ariaLabel,
 }: {
   value: string;
   options: Array<{ value: string; label: string }>;
   onChange: (value: string) => void;
+  ariaLabel?: string;
 }) {
   return (
-    <div className="inline-flex h-8 items-center rounded-full bg-muted p-0.5 text-[12px] font-medium text-muted-foreground">
+    <div
+      role="group"
+      aria-label={ariaLabel}
+      className="inline-flex h-8 items-center rounded-full bg-muted p-0.5 text-[12px] font-medium text-muted-foreground"
+    >
       {options.map((option) => (
         <button
           key={option.value}
           type="button"
+          aria-pressed={value === option.value}
           onClick={() => onChange(option.value)}
           className={cn(
             "rounded-full px-3 py-1 transition-colors",

@@ -43,6 +43,32 @@ SHA-256，缓存到 `~/.nanobot/officecli/`，并在每次执行时关闭上游�
 
 启动后浏览器访问 **http://127.0.0.1:8765/webui**
 
+## PTC / Code Mode
+
+多步工具任务可选择 Programmatic Tool Calling，让模型生成一个 async Python 函数体，在独立
+子进程中循环、分支或并发调用现有工具，只把整理后的 `print`/`return` 结果送回模型。默认保持
+原生工具调用。可在 WebUI 的“设置 → 系统 → 工具调用”中选择 Native、Code 或 Both，保存后从
+下一轮模型请求直接生效，无需重启；也可以在 `~/.nanobot/config.json` 中显式启用：
+
+```json
+{
+  "tools": {
+    "mode": "code",
+    "ptc": {
+      "maxParallelSubCalls": 10,
+      "computeTimeoutSeconds": 60,
+      "wallTimeoutSeconds": 600,
+      "maxOutputChars": 65536,
+      "sandbox": "auto"
+    }
+  }
+}
+```
+
+`mode` 还支持 `both`，用于同时保留原生工具和 `run_code` 做灰度比较。`sandbox: auto` 使用现有
+会话权限对应的 OS sandbox；不可用时 Code Mode 会明确拒绝启动，不会降级为进程内执行。
+PTC 是工具编排、时延和上下文优化，不是额外的多租户安全边界。
+
 ## Runtime 架构
 
 ```mermaid

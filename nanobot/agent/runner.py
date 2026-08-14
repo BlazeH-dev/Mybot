@@ -8,17 +8,26 @@ import json
 import os
 from contextlib import suppress
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
 from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
+from nanobot.agent.ptc import (
+    RUN_CODE_NAME,
+    PtcRuntime,
+    build_ptc_system_prompt,
+    run_code_schema,
+)
+from nanobot.agent.ptc.protocol import JsonValue, lossless_json
+from nanobot.agent.ptc.scheduler import PtcToolScheduler
 from nanobot.agent.tools.base import ToolSuspensionResult
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.runtime.langfuse import LangfuseRuntime, value_summary
+from nanobot.runtime.trace import emit_trace_event
 from nanobot.utils.file_edit_events import (
     StreamingFileEditTracker,
     build_file_edit_end_event,
@@ -42,7 +51,9 @@ from nanobot.utils.helpers import (
 )
 from nanobot.utils.progress_events import (
     invoke_file_edit_progress,
+    invoke_on_progress,
     on_progress_accepts_file_edit_events,
+    on_progress_accepts_tool_events,
 )
 from nanobot.utils.prompt_templates import render_template
 from nanobot.utils.runtime import (
@@ -76,6 +87,7 @@ _COMPACTABLE_TOOLS = frozenset({
 # read_file is the recovery path for persisted results; exempting it prevents persist->read->persist loops.
 _TOOL_RESULT_OFFLOAD_EXEMPT_TOOLS = frozenset({"read_file"})
 _BACKFILL_CONTENT = "[Tool result unavailable — call was interrupted or lost]"
+_PTC_CACHE_MISS = object()
 
 # Backward-compatible module attribute for tests/extensions that monkeypatch
 # the former single-file tracker hook. Runtime uses prepare_file_edit_trackers.
@@ -118,6 +130,11 @@ class AgentRunSpec:
     plan_hash: str | None = None
     total_token_budget: int | None = None
     max_tool_calls: int | None = None
+    tool_mode: str = "native"
+    ptc_config: Any | None = None
+    sandbox_mode: Any | None = None
+    ptc_read_cache: dict[str, JsonValue] | None = None
+    ptc_read_cache_epoch: int = 0
 
 
 @dataclass(slots=True)
@@ -294,6 +311,9 @@ class AgentRunner:
         return injected_messages
 
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
+        # PTC programs are stateless, but successful exact read-only calls may be reused
+        # across retries within this one model run. Never share the cache between runs.
+        spec = replace(spec, ptc_read_cache={}, ptc_read_cache_epoch=0)
         hook = spec.hook or AgentHook()
         messages = list(spec.initial_messages)
         context = AgentRunHookContext(messages=deepcopy(messages))
@@ -859,8 +879,8 @@ class AgentRunner:
 
         kwargs = self._build_request_kwargs(
             spec,
-            messages,
-            tools=spec.tools.get_definitions(),
+            self._messages_with_ptc_prompt(spec, messages),
+            tools=self._tool_definitions(spec),
         )
         wants_streaming = hook.wants_streaming()
         wants_progress_streaming = (
@@ -1026,10 +1046,15 @@ class AgentRunner:
         response: LLMResponse,
     ) -> dict[str, int]:
         try:
-            tools = spec.tools.get_definitions()
+            tools = self._tool_definitions(spec)
         except Exception:
             tools = None
-        prompt_tokens, _ = estimate_prompt_tokens_chain(self.provider, spec.model, messages, tools)
+        prompt_tokens, _ = estimate_prompt_tokens_chain(
+            self.provider,
+            spec.model,
+            self._messages_with_ptc_prompt(spec, messages),
+            tools,
+        )
         assistant_message = build_assistant_message(
             response.content or "",
             tool_calls=[tc.to_openai_tool_call() for tc in response.tool_calls],
@@ -1177,6 +1202,23 @@ class AgentRunner:
         external_lookup_counts: dict[str, int],
         workspace_violation_counts: dict[str, int],
     ) -> tuple[Any, dict[str, str], BaseException | None]:
+        if tool_call.name == RUN_CODE_NAME:
+            return await self._run_ptc_tool(
+                spec,
+                tool_call,
+                external_lookup_counts,
+                workspace_violation_counts,
+            )
+        if spec.tool_mode == "code":
+            payload = (
+                f"Error: Tool '{tool_call.name}' is not directly callable in code mode; "
+                "use run_code and the generated tools SDK"
+            )
+            return payload, {
+                "name": tool_call.name,
+                "status": "error",
+                "detail": "native tool denied in code mode",
+            }, None
         hint = "\n\n[Analyze the error above and try a different approach.]"
         lookup_error = repeated_external_lookup_error(
             tool_call.name,
@@ -1669,8 +1711,8 @@ class AgentRunner:
         estimate, _ = estimate_prompt_tokens_chain(
             self.provider,
             spec.model,
-            messages,
-            spec.tools.get_definitions(),
+            self._messages_with_ptc_prompt(spec, messages),
+            self._tool_definitions(spec),
         )
         if estimate <= budget:
             return messages
@@ -1684,8 +1726,8 @@ class AgentRunner:
         fixed_tokens, _ = estimate_prompt_tokens_chain(
             self.provider,
             spec.model,
-            system_messages,
-            spec.tools.get_definitions(),
+            self._messages_with_ptc_prompt(spec, system_messages),
+            self._tool_definitions(spec),
         )
         remaining_budget = max(0, budget - max(system_tokens, fixed_tokens))
         kept: list[dict[str, Any]] = []
@@ -1747,3 +1789,300 @@ class AgentRunner:
         if current:
             batches.append(current)
         return batches
+
+    @staticmethod
+    def _native_tool_definitions(spec: AgentRunSpec) -> list[dict[str, Any]]:
+        return spec.tools.get_definitions()
+
+    def _tool_definitions(self, spec: AgentRunSpec) -> list[dict[str, Any]]:
+        native = self._native_tool_definitions(spec)
+        if spec.tool_mode == "native":
+            return native
+        if spec.tool_mode == "code":
+            return [run_code_schema()]
+        if spec.tool_mode == "both":
+            return [*native, run_code_schema()]
+        raise ValueError(f"unsupported tools.mode: {spec.tool_mode!r}")
+
+    def _messages_with_ptc_prompt(
+        self,
+        spec: AgentRunSpec,
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if spec.tool_mode == "native":
+            return messages
+        sdk = build_ptc_system_prompt(spec.tools.get_ptc_definitions())
+        updated = [dict(message) for message in messages]
+        for index, message in enumerate(updated):
+            if message.get("role") != "system":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                updated[index] = {**message, "content": f"{content}\n\n{sdk}"}
+                return updated
+        return [{"role": "system", "content": sdk}, *updated]
+
+    async def execute_embedded_tool(
+        self,
+        *,
+        spec: AgentRunSpec,
+        parent_call: ToolCallRequest,
+        sequence: int,
+        name: str,
+        params: dict[str, Any],
+        external_lookup_counts: dict[str, int],
+        workspace_violation_counts: dict[str, int],
+        cached_result: JsonValue | object = _PTC_CACHE_MISS,
+    ) -> tuple[Any, dict[str, Any], BaseException | None]:
+        if name == RUN_CODE_NAME:
+            payload = "Error: recursive run_code calls are not allowed"
+            return payload, {"name": name, "status": "error", "detail": payload}, None
+        call = ToolCallRequest(
+            id=f"{parent_call.id}:ptc:{sequence}",
+            name=name,
+            arguments=params,
+        )
+        trace_base = {
+            "parent_call_id": parent_call.id,
+            "sub_call_id": call.id,
+            "name": name,
+            "arguments_summary": value_summary(params),
+        }
+        emit_trace_event("mybot.ptc.subcall.start", trace_base)
+        if spec.progress_callback is not None and on_progress_accepts_tool_events(
+            spec.progress_callback
+        ):
+            await invoke_on_progress(
+                spec.progress_callback,
+                "",
+                tool_events=[{
+                    "version": 1,
+                    "phase": "start",
+                    "type": "ptc_subcall",
+                    "call_id": call.id,
+                    "parent_call_id": parent_call.id,
+                    "sub_call_id": call.id,
+                    "name": name,
+                    "arguments": params,
+                    "result": None,
+                    "error": None,
+                    "files": [],
+                    "embeds": [],
+                }],
+            )
+        started = asyncio.get_running_loop().time()
+        cache_hit = cached_result is not _PTC_CACHE_MISS
+        if cache_hit:
+            result = lossless_json(cached_result)
+            event: dict[str, Any] = {
+                "name": name,
+                "status": "ok",
+                "detail": "same-run exact read cache hit",
+            }
+            error = None
+        else:
+            result, event, error = await self._run_tool_unobserved(
+                replace(spec, tool_mode="native"),
+                call,
+                external_lookup_counts,
+                workspace_violation_counts,
+            )
+        duration_ms = int((asyncio.get_running_loop().time() - started) * 1000)
+        status = str(event.get("status") or "error")
+        if error is None and status == "ok":
+            try:
+                result = lossless_json(result)
+            except TypeError as exc:
+                result = f"Error: invalid_json: {exc}"
+                status = "error"
+                event = {
+                    **event,
+                    "status": "error",
+                    "detail": str(exc)[:120],
+                }
+        nested_event: dict[str, Any] = {
+            "version": 1,
+            "phase": "end" if status == "ok" else "error",
+            "type": "ptc_subcall",
+            "call_id": call.id,
+            "parent_call_id": parent_call.id,
+            "sub_call_id": call.id,
+            "name": name,
+            "arguments": params,
+            "result": value_summary(result) if status == "ok" else None,
+            "error": None if status == "ok" else str(result),
+            "duration_ms": duration_ms,
+            "result_summary": value_summary(result),
+            "cache_hit": cache_hit,
+            "files": [],
+            "embeds": [],
+        }
+        emit_trace_event(
+            "mybot.ptc.subcall.finish",
+            {
+                **trace_base,
+                "status": status,
+                "duration_ms": duration_ms,
+                "result_summary": value_summary(result),
+                "cache_hit": cache_hit,
+            },
+        )
+        if spec.progress_callback is not None and on_progress_accepts_tool_events(
+            spec.progress_callback
+        ):
+            await invoke_on_progress(
+                spec.progress_callback,
+                "",
+                tool_events=[nested_event],
+            )
+        return result, nested_event, error
+
+    async def _run_ptc_tool(
+        self,
+        spec: AgentRunSpec,
+        tool_call: ToolCallRequest,
+        external_lookup_counts: dict[str, int],
+        workspace_violation_counts: dict[str, int],
+    ) -> tuple[Any, dict[str, Any], BaseException | None]:
+        if spec.tool_mode == "native":
+            payload = "Error: run_code is unavailable while tools.mode is native"
+            return payload, {"name": RUN_CODE_NAME, "status": "error", "detail": payload}, None
+        arguments = tool_call.arguments
+        if not isinstance(arguments, dict):
+            payload = "Error: run_code parameters must be a JSON object"
+            return payload, {"name": RUN_CODE_NAME, "status": "error", "detail": payload}, None
+        code = arguments.get("code")
+        description = arguments.get("description")
+        if not isinstance(code, str) or not code.strip() or not isinstance(description, str):
+            payload = "Error: run_code requires non-empty string code and string description"
+            return payload, {"name": RUN_CODE_NAME, "status": "error", "detail": payload}, None
+        if spec.ptc_config is None or spec.workspace is None:
+            payload = "Error: PTC runtime is not configured"
+            return payload, {"name": RUN_CODE_NAME, "status": "error", "detail": payload}, None
+
+        scheduler = PtcToolScheduler(spec.ptc_config.max_parallel_sub_calls)
+        nested_events: list[dict[str, Any]] = []
+        sequence = 0
+        intermediate_result_chars = 0
+        cache_hits = 0
+        event_lock = asyncio.Lock()
+
+        async def dispatch(worker_call_id: str, name: str, params: dict[str, Any]) -> Any:
+            nonlocal cache_hits, sequence
+            sequence += 1
+            current_sequence = sequence
+            tool = spec.tools.get(name)
+            safe = bool(tool and tool.concurrency_safe)
+            cacheable = bool(tool and tool.read_only and tool.concurrency_safe)
+            cache_key: str | None = None
+            cached_result: JsonValue | object = _PTC_CACHE_MISS
+            if cacheable and spec.ptc_read_cache is not None:
+                cache_key = json.dumps(
+                    {
+                        "epoch": spec.ptc_read_cache_epoch,
+                        "name": name,
+                        "arguments": lossless_json(params),
+                    },
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                cached_result = spec.ptc_read_cache.get(cache_key, _PTC_CACHE_MISS)
+            elif tool is not None and spec.ptc_read_cache is not None:
+                # A mutation or exclusive operation invalidates earlier reads so a later
+                # retry cannot observe a value from before the barrier. The epoch also
+                # prevents an already-running earlier read from repopulating a usable
+                # stale entry after this clear.
+                spec.ptc_read_cache_epoch += 1
+                spec.ptc_read_cache.clear()
+
+            async def execute() -> Any:
+                nonlocal cache_hits, intermediate_result_chars
+                result, nested_event, error = await self.execute_embedded_tool(
+                    spec=spec,
+                    parent_call=tool_call,
+                    sequence=current_sequence,
+                    name=name,
+                    params=params,
+                    external_lookup_counts=external_lookup_counts,
+                    workspace_violation_counts=workspace_violation_counts,
+                    cached_result=cached_result,
+                )
+                nested_event["worker_call_id"] = worker_call_id
+                async with event_lock:
+                    nested_events.append(nested_event)
+                if error is not None:
+                    if isinstance(error, ToolSuspensionError):
+                        scheduler.abort(error)
+                    raise error
+                if nested_event["phase"] == "error":
+                    raise RuntimeError(str(result))
+                normalized = lossless_json(result)
+                if cached_result is not _PTC_CACHE_MISS:
+                    cache_hits += 1
+                elif cache_key is not None and spec.ptc_read_cache is not None:
+                    spec.ptc_read_cache[cache_key] = normalized
+                intermediate_result_chars += len(
+                    json.dumps(normalized, ensure_ascii=False, allow_nan=False)
+                )
+                return normalized
+
+            return await scheduler.submit(safe=safe, execute=execute)
+
+        run_started = asyncio.get_running_loop().time()
+        run_result = None
+        try:
+            run_result = await PtcRuntime(
+                spec.ptc_config,
+                spec.workspace,
+                sandbox_mode=spec.sandbox_mode,
+            ).run(
+                code=code,
+                dispatch=dispatch,
+            )
+        except asyncio.CancelledError:
+            await scheduler.close(cancel_active=True)
+            raise
+        finally:
+            if run_result is not None:
+                await scheduler.close(cancel_active=run_result.error is not None)
+
+        nested_events.sort(
+            key=lambda item: int(str(item.get("sub_call_id", "0")).rsplit(":", 1)[-1])
+        )
+        outer_event: dict[str, Any] = {
+            "name": RUN_CODE_NAME,
+            "status": "error" if run_result.error else "ok",
+            "detail": (
+                f"{run_result.error.kind}: {run_result.error.message}"
+                if run_result.error else description[:120]
+            ),
+            "ptc_subcalls": nested_events,
+            "ptc_metrics": {
+                "subcall_count": len(nested_events),
+                "executed_subcall_count": len(nested_events) - cache_hits,
+                "cache_hits": cache_hits,
+                "peak_parallel": scheduler.peak_parallel,
+                "duration_ms": int(
+                    (asyncio.get_running_loop().time() - run_started) * 1000
+                ),
+                "llm_round_trips": 1,
+                "output_chars": len(run_result.output),
+                "intermediate_result_chars": intermediate_result_chars,
+                "saved_intermediate_result_chars": max(
+                    0, intermediate_result_chars - len(run_result.output)
+                ),
+                "failure_kind": run_result.error.kind if run_result.error else None,
+            },
+        }
+        emit_trace_event(
+            "mybot.ptc.run",
+            {
+                "parent_call_id": tool_call.id,
+                **outer_event["ptc_metrics"],
+            },
+        )
+        if run_result.suspension is not None:
+            return run_result.output, outer_event, run_result.suspension
+        return run_result.output, outer_event, None

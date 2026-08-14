@@ -191,6 +191,11 @@ class Tool(ABC):
         """Whether this tool should run alone even if concurrency is enabled."""
         return False
 
+    @property
+    def output_schema(self) -> dict[str, Any] | None:
+        """Optional JSON Schema used only to type PTC tool results."""
+        return None
+
     # --- Plugin metadata ---
 
     config_key: str = ""

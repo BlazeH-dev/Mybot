@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.queue import MessageBus
 from nanobot.config.loader import save_config
-from nanobot.config.schema import Config
+from nanobot.config.schema import Config, PtcConfig, ToolsConfig
 from nanobot.providers.factory import ProviderSnapshot, load_provider_snapshot
 from nanobot.webui.settings_api import update_agent_settings
 
@@ -72,6 +72,28 @@ def test_llm_runtime_refreshes_provider_snapshot(tmp_path: Path) -> None:
     assert runtime.model == "new-model"
     assert loop.provider is new_provider
     assert loop.runner.provider is new_provider
+
+
+def test_tool_mode_refresh_updates_next_turn_and_subagents(tmp_path: Path) -> None:
+    current = ToolsConfig()
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=_provider("test-model"),
+        workspace=tmp_path,
+        tools_config=ToolsConfig(),
+        tools_config_loader=lambda: current,
+    )
+    current = ToolsConfig(
+        mode="both",
+        ptc=PtcConfig(sandbox="none", max_parallel_sub_calls=3),
+    )
+
+    loop._refresh_tool_presentation_snapshot()
+
+    assert loop.tools_config.mode == "both"
+    assert loop.tools_config.ptc.max_parallel_sub_calls == 3
+    assert loop.subagents.tools_config.mode == "both"
+    assert loop.subagents.tools_config.ptc.max_parallel_sub_calls == 3
 
 
 def test_settings_context_window_refreshes_runtime_state(

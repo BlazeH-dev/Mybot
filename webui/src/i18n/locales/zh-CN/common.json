@@ -104,17 +104,37 @@
     "activity": "执行活动",
     "waitingActivity": "等待活动事件",
     "analysis": "低分原因分析",
-    "reanalyze": "重新分析",
-    "evolve": "按 {{count}} 条结论修改 Skill",
+    "reanalyze": "重新分析 Bad Case",
+    "reanalyzeStarting": "正在启动新的 Bad Case 分析",
+    "reanalyzeRunning": "正在重新分析 Bad Case",
+    "reanalyzeRunningDetail": "正在刷新证据并生成新的原因分类。旧分析和旧候选已暂时隐藏，完成或取消后会恢复。",
+    "continueCategorization": "继续生成原因分类",
+    "categorizationStarting": "正在启动原因分类",
+    "categorizationRunning": "正在生成原因分类",
+    "categorizationRunningDetail": "正在复用已有 Finding 并按问题归属分组生成原因类别，不会重新拉取 Evidence 或重跑分批分析。",
+    "categorizationIncomplete": "跨批次原因分类尚未完成。请先继续生成原因分类；完成前不能修改 Skill。已有 Finding 会直接复用。",
+    "analysisRunning": "正在分析所选 Bad Case",
+    "analysisRunningDetail": "证据收集和分批分析正在后台进行，最新进度会持续显示在下方。",
+    "evolve": "按 {{count}} 个原因类别修改 Skill",
     "risk": "风险",
+    "trigger": "触发条件",
+    "requiredAction": "必须执行",
+    "entrypoint": "执行入口",
+    "requiredOutputs": "必需输出",
+    "interventionValidation": "干预机制与确定性探针",
+    "probesPassed": "探针通过",
+    "probesFailed": "探针未通过，暂不能重测",
+    "probePassed": "通过",
+    "probeFailed": "失败",
     "test": "测试所选 Case",
-    "revise": "继续改进",
+    "revise": "基于当前候选继续修改",
     "apply": "同意并应用",
     "switchBack": "切回原 Skill",
     "changes": "候选修改",
     "testResults": "重测结果",
-    "recommended": "建议应用：所选 Case 无回退且至少一个提升。",
+    "recommended": "建议应用：目标 Case 的整体平均分已提升。",
     "notRecommended": "系统不建议应用，用户仍可根据审阅结果决定。",
+    "meanDelta": "平均变化：{{value}}",
     "tokenChange": "平均 token 变化：{{value}}"
   },
   "settings": {
@@ -160,7 +180,8 @@
       "nativeHost": "原生宿主",
       "observability": "可观测性",
       "hostSafety": "应用安全",
-      "voiceInput": "语音识别"
+      "voiceInput": "语音识别",
+      "toolCalling": "工具调用"
     },
     "models": {
       "selectModel": "选择模型",
@@ -242,7 +263,8 @@
       "transcriptionModel": "模型",
       "transcriptionLanguage": "语言",
       "voiceLimits": "限制",
-      "langfuseTrace": "发送 Trace 到 Langfuse"
+      "langfuseTrace": "发送 Trace 到 Langfuse",
+      "toolCallingMode": "模式"
     },
     "help": {
       "theme": "在浅色和深色外观之间切换。",
@@ -289,7 +311,8 @@
       "transcriptionLanguage": "可选 ISO-639 语言提示，例如 en、zh、ja 或 ko。",
       "langfuseEnabled": "重启后，新对话 Trace 将发送到 Langfuse。",
       "langfuseDisabled": "重启后，对话 Trace 仅保存在本地 JSONL 文件中。",
-      "langfuseNotConfigured": "请先在 config.json 中配置 Langfuse public key 和 secret key。"
+      "langfuseNotConfigured": "请先在 config.json 中配置 Langfuse public key 和 secret key。",
+      "toolCallingMode": "选择下一轮模型请求使用的工具调用接口。"
     },
     "timezone": {
       "select": "选择时区",
@@ -402,7 +425,10 @@
       "configured": "已配置",
       "notConfigured": "未配置",
       "pending": "等待中",
-      "restartingEngine": "正在重启"
+      "restartingEngine": "正在重启",
+      "native": "原生",
+      "code": "代码",
+      "both": "两者"
     },
     "status": {
       "loading": "正在加载设置...",

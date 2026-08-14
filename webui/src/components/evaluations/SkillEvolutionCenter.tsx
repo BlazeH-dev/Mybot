@@ -27,6 +27,7 @@ import {
   fetchSkillEvolutionActivities,
   fetchSkillEvolutionBadCases,
   fetchSkillEvolutionTask,
+  fetchSkillEvolutionTasks,
   runSkillEvolutionAction,
 } from "@/lib/api";
 import type {
@@ -41,6 +42,7 @@ import { useClient } from "@/providers/ClientProvider";
 
 const DEFAULT_OPTIMIZER_PRESET = "gpt-5-6-sol";
 const ACTIVE_STATUSES = new Set(["collecting_evidence", "analyzing", "editing", "testing"]);
+const ANALYSIS_STATUSES = new Set(["collecting_evidence", "analyzing"]);
 const TASK_STORAGE_KEY = "nanobot.skillEvolution.activeTask";
 
 function scoreLabel(value: number | null | undefined): string {
@@ -65,6 +67,7 @@ export function SkillEvolutionCenter({ hostChromeInset = false }: { hostChromeIn
   const [optimizerPreset, setOptimizerPreset] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectedFindings, setSelectedFindings] = useState<Set<string>>(new Set());
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
   const [task, setTask] = useState<SkillEvolutionTask | null>(null);
   const [activities, setActivities] = useState<SkillEvolutionActivity[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -121,12 +124,42 @@ export function SkillEvolutionCenter({ hostChromeInset = false }: { hostChromeIn
 
   useEffect(() => {
     void loadRuns().catch((cause) => setError(String(cause)));
-    const storedTask = window.localStorage.getItem(TASK_STORAGE_KEY);
-    if (storedTask) {
-      void fetchSkillEvolutionTask(token, storedTask).then(setTask).catch(() => {
-        window.localStorage.removeItem(TASK_STORAGE_KEY);
-      });
-    }
+    let disposed = false;
+    const restoreTask = async () => {
+      const storedTask = window.localStorage.getItem(TASK_STORAGE_KEY);
+      const storedRequest = storedTask
+        ? fetchSkillEvolutionTask(token, storedTask)
+        : Promise.resolve(null);
+      const [storedResult, tasksResult] = await Promise.allSettled([
+        storedRequest,
+        fetchSkillEvolutionTasks(token),
+      ]);
+      if (disposed) return;
+      const candidates: SkillEvolutionTask[] = [];
+      if (storedResult.status === "fulfilled" && storedResult.value) {
+        candidates.push(storedResult.value);
+      }
+      if (tasksResult.status === "fulfilled" && tasksResult.value[0]) {
+        candidates.push(tasksResult.value[0]);
+      }
+      const latest = candidates.sort((left, right) =>
+        String(right.created_at).localeCompare(String(left.created_at))
+      )[0];
+      if (latest) {
+        cursorRef.current = 0;
+        setActivities([]);
+        setTask((current) => current ?? latest);
+      } else if (storedTask) {
+        const cause = tasksResult.status === "rejected"
+          ? tasksResult.reason
+          : storedResult.status === "rejected"
+            ? storedResult.reason
+            : "Skill evolution task is unavailable";
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    };
+    void restoreTask();
+    return () => { disposed = true; };
   }, [loadRuns, token]);
 
   useEffect(() => {
@@ -184,8 +217,18 @@ export function SkillEvolutionCenter({ hostChromeInset = false }: { hostChromeIn
 
   useEffect(() => {
     if (!analysis) return;
+    const categories = analysis.categories ?? [];
+    setSelectedCategories(new Set(
+      categories
+        .filter((category) =>
+          (category.fix_owner === "skill" || category.fix_owner === "mixed")
+          && category.intervention.repair_mode !== "not_skill_repairable"
+          && category.should_modify_skill
+          && category.confidence >= 0.6)
+        .map((category) => category.category_id),
+    ));
     setSelectedFindings(new Set(
-      analysis.findings
+      categories.length ? [] : analysis.findings
         .filter((finding) => finding.fix_owner === "skill"
           && finding.should_modify_skill
           && finding.confidence >= 0.6)
@@ -210,6 +253,12 @@ export function SkillEvolutionCenter({ hostChromeInset = false }: { hostChromeIn
   const allSelectableCasesSelected = selectableCaseKeys.length > 0
     && selectableCaseKeys.every((key) => selected.has(key));
   const running = task ? ACTIVE_STATUSES.has(task.status) : false;
+  const analysisRunning = task ? ANALYSIS_STATUSES.has(task.status) : false;
+  const categorizationIncomplete = Boolean(analysis?.findings.length)
+    && !(analysis?.categories?.length);
+  const reanalysisRunning = Boolean(analysis) && (busy === "reanalyze" || analysisRunning);
+  const categorizationResuming = categorizationIncomplete
+    && (busy === "reanalyze" || analysisRunning);
 
   const analyze = async () => {
     setBusy("analyze");
@@ -247,7 +296,10 @@ export function SkillEvolutionCenter({ hostChromeInset = false }: { hostChromeIn
         task.task_id,
         analysis.analysis_id,
         analysis.digest,
-        Array.from(selectedFindings),
+        analysis.categories?.length
+          ? Array.from(selectedCategories)
+          : Array.from(selectedFindings),
+        analysis.categories?.length ? "categories" : "findings",
       ));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -262,13 +314,19 @@ export function SkillEvolutionCenter({ hostChromeInset = false }: { hostChromeIn
     if (!task) return;
     setBusy(action);
     setError(null);
+    if (action === "reanalyze") followActivityRef.current = true;
     try {
       setTask(await runSkillEvolutionAction(
         token,
         task.task_id,
         action,
         revision?.revision_id ?? "r1",
-        action === "revise" ? Array.from(selectedFindings) : [],
+        action === "revise"
+          ? (analysis?.categories?.length
+              ? Array.from(selectedCategories)
+              : Array.from(selectedFindings))
+          : [],
+        analysis?.categories?.length ? "categories" : "findings",
       ));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -367,6 +425,31 @@ export function SkillEvolutionCenter({ hostChromeInset = false }: { hostChromeIn
                   <div><p className="text-xs uppercase text-muted-foreground">{task.derived_skill} · {task.optimizer_model}</p><h2 className="mt-1 text-base font-semibold">{t("skillEvolution.activity")}</h2></div>
                   <span className="rounded-md border border-border px-2 py-1 text-xs">{task.status}</span>
                 </div>
+                {busy === "reanalyze" || analysisRunning ? (
+                  <div role="status" aria-live="polite" className="mt-3 flex items-start gap-3 border-l-2 border-foreground/40 bg-muted/35 px-3 py-3">
+                    <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+                    <div>
+                      <p className="text-sm font-medium">{t(
+                        categorizationResuming
+                          ? busy === "reanalyze"
+                            ? "skillEvolution.categorizationStarting"
+                            : "skillEvolution.categorizationRunning"
+                          : reanalysisRunning
+                          ? busy === "reanalyze"
+                            ? "skillEvolution.reanalyzeStarting"
+                            : "skillEvolution.reanalyzeRunning"
+                          : "skillEvolution.analysisRunning",
+                      )}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{t(
+                        categorizationResuming
+                          ? "skillEvolution.categorizationRunningDetail"
+                          : reanalysisRunning
+                          ? "skillEvolution.reanalyzeRunningDetail"
+                          : "skillEvolution.analysisRunningDetail",
+                      )}</p>
+                    </div>
+                  </div>
+                ) : null}
                 <div ref={activityRef} onScroll={(event) => { const node = event.currentTarget; followActivityRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 36; }} className="mt-3 max-h-60 overflow-auto border-l border-border/70 pl-3" aria-label={t("skillEvolution.activity")}>
                   {activities.length ? activities.map((activity) => (
                     <ActivityStep key={activity.seq} icon={activity.status === "failed" ? AlertCircle : activity.kind === "file" ? FilePenLine : CircleDot} label={activity.label} detail={activity.detail} active={["started", "running"].includes(activity.status)} tone={activity.status === "failed" ? "error" : activity.status === "completed" ? "success" : "neutral"} aside={<span className="text-[11px] text-muted-foreground">{activity.filePath || activity.caseId || usageLabel(activity.usage)}</span>}>
@@ -376,17 +459,40 @@ export function SkillEvolutionCenter({ hostChromeInset = false }: { hostChromeIn
                 </div>
               </section>
 
-              {analysis ? (
+              {analysis && !reanalysisRunning ? (
                 <section className="px-5 py-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div><h2 className="text-base font-semibold">{t("skillEvolution.analysis")}</h2><p className="mt-1 text-sm text-muted-foreground">{analysis.summary}</p></div>
                     <div className="flex gap-2">
-                      <Button size="sm" variant="outline" onClick={() => void act("reanalyze")} disabled={busy !== null || running}><RefreshCw className="mr-2 h-4 w-4" />{t("skillEvolution.reanalyze")}</Button>
-                      <Button size="sm" onClick={() => void evolve()} disabled={!selectedFindings.size || busy !== null || running}><WandSparkles className="mr-2 h-4 w-4" />{t("skillEvolution.evolve", { count: selectedFindings.size })}</Button>
+                      <Button size="sm" variant="outline" onClick={() => void act("reanalyze")} disabled={busy !== null || running}>{busy === "reanalyze" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}{t(categorizationIncomplete ? "skillEvolution.continueCategorization" : "skillEvolution.reanalyze")}</Button>
+                      <Button size="sm" onClick={() => void evolve()} disabled={categorizationIncomplete || !(analysis.categories?.length ? selectedCategories.size : selectedFindings.size) || busy !== null || running}><WandSparkles className="mr-2 h-4 w-4" />{t("skillEvolution.evolve", { count: analysis.categories?.length ? selectedCategories.size : selectedFindings.size })}</Button>
                     </div>
                   </div>
+                  {categorizationIncomplete ? <p role="alert" className="mt-3 border-l-2 border-amber-500/70 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-300">{t("skillEvolution.categorizationIncomplete")}</p> : null}
                   <div className="mt-4 grid gap-3">
-                    {analysis.findings.map((finding) => {
+                    {analysis.categories?.length ? analysis.categories.map((category) => {
+                      const selectable = (category.fix_owner === "skill" || category.fix_owner === "mixed")
+                        && category.intervention.repair_mode !== "not_skill_repairable";
+                      const categoryFindings = analysis.findings.filter((finding) =>
+                        category.finding_ids.includes(finding.finding_id)
+                      );
+                      return (
+                        <label key={category.category_id} className={cn("grid grid-cols-[20px_minmax(0,1fr)] gap-3 border-l-2 py-3 pl-3", selectable ? "border-foreground/30" : "border-border text-muted-foreground")}>
+                          <input type="checkbox" aria-label={`Category ${category.category_id}`} checked={selectedCategories.has(category.category_id)} disabled={!selectable || running} onChange={() => setSelectedCategories((current) => { const next = new Set(current); if (next.has(category.category_id)) next.delete(category.category_id); else next.add(category.category_id); return next; })} />
+                          <span className="min-w-0">
+                            <span className="flex flex-wrap items-center gap-2"><strong className="text-sm">{category.title}</strong><span className="rounded border border-border px-1.5 py-0.5 text-[11px]">{category.fix_owner}</span><span className="rounded border border-border px-1.5 py-0.5 font-mono text-[11px]">{category.intervention.repair_mode}</span><span className="text-xs text-muted-foreground">{Math.round(category.confidence * 100)}%</span></span>
+                            <span className="mt-1 block text-sm">{category.root_cause}</span>
+                            <span className="mt-2 block text-xs"><strong>{t("skillEvolution.trigger")}:</strong> {category.intervention.trigger}</span>
+                            <span className="mt-1 block text-xs"><strong>{t("skillEvolution.requiredAction")}:</strong> {category.intervention.required_action}</span>
+                            <span className="mt-1 block text-xs"><strong>{t("skillEvolution.entrypoint")}:</strong> <span className="font-mono">{category.intervention.entrypoint}</span></span>
+                            {category.intervention.required_outputs.length ? <span className="mt-1 block text-xs"><strong>{t("skillEvolution.requiredOutputs")}:</strong> {category.intervention.required_outputs.join(", ")}</span> : null}
+                            <span className="mt-2 block text-xs text-muted-foreground">Cases: {category.case_ids.join(", ")} · Findings: {category.finding_ids.join(", ")}</span>
+                            <span className="mt-2 block border-l border-border pl-2 text-xs text-muted-foreground">{categoryFindings.map((finding) => finding.change_hypothesis || finding.skill_gap).filter(Boolean).join(" · ")}</span>
+                            {category.risk ? <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">{t("skillEvolution.risk")}: {category.risk}</span> : null}
+                          </span>
+                        </label>
+                      );
+                    }) : analysis.findings.map((finding) => {
                       const selectable = finding.fix_owner === "skill" || finding.fix_owner === "mixed";
                       return (
                         <label key={finding.finding_id} className={cn("grid grid-cols-[20px_minmax(0,1fr)] gap-3 border-l-2 py-2 pl-3", selectable ? "border-foreground/30" : "border-border text-muted-foreground")}>
@@ -418,7 +524,7 @@ export function SkillEvolutionCenter({ hostChromeInset = false }: { hostChromeIn
                 </section>
               ) : null}
 
-              {revision ? (
+              {revision && !reanalysisRunning ? (
                 <>
                   <section className="px-5 py-4">
                     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -436,11 +542,18 @@ export function SkillEvolutionCenter({ hostChromeInset = false }: { hostChromeIn
                     <div className="mb-3 flex flex-wrap gap-1.5">{revision.changed_paths.map((path) => <span key={path} className="rounded-md bg-muted px-2 py-1 font-mono text-xs">{path}</span>)}</div>
                     <pre className="max-h-96 overflow-auto rounded-md border border-border bg-muted/35 p-3 text-xs leading-5">{revision.diff}</pre>
                   </section>
+                  {revision.intervention_validation ? (
+                    <section className="px-5 py-4">
+                      <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">{t("skillEvolution.interventionValidation")}</h3><span className={cn("text-xs", revision.intervention_validation.valid ? "text-emerald-600" : "text-destructive")}>{revision.intervention_validation.valid ? t("skillEvolution.probesPassed") : t("skillEvolution.probesFailed")}</span></div>
+                      {revision.intervention_validation.errors.length ? <ul className="mt-2 grid gap-1 text-xs text-destructive">{revision.intervention_validation.errors.map((item) => <li key={item}>{item}</li>)}</ul> : null}
+                      {revision.intervention_validation.probe_results.length ? <div className="mt-3 grid gap-1 text-xs text-muted-foreground">{revision.intervention_validation.probe_results.map((probe, index) => <div key={`${probe.category_id}-${probe.case_id}-${index}`} className="flex flex-wrap gap-2"><span className="font-mono">{probe.category_id}</span><span>Case {probe.case_id}</span><span>{probe.valid ? t("skillEvolution.probePassed") : t("skillEvolution.probeFailed")}</span>{probe.missing_fields?.length ? <span>{probe.missing_fields.join(", ")}</span> : null}{probe.semantic_errors?.length ? <span>{probe.semantic_errors.join("; ")}</span> : null}</div>)}</div> : null}
+                    </section>
+                  ) : null}
                   {revision.test_results.length ? (
                     <section className="px-5 py-4">
                       <h3 className="text-sm font-medium">{t("skillEvolution.testResults")}</h3>
-                      <div className="mt-3 overflow-hidden rounded-md border border-border">{revision.test_results.map((result) => <div key={result.case_key} className="grid grid-cols-[70px_1fr_72px_72px_60px] items-center gap-2 border-b border-border/60 px-3 py-2 text-xs last:border-b-0"><span className="font-mono">{result.case_id}</span><span className="truncate">{result.model_preset}<span className="ml-1 text-muted-foreground">{result.scope ?? "selected"}</span></span><span className="text-right font-mono">{scoreLabel(result.baseline_score)}</span><span className="text-right font-mono">{scoreLabel(result.evolved_score)}</span><span className={cn("text-right font-mono", (result.delta ?? 0) < 0 ? "text-destructive" : "text-emerald-600")}>{result.delta == null ? "-" : `${result.delta >= 0 ? "+" : ""}${result.delta.toFixed(3)}`}</span>{result.trace_url ? <a className="col-span-5 inline-flex items-center gap-1 text-muted-foreground hover:text-foreground" href={result.trace_url} target="_blank" rel="noreferrer">Trace <ExternalLink className="h-3 w-3" /></a> : null}</div>)}</div>
-                      {revision.recommendation ? <p className={cn("mt-3 text-sm", revision.recommendation.recommended ? "text-emerald-600" : "text-amber-600")}>{revision.recommendation.recommended ? t("skillEvolution.recommended") : t("skillEvolution.notRecommended")}<span className="ml-2 text-muted-foreground">{revision.recommendation.disclaimer}</span>{revision.recommendation.mean_token_change != null ? <span className="ml-2 text-muted-foreground">{t("skillEvolution.tokenChange", { value: revision.recommendation.mean_token_change })}</span> : null}</p> : null}
+                      <div className="mt-3 overflow-hidden rounded-md border border-border">{revision.test_results.map((result) => <div key={result.case_key} className="grid grid-cols-[70px_1fr_72px_72px_60px] items-center gap-2 border-b border-border/60 px-3 py-2 text-xs last:border-b-0"><span className="font-mono">{result.case_id}</span><span className="truncate">{result.model_preset}<span className="ml-1 text-muted-foreground">{result.scope ?? "target"}</span>{result.category_ids?.length ? <span className="ml-1 font-mono text-muted-foreground">{result.category_ids.join(",")}</span> : null}</span><span className="text-right font-mono">{scoreLabel(result.baseline_score)}</span><span className="text-right font-mono">{scoreLabel(result.evolved_score)}</span><span className={cn("text-right font-mono", (result.delta ?? 0) < 0 ? "text-destructive" : "text-emerald-600")}>{result.delta == null ? "-" : `${result.delta >= 0 ? "+" : ""}${result.delta.toFixed(3)}`}</span>{result.trace_url ? <a className="col-span-5 inline-flex items-center gap-1 text-muted-foreground hover:text-foreground" href={result.trace_url} target="_blank" rel="noreferrer">Trace <ExternalLink className="h-3 w-3" /></a> : null}</div>)}</div>
+                      {revision.recommendation ? <div className="mt-3"><p className={cn("text-sm", revision.recommendation.recommended ? "text-emerald-600" : "text-amber-600")}>{revision.recommendation.recommended ? t("skillEvolution.recommended") : t("skillEvolution.notRecommended")} {revision.recommendation.mean_delta != null ? t("skillEvolution.meanDelta", { value: revision.recommendation.mean_delta.toFixed(3) }) : null}</p><p className="mt-1 text-xs text-muted-foreground">{revision.recommendation.disclaimer}{revision.recommendation.mean_token_change != null ? ` ${t("skillEvolution.tokenChange", { value: revision.recommendation.mean_token_change })}` : ""}</p>{revision.recommendation.category_summaries?.length ? <div className="mt-2 flex flex-wrap gap-2">{revision.recommendation.category_summaries.map((summary) => <span key={summary.category_id} className="rounded border border-border px-2 py-1 font-mono text-xs">{summary.category_id} {summary.mean_delta >= 0 ? "+" : ""}{summary.mean_delta.toFixed(3)}</span>)}</div> : null}</div> : null}
                     </section>
                   ) : null}
                 </>

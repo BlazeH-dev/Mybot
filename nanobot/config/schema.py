@@ -361,6 +361,16 @@ class MCPServerConfig(Base):
     enabled_tools: list[str] = Field(default_factory=lambda: ["*"])  # Only register these tools; accepts raw MCP names or wrapped mcp_<server>_<tool> names; ["*"] = all tools; [] = no tools
 
 
+class PtcConfig(Base):
+    """Programmatic Tool Calling runtime configuration."""
+
+    max_parallel_sub_calls: int = Field(default=10, ge=1, le=100)
+    compute_timeout_seconds: int = Field(default=60, ge=1, le=3600)
+    wall_timeout_seconds: int = Field(default=600, ge=1, le=3600)
+    max_output_chars: int = Field(default=65_536, ge=1024, le=1_048_576)
+    sandbox: Literal["auto", "none"] = "auto"
+
+
 def _lazy_default(module_path: str, class_name: str) -> Any:
     """Deferred import helper for ToolsConfig default factories."""
     import importlib
@@ -383,6 +393,8 @@ class ToolsConfig(Base):
     image_generation: ImageGenerationToolConfig = Field(
         default_factory=lambda: _lazy_default("nanobot.agent.tools.image_generation", "ImageGenerationToolConfig"),
     )
+    mode: Literal["native", "code", "both"] = "native"
+    ptc: PtcConfig = Field(default_factory=PtcConfig)
     restrict_to_workspace: bool = False  # policy intent: keep tool access inside workspace when possible
     webui_allow_local_service_access: bool = Field(
         default=True,

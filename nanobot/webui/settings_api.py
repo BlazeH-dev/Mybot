@@ -98,6 +98,7 @@ _IMAGE_GENERATION_ASPECT_RATIOS = {
     "21:9",
 }
 _CONTEXT_WINDOW_TOKEN_OPTIONS = {65_536, 262_144}
+_TOOL_CALLING_MODES = {"native", "code", "both"}
 _MODEL_CONFIGURATION_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
 _SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -562,6 +563,16 @@ def _parse_context_window_tokens(value: str | None) -> int | None:
     return parsed
 
 
+def _validate_ptc_runtime(config: Any) -> None:
+    """Fail before persisting a Code Mode that cannot launch on this host."""
+    try:
+        from nanobot.agent.ptc import PtcRuntime
+
+        PtcRuntime(config.tools.ptc, config.workspace_path)._launch()
+    except Exception as exc:
+        raise WebUISettingsError(f"PTC runtime is unavailable: {exc}") from None
+
+
 def _model_configuration_slug(label: str) -> str:
     normalized = _MODEL_CONFIGURATION_SLUG_RE.sub("-", label.strip().lower())
     normalized = normalized.strip("-_")
@@ -821,6 +832,16 @@ def settings_payload(
             },
             "unified_session": defaults.unified_session,
         },
+        "tools": {
+            "mode": config.tools.mode,
+            "ptc": {
+                "max_parallel_sub_calls": config.tools.ptc.max_parallel_sub_calls,
+                "compute_timeout_seconds": config.tools.ptc.compute_timeout_seconds,
+                "wall_timeout_seconds": config.tools.ptc.wall_timeout_seconds,
+                "max_output_chars": config.tools.ptc.max_output_chars,
+                "sandbox": config.tools.ptc.sandbox,
+            },
+        },
         "observability": {
             "langfuse": {
                 "enabled": config.observability.langfuse.enabled,
@@ -897,6 +918,17 @@ def update_agent_settings(query: QueryParams) -> dict[str, Any]:
     defaults = config.agents.defaults
     changed = False
     restart_required = False
+
+    tool_mode = _query_first_alias(query, "tool_mode", "toolMode")
+    if tool_mode is not None:
+        tool_mode = tool_mode.strip().lower()
+        if tool_mode not in _TOOL_CALLING_MODES:
+            raise WebUISettingsError("tool_mode must be native, code, or both")
+        if config.tools.mode != tool_mode:
+            if tool_mode != "native":
+                _validate_ptc_runtime(config)
+            config.tools.mode = tool_mode
+            changed = True
 
     if "model_preset" in query or "modelPreset" in query:
         preset = (_query_first_alias(query, "model_preset", "modelPreset") or "").strip()

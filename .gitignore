@@ -4,6 +4,13 @@
 .assets
 .docs
 docs/
+!docs/
+docs/*
+!docs/修改记录.md
+!docs/runtime-code-notes/
+docs/runtime-code-notes/*
+!docs/runtime-code-notes/README.md
+!docs/runtime-code-notes/13-PTC-CodeMode程序化工具调用.md
 .env
 .web
 .orion

@@ -148,6 +148,83 @@ def test_update_agent_settings_accepts_context_window_options(
     assert saved.agents.defaults.context_window_tokens == 262144
 
 
+def test_settings_payload_exposes_ptc_tool_mode_and_limits(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.tools.mode = "both"
+    config.tools.ptc.max_parallel_sub_calls = 3
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = settings_payload()
+
+    assert payload["tools"] == {
+        "mode": "both",
+        "ptc": {
+            "max_parallel_sub_calls": 3,
+            "compute_timeout_seconds": 60,
+            "wall_timeout_seconds": 600,
+            "max_output_chars": 65_536,
+            "sandbox": "auto",
+        },
+    }
+
+
+def test_update_agent_settings_persists_ptc_tool_mode(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.tools.ptc.sandbox = "none"
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = update_agent_settings({"tool_mode": ["code"]})
+
+    assert payload["tools"]["mode"] == "code"
+    assert payload["requires_restart"] is False
+    assert load_config(config_path).tools.mode == "code"
+
+
+def test_update_agent_settings_rejects_invalid_ptc_tool_mode(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    save_config(Config(), config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    with pytest.raises(
+        WebUISettingsError,
+        match="tool_mode must be native, code, or both",
+    ):
+        update_agent_settings({"tool_mode": ["automatic"]})
+
+    assert load_config(config_path).tools.mode == "native"
+
+
+def test_update_agent_settings_does_not_persist_unavailable_ptc_mode(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    save_config(Config(), config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr(
+        "nanobot.agent.ptc.PtcRuntime._launch",
+        lambda _self: (_ for _ in ()).throw(RuntimeError("worker unavailable")),
+    )
+
+    with pytest.raises(WebUISettingsError, match="PTC runtime is unavailable"):
+        update_agent_settings({"tool_mode": ["both"]})
+
+    assert load_config(config_path).tools.mode == "native"
+
+
 def test_update_skill_enabled_persists_disabled_skills(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

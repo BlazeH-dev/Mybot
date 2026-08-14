@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -42,6 +43,7 @@ from nanobot.evaluations.skill_evolution_tools import (
     WriteSkillFileTool,
 )
 from nanobot.providers.factory import make_provider
+from nanobot.security.sandbox import SandboxLauncher, SandboxMode, SandboxUnavailableError
 
 BASE_SKILL = "officecli"
 DERIVED_SKILL = "officecli-evolved"
@@ -51,6 +53,11 @@ _ALLOWED_FILE = re.compile(r"^(SKILL\.md|(?:scripts|references|assets)/[^/].*)$"
 _REDACT_KEYS = re.compile(r"(api.?key|authorization|secret|token|password|cookie)", re.I)
 _ANALYSIS_BATCH_CHARS = 100_000
 _DETAIL_LIMIT = 1000
+_SKILL_EDITOR_MAX_ITERATIONS = 20
+_SKILL_EDITOR_BASE_TOOL_CALLS = 40
+_SKILL_EDITOR_MAX_TOOL_CALLS = 100
+_SKILL_EDITOR_SCRIPT_TOOL_CALLS = 4
+_SKILL_EDITOR_WORKFLOW_TOOL_CALLS = 2
 _FIX_OWNERS = (
     "skill",
     "runtime",
@@ -61,6 +68,42 @@ _FIX_OWNERS = (
     "evaluator",
     "mixed",
     "inconclusive",
+)
+
+_PROBE_OUTPUT_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        ("chart", "series", "plot", "fill", "图表", "系列", "网格线", "前景", "背景"),
+        ("series", "chart_fill", "plot_fill", "text_colors", "gridline_colors"),
+    ),
+    (
+        ("formula", "shared formula", "公式", "共享公式"),
+        ("requested_cells", "formulas"),
+    ),
+    (
+        (
+            "date format",
+            "duplicate",
+            "label distribution",
+            "analysis population",
+            "data quality",
+            "日期格式",
+            "重复值",
+            "标签分布",
+            "分析人口",
+            "数据质量",
+        ),
+        (
+            "date_formats",
+            "parse_failures",
+            "duplicates",
+            "label_distribution",
+            "analysis_population",
+        ),
+    ),
+    (
+        ("word count", "paragraph count", "table count", "构造计数", "段落计数", "表格计数"),
+        ("counts",),
+    ),
 )
 
 
@@ -88,7 +131,12 @@ class RootCauseFinding(BaseModel):
     change_hypothesis: str = ""
     expected_effect: str = ""
     risk: str = ""
-    should_modify_skill: bool
+    should_modify_skill: bool = Field(
+        default=False,
+        description=(
+            "Whether this finding should be preselected for Skill editing; omission defaults to false."
+        ),
+    )
 
 
 class AnalysisCluster(BaseModel):
@@ -98,6 +146,76 @@ class AnalysisCluster(BaseModel):
     fix_owner: str
     finding_ids: list[str]
     case_ids: list[str]
+
+
+class InterventionContract(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repair_mode: Literal["script_required", "workflow_required", "not_skill_repairable"]
+    trigger: str = Field(min_length=1)
+    required_action: str = Field(min_length=1)
+    entrypoint: str = Field(min_length=1)
+    required_outputs: list[str] = Field(default_factory=list)
+    final_answer_check: list[str] = Field(min_length=1)
+    observable_success: str = Field(min_length=1)
+
+
+class ReasonCategory(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category_id: str = ""
+    title: str = Field(min_length=1)
+    root_cause: str = Field(min_length=1)
+    fix_owner: Literal[
+        "skill",
+        "runtime",
+        "provider",
+        "model_capability",
+        "benchmark_or_gold",
+        "input_asset",
+        "evaluator",
+        "mixed",
+        "inconclusive",
+    ]
+    confidence: float = Field(ge=0, le=1)
+    finding_ids: list[str] = Field(min_length=1)
+    case_ids: list[str] = Field(default_factory=list)
+    risk: str = ""
+    should_modify_skill: bool = False
+    intervention: InterventionContract
+
+
+class CategorySynthesisResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    categories: list[ReasonCategory] = Field(min_length=1)
+
+
+class InterventionProbe(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    args: list[str] = Field(min_length=1)
+    required_json_fields: list[str] = Field(min_length=1)
+    timeout_seconds: int = Field(default=30, ge=1, le=120)
+
+
+class InterventionImplementation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category_id: str = Field(min_length=1)
+    repair_mode: Literal["script_required", "workflow_required"]
+    changed_paths: list[str] = Field(min_length=1)
+    entrypoint: str = Field(min_length=1)
+    skill_marker: str = Field(min_length=1)
+    probe: InterventionProbe | None = None
+
+
+class InterventionManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    interventions: list[InterventionImplementation] = Field(min_length=1)
 
 
 class AnalysisResponse(BaseModel):
@@ -139,6 +257,8 @@ def _numeric_score(case: dict[str, Any]) -> float | None:
         return None
     for name in ("mybot_score", "mybot-ocb-judge-v1", "official_score"):
         value = scores.get(name)
+        if isinstance(value, dict):
+            value = value.get("value")
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return float(value)
     return None
@@ -188,6 +308,35 @@ def _manifest_rows(profile: str, benchmark: str) -> dict[str, dict[str, Any]]:
     return rows
 
 
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _skill_editor_tool_call_budget(categories: list[dict[str, Any]]) -> int:
+    script_count = sum(
+        1
+        for category in categories
+        if str((category.get("intervention") or {}).get("repair_mode") or "")
+        == "script_required"
+    )
+    workflow_count = sum(
+        1
+        for category in categories
+        if str((category.get("intervention") or {}).get("repair_mode") or "")
+        == "workflow_required"
+    )
+    requested = (
+        _SKILL_EDITOR_BASE_TOOL_CALLS
+        + script_count * _SKILL_EDITOR_SCRIPT_TOOL_CALLS
+        + workflow_count * _SKILL_EDITOR_WORKFLOW_TOOL_CALLS
+    )
+    return min(requested, _SKILL_EDITOR_MAX_TOOL_CALLS)
+
+
 class SkillEvolutionStore:
     def __init__(self, root: Path | None = None) -> None:
         self.root = (root or Path.home() / ".cache" / "nanobot" / "skill-evolution").resolve()
@@ -218,7 +367,12 @@ class SkillEvolutionStore:
         except FileNotFoundError:
             return None
 
-    def write(self, task: dict[str, Any]) -> dict[str, Any]:
+    def write(
+        self,
+        task: dict[str, Any],
+        *,
+        clear_cancel_requested: bool = False,
+    ) -> dict[str, Any]:
         task = dict(task)
         task["updated_at"] = _now()
         with self._lock:
@@ -230,7 +384,9 @@ class SkillEvolutionStore:
                 int(current.get("activity_cursor") or 0),
                 int(task.get("activity_cursor") or 0),
             )
-            if current.get("cancel_requested") and task.get("status") in {
+            if clear_cancel_requested:
+                task["cancel_requested"] = False
+            elif current.get("cancel_requested") and task.get("status") in {
                 "collecting_evidence",
                 "analyzing",
                 "editing",
@@ -389,7 +545,7 @@ class SkillEvolutionService:
             "error": None,
             "created_at": _now(),
         }
-        self.store.write(task)
+        self.store.write(task, clear_cancel_requested=True)
         self._emit(
             task_id,
             phase="collecting_evidence",
@@ -403,6 +559,28 @@ class SkillEvolutionService:
     def reanalyze(self, task_id: str) -> dict[str, Any]:
         task = self._require_task(task_id)
         self._ensure_idle(task_id)
+        category_source = self._category_retry_source(task)
+        if category_source is not None:
+            task["status"] = "analyzing"
+            task["phase"] = "analyzing"
+            task["cancel_requested"] = False
+            task["error"] = None
+            self.store.write(task, clear_cancel_requested=True)
+            self._emit(
+                task_id,
+                phase="analyzing",
+                kind="stage",
+                status="started",
+                label="Resuming reason categorization from validated findings",
+                detail=f"{len(category_source.get('findings') or [])} existing findings; no Evidence refresh",
+            )
+            self._start_thread(
+                task_id,
+                self._run_category_retry,
+                task_id,
+                category_source,
+            )
+            return self._require_task(task_id)
         _run, cases = self._run_and_cases(str(task["source_run_id"]))
         selected_keys = {str(row.get("case_key") or "") for row in task["selected_cases"]}
         selected = [case for case in cases if _case_key(case) in selected_keys]
@@ -412,7 +590,7 @@ class SkillEvolutionService:
         task["phase"] = "collecting_evidence"
         task["cancel_requested"] = False
         task["error"] = None
-        self.store.write(task)
+        self.store.write(task, clear_cancel_requested=True)
         self._emit(
             task_id,
             phase="collecting_evidence",
@@ -427,8 +605,9 @@ class SkillEvolutionService:
     def start_evolution(
         self,
         task_id: str,
-        finding_ids: list[str],
+        finding_ids: list[str] | None = None,
         *,
+        category_ids: list[str] | None = None,
         analysis_id: str | None = None,
         analysis_digest: str | None = None,
         parent_revision_id: str | None = None,
@@ -438,7 +617,11 @@ class SkillEvolutionService:
         analysis = self._require_analysis(task, analysis_id or str(task.get("active_analysis_id") or ""))
         if analysis_digest and analysis_digest != analysis.get("digest"):
             raise ValueError("analysis digest changed; refresh before editing")
-        selected_ids = {str(value) for value in finding_ids if str(value)}
+        selected_categories, selected_ids = self._resolve_evolution_selection(
+            analysis,
+            finding_ids=finding_ids,
+            category_ids=category_ids,
+        )
         findings = [row for row in analysis.get("findings") or [] if row.get("finding_id") in selected_ids]
         if not findings or len(findings) != len(selected_ids):
             raise ValueError("select at least one valid analysis finding")
@@ -446,12 +629,23 @@ class SkillEvolutionService:
             owner = str(finding.get("fix_owner") or "")
             if owner not in {"skill", "mixed"}:
                 raise ValueError(f"finding {finding['finding_id']} is owned by {owner}, not the Skill")
-            if not finding.get("should_modify_skill") and owner != "mixed":
-                raise ValueError(f"finding {finding['finding_id']} does not recommend a Skill change")
+        if not analysis.get("categories"):
+            raise ValueError(
+                "reason categorization is incomplete; resume categorization before editing the Skill"
+            )
         source_candidate = None
         if parent_revision_id:
             parent = self._require_revision(task, parent_revision_id)
-            if parent.get("status") not in {"ready_for_review", "tested", "test_failed"}:
+            parent_status = str(parent.get("status") or "")
+            resumable_incomplete = (
+                parent_status in {"failed", "cancelled"}
+                and bool(parent.get("candidate_retained_for_audit"))
+                and self._candidate_path(task_id, parent_revision_id).is_dir()
+            )
+            if (
+                parent_status not in {"ready_for_review", "tested", "test_failed"}
+                and not resumable_incomplete
+            ):
                 raise ValueError("parent revision is not reviewable")
             source_candidate = self._candidate_path(task_id, parent_revision_id)
         revision_id = f"r{len(task.get('revisions') or []) + 1}"
@@ -460,13 +654,17 @@ class SkillEvolutionService:
         task["active_revision_id"] = revision_id
         task["cancel_requested"] = False
         task["error"] = None
-        self.store.write(task)
+        self.store.write(task, clear_cancel_requested=True)
         self._emit(
             task_id,
             phase="editing",
             kind="stage",
             status="started",
-            label=f"Editing candidate Skill from {len(findings)} selected findings",
+            label=(
+                f"Editing candidate Skill from {len(selected_categories)} reason categories"
+                if selected_categories
+                else f"Editing candidate Skill from {len(findings)} selected findings"
+            ),
         )
         self._start_thread(
             task_id,
@@ -475,23 +673,63 @@ class SkillEvolutionService:
             revision_id,
             analysis,
             findings,
+            selected_categories,
             parent_revision_id,
             source_candidate,
         )
         return self._require_task(task_id)
 
-    def revise(self, task_id: str, finding_ids: list[str] | None = None) -> dict[str, Any]:
+    def revise(
+        self,
+        task_id: str,
+        finding_ids: list[str] | None = None,
+        category_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         task = self._require_task(task_id)
         parent_id = str(task.get("active_revision_id") or "")
         parent = self._require_revision(task, parent_id)
         selected = finding_ids or list(parent.get("finding_ids") or [])
+        selected_categories = category_ids or list(parent.get("category_ids") or [])
         return self.start_evolution(
             task_id,
             selected,
+            category_ids=selected_categories or None,
             analysis_id=str(parent.get("analysis_id") or ""),
             analysis_digest=str(parent.get("analysis_digest") or ""),
             parent_revision_id=parent_id,
         )
+
+    @staticmethod
+    def _resolve_evolution_selection(
+        analysis: dict[str, Any],
+        *,
+        finding_ids: list[str] | None,
+        category_ids: list[str] | None,
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        requested_categories = {str(value) for value in category_ids or [] if str(value)}
+        categories = [
+            row
+            for row in analysis.get("categories") or []
+            if str(row.get("category_id") or "") in requested_categories
+        ]
+        if requested_categories:
+            if len(categories) != len(requested_categories):
+                raise ValueError("select at least one valid reason category")
+            for category in categories:
+                owner = str(category.get("fix_owner") or "")
+                mode = str((category.get("intervention") or {}).get("repair_mode") or "")
+                if owner not in {"skill", "mixed"} or mode == "not_skill_repairable":
+                    raise ValueError(
+                        f"category {category.get('category_id')} is not repairable by the Skill"
+                    )
+            selected_findings = {
+                str(finding_id)
+                for category in categories
+                for finding_id in category.get("finding_ids") or []
+            }
+            return categories, selected_findings
+        selected_findings = {str(value) for value in finding_ids or [] if str(value)}
+        return [], selected_findings
 
     def cancel(self, task_id: str) -> dict[str, Any]:
         task = self._require_task(task_id)
@@ -599,9 +837,18 @@ class SkillEvolutionService:
     def start_test(self, task_id: str, revision_id: str) -> dict[str, Any]:
         task = self._require_task(task_id)
         revision = self._require_revision(task, revision_id)
-        if revision.get("status") not in {"ready_for_review", "tested", "test_failed"}:
+        recover_cancelled_test = (
+            task.get("status") == "cancelled" and revision.get("status") == "testing"
+        )
+        if (
+            revision.get("status") not in {"ready_for_review", "tested", "test_failed"}
+            and not recover_cancelled_test
+        ):
             raise ValueError("revision is not ready to test")
         self._ensure_idle(task_id)
+        if recover_cancelled_test:
+            revision["status"] = "test_failed"
+            revision["test_error"] = "Previous test was cancelled before revision state was saved"
         candidate = self._candidate_path(task_id, revision_id)
         checks = self._validate_candidate(
             ROOT / "nanobot" / "skills" / BASE_SKILL,
@@ -611,13 +858,45 @@ class SkillEvolutionService:
         revision["security_smoke"] = checks
         if not checks["valid"]:
             raise ValueError("candidate failed pre-test security smoke: " + "; ".join(checks["errors"]))
+        analysis_id = str(revision.get("analysis_id") or "")
+        if not analysis_id:
+            intervention_checks = {
+                "valid": False,
+                "errors": [
+                    "revision has no reason-category intervention contract; regenerate the candidate"
+                ],
+                "probe_results": [],
+            }
+            revision["intervention_validation"] = intervention_checks
+            self.store.write(task)
+            raise ValueError(
+                "candidate failed intervention probes: "
+                + "; ".join(intervention_checks["errors"])
+            )
+        analysis = self._require_analysis(task, analysis_id)
+        categories = self._revision_categories(analysis, revision)
+        evidence = self._load_task_evidence(task_id, analysis)
+        intervention_checks = self._validate_interventions(
+            self._ensure_intervention_baseline(task_id, revision_id),
+            candidate,
+            categories,
+            evidence,
+        )
+        revision["intervention_validation"] = intervention_checks
+        self.store.write(task)
+        if not intervention_checks["valid"]:
+            raise ValueError(
+                "candidate failed intervention probes: "
+                + "; ".join(intervention_checks["errors"])
+            )
         revision["status"] = "testing"
+        revision.pop("test_error", None)
         revision["test_results"] = []
-        revision["test_scope"] = self._test_scope(task)
+        revision["test_scope"] = self._test_scope(task, revision)
         task["status"] = "testing"
         task["phase"] = "testing"
         task["cancel_requested"] = False
-        self.store.write(task)
+        self.store.write(task, clear_cancel_requested=True)
         self._emit(
             task_id,
             phase="testing",
@@ -802,6 +1081,7 @@ class SkillEvolutionService:
             task = self._require_task(task_id)
             task.setdefault("analyses", []).append(analysis)
             task["active_analysis_id"] = analysis_id
+            task.pop("analysis_checkpoint", None)
             task["status"] = "analysis_ready"
             task["phase"] = "analyzing"
             task["cancel_requested"] = False
@@ -813,6 +1093,109 @@ class SkillEvolutionService:
                 kind="stage",
                 status="completed",
                 label=f"Analysis ready with {len(analysis['findings'])} findings",
+            )
+        except asyncio.CancelledError:
+            self._finish_cancelled(task_id)
+        except Exception as exc:
+            self._finish_failed(task_id, "analyzing", exc)
+
+    def _category_retry_source(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        checkpoint = task.get("analysis_checkpoint") or {}
+        evidence_digest = str(checkpoint.get("evidence_digest") or "")
+        if checkpoint.get("findings_complete") and evidence_digest:
+            path = self.store.task_root(str(task["task_id"])) / (
+                f"analysis-checkpoint-{evidence_digest[:16]}.json"
+            )
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                payload = None
+            if (
+                isinstance(payload, dict)
+                and payload.get("findings")
+                and str(payload.get("evidence_digest") or "") == evidence_digest
+            ):
+                return payload
+        active_id = str(task.get("active_analysis_id") or "")
+        analysis = next(
+            (
+                row
+                for row in task.get("analyses") or []
+                if str(row.get("analysis_id") or "") == active_id
+            ),
+            None,
+        )
+        if analysis and analysis.get("findings") and not analysis.get("categories"):
+            return dict(analysis)
+        return None
+
+    def _run_category_retry(self, task_id: str, source: dict[str, Any]) -> None:
+        try:
+            task = self._require_task(task_id)
+            preset, provider = self._optimizer_runtime(str(task["optimizer_model"]))
+            findings = [dict(row) for row in source.get("findings") or []]
+            categories, category_usage = asyncio.run(
+                self._synthesize_categories(task_id, preset, provider, findings)
+            )
+            clusters = [
+                {
+                    "root_cause": row["root_cause"],
+                    "fix_owner": row["fix_owner"],
+                    "finding_ids": row["finding_ids"],
+                    "case_ids": row["case_ids"],
+                }
+                for row in categories
+            ]
+            usage: Counter[str] = Counter()
+            for key, value in (source.get("usage") or {}).items():
+                if isinstance(value, (int, float)):
+                    usage[str(key)] += int(value)
+            usage.update(category_usage)
+            task = self._require_task(task_id)
+            analysis_id = f"a{len(task.get('analyses') or []) + 1}"
+            parent_analysis_id = str(source.get("analysis_id") or task.get("active_analysis_id") or "") or None
+            summary = str(source.get("summary") or "").strip()
+            if not summary:
+                summary = " ".join(
+                    str(value).strip()
+                    for value in source.get("summaries") or []
+                    if str(value).strip()
+                )
+            analysis = {
+                "analysis_id": analysis_id,
+                "parent_analysis_id": parent_analysis_id,
+                "evidence_digest": str(source.get("evidence_digest") or task.get("evidence_digest") or ""),
+                "digest": "",
+                "summary": summary,
+                "findings": findings,
+                "categories": categories,
+                "clusters": clusters,
+                "usage": dict(usage),
+                "batch_count": int(source.get("batch_count") or 0),
+                "created_at": _now(),
+                "case_observations": list(source.get("case_observations") or []),
+                "resumed_from_findings": True,
+            }
+            analysis["digest"] = self._payload_digest(analysis)
+            _json_write(
+                self.store.task_root(task_id) / f"analysis-{analysis_id}.json",
+                analysis,
+            )
+            task.setdefault("analyses", []).append(analysis)
+            task["active_analysis_id"] = analysis_id
+            task.pop("analysis_checkpoint", None)
+            task["status"] = "analysis_ready"
+            task["phase"] = "analyzing"
+            task["cancel_requested"] = False
+            task["error"] = None
+            self.store.write(task)
+            self._emit(
+                task_id,
+                phase="analyzing",
+                kind="stage",
+                status="completed",
+                label=f"Reason categorization ready with {len(categories)} categories",
+                detail="Reused existing findings; Evidence and batch analysis were not repeated",
             )
         except asyncio.CancelledError:
             self._finish_cancelled(task_id)
@@ -846,6 +1229,7 @@ class SkillEvolutionService:
                     "Cite only supplied evidence_id values and case_id values.",
                     "Token or latency is causal only when the supplied same-model benchmark comparison supports it.",
                     "Separate Skill, runtime, provider, model, benchmark/gold, asset, and evaluator ownership.",
+                    "Set should_modify_skill true only when the finding should be preselected for Skill editing; omission means false.",
                     "Return strict JSON matching the supplied schema; do not include reasoning outside JSON.",
                 ],
                 "schema": AnalysisResponse.model_json_schema(),
@@ -914,31 +1298,252 @@ class SkillEvolutionService:
             finding["finding_id"] = f"f{index}"
             if finding["fix_owner"] not in {"skill", "mixed"}:
                 finding["should_modify_skill"] = False
-        clusters: dict[tuple[str, str], dict[str, Any]] = {}
-        for finding in findings:
-            key = (str(finding["root_cause"]), str(finding["fix_owner"]))
-            cluster = clusters.setdefault(key, {
-                "root_cause": key[0],
-                "fix_owner": key[1],
-                "finding_ids": [],
-                "case_ids": [],
-            })
-            cluster["finding_ids"].append(finding["finding_id"])
-            cluster["case_ids"] = sorted(set(cluster["case_ids"]) | set(finding["case_ids"]))
+        evidence_digest = str(task.get("evidence_digest") or "")
+        if evidence_digest:
+            checkpoint = {
+                "evidence_digest": evidence_digest,
+                "summary": " ".join(value.strip() for value in summaries if value.strip()),
+                "summaries": summaries,
+                "findings": findings,
+                "usage": dict(usage),
+                "batch_count": len(batches),
+                "findings_complete": True,
+            }
+            _json_write(
+                self.store.task_root(task_id) /
+                f"analysis-checkpoint-{evidence_digest[:16]}.json",
+                checkpoint,
+            )
+            checkpoint_task = self._require_task(task_id)
+            checkpoint_task["analysis_checkpoint"] = {
+                "evidence_digest": evidence_digest,
+                "finding_count": len(findings),
+                "batch_count": len(batches),
+                "findings_complete": True,
+            }
+            self.store.write(checkpoint_task)
+        categories, category_usage = await self._synthesize_categories(
+            task_id,
+            preset,
+            provider,
+            findings,
+        )
+        usage.update(category_usage)
+        clusters = [
+            {
+                "root_cause": row["root_cause"],
+                "fix_owner": row["fix_owner"],
+                "finding_ids": row["finding_ids"],
+                "case_ids": row["case_ids"],
+            }
+            for row in categories
+        ]
         self._emit(
             task_id,
             phase="analyzing",
             kind="stage",
             status="completed",
-            label=f"Clustered findings into {len(clusters)} root-cause groups",
+            label=f"Synthesized {len(categories)} cross-batch reason categories",
         )
         return {
             "summary": " ".join(value.strip() for value in summaries if value.strip()),
             "findings": findings,
-            "clusters": list(clusters.values()),
+            "categories": categories,
+            "clusters": clusters,
             "usage": dict(usage),
             "batch_count": len(batches),
         }
+
+    async def _synthesize_categories(
+        self,
+        task_id: str,
+        preset: Any,
+        provider: Any,
+        findings: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], Counter[str]]:
+        self._check_cancelled(task_id)
+        self._emit(
+            task_id,
+            phase="analyzing",
+            kind="model",
+            status="started",
+            label="Synthesizing cross-batch reason categories",
+            detail=f"{len(findings)} validated findings",
+        )
+        owner_groups: dict[str, list[dict[str, Any]]] = {}
+        for finding in findings:
+            owner_groups.setdefault(str(finding.get("fix_owner") or "inconclusive"), []).append(finding)
+        all_findings_by_id = {str(row["finding_id"]): row for row in findings}
+        assigned: list[str] = []
+        categories: list[dict[str, Any]] = []
+        category_usage: Counter[str] = Counter()
+        output_name = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,79}$")
+        for group_index, (owner, group_findings) in enumerate(owner_groups.items(), start=1):
+            self._check_cancelled(task_id)
+            self._emit(
+                task_id,
+                phase="analyzing",
+                kind="model",
+                status="started",
+                label=f"Categorizing owner group {group_index}/{len(owner_groups)}",
+                detail=f"{owner}: {len(group_findings)} findings",
+            )
+            prompt = {
+                "task": (
+                    "Group these same-owner findings into transferable Skill-repair categories and "
+                    "define one observable intervention contract for each category. Do not edit a Skill."
+                ),
+                "owner": owner,
+                "rules": [
+                    "Assign every finding_id exactly once and cite only supplied finding_id values.",
+                    "Every category must keep the supplied fix_owner.",
+                    "Use script_required for deterministic Office inspection, extraction, enumeration, normalization, or counting failures.",
+                    "Use workflow_required only when the repair is a concise source-grounding or answer-completeness workflow.",
+                    "Use not_skill_repairable for runtime, provider, model, evaluator, benchmark, or asset failures.",
+                    "For script_required, entrypoint must be a generic path under scripts/ and required_outputs must be stable JSON field names.",
+                    "Chart probes must expose series, chart_fill, plot_fill, text_colors, and gridline_colors.",
+                    "Formula probes must expose requested_cells and formulas; data-quality probes must expose date_formats, parse_failures, duplicates, label_distribution, and analysis_population.",
+                    "For workflow_required, entrypoint must be SKILL.md and final_answer_check must be explicit.",
+                    "Never include Case IDs, gold answers, or benchmark-specific answers in intervention text.",
+                    "Return strict JSON matching the supplied schema.",
+                ],
+                "schema": CategorySynthesisResponse.model_json_schema(),
+                "findings": group_findings,
+            }
+            response = await provider.chat_with_retry(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You design causal, transferable Skill interventions. Output strict JSON only.",
+                    },
+                    {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                ],
+                model=preset.model,
+                max_tokens=preset.max_tokens,
+                temperature=preset.temperature,
+                reasoning_effort=preset.reasoning_effort,
+            )
+            self._check_cancelled(task_id)
+            if response.finish_reason == "error":
+                raise RuntimeError(response.content or "category synthesis model failed")
+            try:
+                parsed = json_repair.loads(response.content or "")
+                model = CategorySynthesisResponse.model_validate(parsed)
+            except (ValueError, ValidationError) as exc:
+                self._emit(
+                    task_id,
+                    phase="analyzing",
+                    kind="validation",
+                    status="failed",
+                    label=f"Owner group {group_index} schema validation failed",
+                    detail=str(exc),
+                )
+                raise ValueError(f"reason category response failed schema validation: {exc}") from exc
+            findings_by_id = {str(row["finding_id"]): row for row in group_findings}
+            group_assigned: list[str] = []
+            for category_model in model.categories:
+                category = category_model.model_dump()
+                finding_ids = [str(value) for value in category["finding_ids"]]
+                unknown = set(finding_ids) - set(findings_by_id)
+                if unknown:
+                    raise ValueError(
+                        "category referenced unknown findings: " + ", ".join(sorted(unknown))
+                    )
+                owners = {str(findings_by_id[value]["fix_owner"]) for value in finding_ids}
+                if owners != {owner} or str(category["fix_owner"]) != owner:
+                    raise ValueError("category cannot change or merge finding owners")
+                assigned.extend(finding_ids)
+                group_assigned.extend(finding_ids)
+                case_ids = sorted({
+                    str(case_id)
+                    for finding_id in finding_ids
+                    for case_id in findings_by_id[finding_id].get("case_ids") or []
+                })
+                intervention = category["intervention"]
+                mode = str(intervention["repair_mode"])
+                if owner not in {"skill", "mixed"}:
+                    mode = "not_skill_repairable"
+                    intervention["repair_mode"] = mode
+                    category["should_modify_skill"] = False
+                if mode == "script_required":
+                    entrypoint = str(intervention["entrypoint"])
+                    if not entrypoint.startswith("scripts/") or not entrypoint.endswith(".py"):
+                        raise ValueError(
+                            "script_required category entrypoint must be a Python path under scripts/"
+                        )
+                    intervention["required_outputs"] = list(dict.fromkeys([
+                        *intervention["required_outputs"],
+                        *self._mandatory_probe_fields(category),
+                    ]))
+                    if not intervention["required_outputs"] or not all(
+                        output_name.fullmatch(str(value))
+                        for value in intervention["required_outputs"]
+                    ):
+                        raise ValueError(
+                            "script_required category must declare stable JSON output fields"
+                        )
+                elif mode == "workflow_required":
+                    intervention["entrypoint"] = "SKILL.md"
+                category.update({
+                    "category_id": f"c{len(categories) + 1}",
+                    "case_ids": case_ids,
+                    "intervention": intervention,
+                })
+                categories.append(category)
+            if len(group_assigned) != len(set(group_assigned)):
+                raise ValueError("a finding was assigned to more than one reason category")
+            if set(group_assigned) != set(findings_by_id):
+                missing = sorted(set(findings_by_id) - set(group_assigned))
+                raise ValueError("reason categories omitted findings: " + ", ".join(missing))
+            for key, value in (response.usage or {}).items():
+                if isinstance(value, (int, float)):
+                    category_usage[str(key)] += int(value)
+            self._emit(
+                task_id,
+                phase="analyzing",
+                kind="model",
+                status="completed",
+                label=f"Categorized owner group {group_index}/{len(owner_groups)}",
+                usage={
+                    key: int(value)
+                    for key, value in (response.usage or {}).items()
+                    if isinstance(value, (int, float))
+                },
+            )
+        if len(assigned) != len(set(assigned)):
+            raise ValueError("a finding was assigned to more than one reason category")
+        if set(assigned) != set(all_findings_by_id):
+            missing = sorted(set(all_findings_by_id) - set(assigned))
+            raise ValueError("reason categories omitted findings: " + ", ".join(missing))
+        self._emit(
+            task_id,
+            phase="analyzing",
+            kind="validation",
+            status="completed",
+            label="Validated cross-batch reason categories",
+            usage=dict(category_usage),
+        )
+        return categories, category_usage
+
+    @staticmethod
+    def _mandatory_probe_fields(category: dict[str, Any]) -> list[str]:
+        intervention = category.get("intervention") or {}
+        text = " ".join(
+            str(value)
+            for value in (
+                category.get("title"),
+                category.get("root_cause"),
+                intervention.get("trigger"),
+                intervention.get("required_action"),
+                *(intervention.get("required_outputs") or []),
+            )
+            if value
+        ).lower()
+        required: list[str] = []
+        for keywords, fields in _PROBE_OUTPUT_RULES:
+            if any(keyword in text for keyword in keywords):
+                required.extend(fields)
+        return list(dict.fromkeys(required))
 
     @staticmethod
     def _batch_evidence(evidence: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -1053,15 +1658,107 @@ class SkillEvolutionService:
             "artifact_state": trace.get("output"),
         }
 
+    def _freeze_local_reference_assets(
+        self,
+        task_id: str,
+        task: dict[str, Any],
+        analysis: dict[str, Any],
+        evidence: dict[str, Any],
+        allowed_ids: set[str],
+    ) -> dict[str, Any]:
+        """Attach local benchmark assets without recollecting or reanalyzing Evidence."""
+        profile = str(task.get("source_profile") or "")
+        if not profile:
+            return evidence
+        frozen_root = (
+            self.store.task_root(task_id)
+            / "frozen-assets"
+            / str(analysis.get("evidence_digest") or "unknown")[:16]
+        )
+        sidecar: dict[str, Any] = {
+            "schema_version": 1,
+            "evidence_digest": analysis.get("evidence_digest"),
+            "cases": {},
+        }
+        manifests: dict[str, dict[str, dict[str, Any]]] = {}
+        for evidence_id in sorted(allowed_ids):
+            row = evidence.get(evidence_id)
+            if not isinstance(row, dict):
+                continue
+            case_id = str(row.get("case_id") or "")
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            benchmark = str(metadata.get("benchmark") or "ocb")
+            if not case_id:
+                continue
+            manifest = manifests.setdefault(benchmark, _manifest_rows(profile, benchmark))
+            source = manifest.get(case_id) or {}
+            source_input = source.get("input") if isinstance(source.get("input"), dict) else {}
+            reference_paths = list(source_input.get("reference_paths") or [])
+            reference_hashes = list(source_input.get("reference_sha256") or [])
+            frozen_paths: list[str] = []
+            frozen_hashes: list[str] = []
+            for index, value in enumerate(reference_paths):
+                source_path = Path(str(value)).expanduser().resolve()
+                if not source_path.is_file():
+                    continue
+                expected_hash = str(reference_hashes[index] or "") if index < len(reference_hashes) else ""
+                actual_hash = _file_digest(source_path)
+                if expected_hash and actual_hash != expected_hash:
+                    continue
+                safe_case_id = re.sub(r"[^A-Za-z0-9._-]+", "_", case_id) or "case"
+                case_root = frozen_root / safe_case_id
+                case_root.mkdir(parents=True, exist_ok=True)
+                destination = case_root / f"{index + 1}-{source_path.name}"
+                if not destination.is_file() or _file_digest(destination) != actual_hash:
+                    shutil.copy2(source_path, destination)
+                frozen_paths.append(str(destination.resolve()))
+                frozen_hashes.append(actual_hash)
+            if frozen_paths:
+                row["reference_paths"] = frozen_paths
+                row["reference_sha256"] = frozen_hashes
+                sidecar["cases"][case_id] = {
+                    "evidence_id": evidence_id,
+                    "reference_paths": frozen_paths,
+                    "reference_sha256": frozen_hashes,
+                }
+        sidecar_path = self.store.task_root(task_id) / (
+            f"frozen-assets-{str(analysis.get('evidence_digest') or 'unknown')[:16]}.json"
+        )
+        _json_write(sidecar_path, sidecar)
+        return evidence
+
+    @staticmethod
+    def _missing_script_probe_assets(
+        categories: list[dict[str, Any]],
+        evidence: dict[str, Any],
+    ) -> list[str]:
+        missing: list[str] = []
+        for category in categories:
+            intervention = category.get("intervention") or {}
+            if intervention.get("repair_mode") != "script_required":
+                continue
+            case_ids = {str(value) for value in category.get("case_ids") or []}
+            available = any(
+                isinstance(row, dict)
+                and str(row.get("case_id") or "") in case_ids
+                and any(Path(str(path)).is_file() for path in row.get("reference_paths") or [])
+                for row in evidence.values()
+            )
+            if not available:
+                missing.append(str(category.get("category_id") or "unknown"))
+        return missing
+
     def _run_editing(
         self,
         task_id: str,
         revision_id: str,
         analysis: dict[str, Any],
         findings: list[dict[str, Any]],
-        parent_revision_id: str | None,
-        source_candidate: Path | None,
+        categories: list[dict[str, Any]] | None = None,
+        parent_revision_id: str | None = None,
+        source_candidate: Path | None = None,
     ) -> None:
+        categories = list(categories or [])
         base = ROOT / "nanobot" / "skills" / BASE_SKILL
         source = source_candidate or base
         revision_root = self.store.revision_root(task_id, revision_id)
@@ -1072,6 +1769,7 @@ class SkillEvolutionService:
             shutil.copytree(source, candidate, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
             self._normalize_derived_metadata(candidate)
             shutil.copytree(candidate, baseline, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            intervention_baseline = self._ensure_intervention_baseline(task_id, revision_id)
             initial_digest = _tree_digest(candidate)
             evidence_path = self.store.task_root(task_id) / (
                 f"evidence-{str(analysis['evidence_digest'])[:16]}.json"
@@ -1082,11 +1780,34 @@ class SkillEvolutionService:
                 for finding in findings
                 for value in finding.get("evidence_refs") or []
             }
+            task = self._require_task(task_id)
+            evidence = self._freeze_local_reference_assets(
+                task_id,
+                task,
+                analysis,
+                evidence,
+                allowed_ids,
+            )
+            missing_asset_categories = self._missing_script_probe_assets(categories, evidence)
+            if missing_asset_categories:
+                raise ValueError(
+                    "local frozen assets are unavailable for script categories: "
+                    + ", ".join(missing_asset_categories)
+                )
+            target_case_ids = sorted({
+                str(case_id)
+                for finding in findings
+                for case_id in finding.get("case_ids") or []
+            })
+            category_ids = [str(row.get("category_id") or "") for row in categories]
+            interventions = [dict(row.get("intervention") or {}) for row in categories]
+
             def emit(**event: Any) -> None:
                 self._emit(task_id, **event)
 
             def cancelled() -> bool:
                 return self._is_cancelled(task_id)
+
             registry = ToolRegistry()
             common = (candidate, emit)
             registry.register(ListSkillFilesTool(*common, cancelled=cancelled))
@@ -1103,9 +1824,15 @@ class SkillEvolutionService:
             registry.register(ValidateSkillCandidateTool(
                 *common,
                 cancelled=cancelled,
-                validate=lambda: self._validate_candidate(base, candidate, task_id=task_id),
+                validate=lambda: self._validate_revision_candidate(
+                    base,
+                    intervention_baseline,
+                    candidate,
+                    categories,
+                    evidence,
+                    task_id=task_id,
+                ),
             ))
-            task = self._require_task(task_id)
             preset, provider = self._optimizer_runtime(str(task["optimizer_model"]))
             config = resolve_config_env_vars(load_config())
             maintainer = (
@@ -1114,21 +1841,45 @@ class SkillEvolutionService:
             parent_feedback: dict[str, Any] | None = None
             if parent_revision_id:
                 parent = self._require_revision(task, parent_revision_id)
+                feedback_rows = self._revision_feedback_rows(parent)
+                feedback_evidence = {
+                    str(row["feedback_id"]): row
+                    for row in feedback_rows
+                }
+                evidence.update(feedback_evidence)
+                allowed_ids.update(feedback_evidence)
                 parent_feedback = {
                     "validation": parent.get("validation"),
-                    "test_results": parent.get("test_results"),
+                    "intervention_validation": parent.get("intervention_validation"),
                     "recommendation": parent.get("recommendation"),
+                    "feedback_ids": sorted(feedback_evidence),
                 }
             prompt = {
                 "task": "Modify the isolated candidate Skill to address the approved findings.",
                 "analysis_id": analysis["analysis_id"],
                 "analysis_digest": analysis["digest"],
                 "approved_findings": findings,
+                "approved_categories": categories,
                 "approved_evidence_ids": sorted(allowed_ids),
                 "previous_revision_feedback": parent_feedback,
-                "completion": "Re-read changed files and call validate_skill_candidate before finishing.",
+                "intervention_manifest": {
+                    "path": "references/evolution-interventions.json",
+                    "schema": InterventionManifest.model_json_schema(),
+                    "rules": [
+                        "Include exactly one implementation for every approved category.",
+                        "script_required implementations must change a Python script, reference it directly from SKILL.md, and define an asset-backed JSON probe.",
+                        "workflow_required implementations must place a concise trigger/action/final-check rule directly in SKILL.md.",
+                        "Use {asset} for one frozen input asset or {assets} to expand all frozen assets for one Evidence item.",
+                    ],
+                },
+                "completion": (
+                    "Re-read every changed file, write the intervention manifest, and call "
+                    "validate_skill_candidate before finishing."
+                ),
             }
             hook = CompositeHook([SkillEvolutionAgentHook(emit, cancelled)])
+            agent_workspace = revision_root / "agent-workspace"
+            agent_workspace.mkdir(parents=True, exist_ok=True)
             result = asyncio.run(AgentRunner(provider).run(AgentRunSpec(
                 initial_messages=[
                     {"role": "system", "content": maintainer},
@@ -1136,7 +1887,10 @@ class SkillEvolutionService:
                 ],
                 tools=registry,
                 model=preset.model,
-                max_iterations=config.agents.defaults.max_tool_iterations,
+                max_iterations=min(
+                    config.agents.defaults.max_tool_iterations,
+                    _SKILL_EDITOR_MAX_ITERATIONS,
+                ),
                 max_tool_result_chars=config.agents.defaults.max_tool_result_chars,
                 temperature=preset.temperature,
                 max_tokens=preset.max_tokens,
@@ -1145,24 +1899,28 @@ class SkillEvolutionService:
                 hook=hook,
                 fail_on_tool_error=False,
                 concurrent_tools=False,
-                workspace=candidate,
+                workspace=agent_workspace,
                 session_key=f"skill-evolution:{task_id}:{revision_id}",
                 actor="skill-maintainer",
                 task_id=task_id,
                 total_token_budget=None,
-                max_tool_calls=None,
+                max_tool_calls=_skill_editor_tool_call_budget(categories),
                 llm_timeout_s=None,
             )))
             self._check_cancelled(task_id)
-            failed_tool_events = [
-                event for event in result.tool_events if event.get("status") != "ok"
-            ]
-            if result.stop_reason != "completed" or result.error or failed_tool_events:
+            controller_validatable_stop = result.stop_reason in {"completed", "max_iterations"}
+            if not controller_validatable_stop or result.error:
                 raise ValueError(
                     f"editing Agent stopped with {result.stop_reason}: "
-                    f"{result.error or (failed_tool_events[0].get('detail') if failed_tool_events else 'incomplete run')}"
+                    f"{result.error or 'incomplete run'}"
                 )
             checks = self._validate_candidate(base, candidate, task_id=task_id)
+            intervention_checks = self._validate_interventions(
+                intervention_baseline,
+                candidate,
+                categories,
+                evidence,
+            )
             self._emit(
                 task_id,
                 phase="validating",
@@ -1186,13 +1944,21 @@ class SkillEvolutionService:
                 "analysis_id": analysis["analysis_id"],
                 "analysis_digest": analysis["digest"],
                 "finding_ids": [row["finding_id"] for row in findings],
+                "category_ids": category_ids,
+                "target_case_ids": target_case_ids,
+                "interventions": interventions,
                 "status": "ready_for_review",
-                "summary": result.final_content or "Candidate Skill updated",
+                "summary": (
+                    result.final_content or "Candidate Skill updated"
+                    if result.stop_reason == "completed"
+                    else "Candidate Skill updated and accepted by controller validation after reaching the editing iteration limit."
+                ),
                 "rationale": analysis.get("summary") or "",
                 "changed_paths": changed_paths,
                 "candidate_digest": digest,
                 "diff": diff,
                 "validation": checks,
+                "intervention_validation": intervention_checks,
                 "agent": {
                     "tools_used": result.tools_used,
                     "usage": result.usage,
@@ -1222,6 +1988,7 @@ class SkillEvolutionService:
                 revision_id,
                 analysis,
                 findings,
+                categories,
                 parent_revision_id,
                 candidate,
                 "cancelled",
@@ -1234,6 +2001,7 @@ class SkillEvolutionService:
                 revision_id,
                 analysis,
                 findings,
+                categories,
                 parent_revision_id,
                 candidate,
                 "failed",
@@ -1247,6 +2015,7 @@ class SkillEvolutionService:
         revision_id: str,
         analysis: dict[str, Any],
         findings: list[dict[str, Any]],
+        categories: list[dict[str, Any]],
         parent_revision_id: str | None,
         candidate: Path,
         status: str,
@@ -1261,6 +2030,13 @@ class SkillEvolutionService:
             "analysis_id": analysis.get("analysis_id"),
             "analysis_digest": analysis.get("digest"),
             "finding_ids": [row.get("finding_id") for row in findings],
+            "category_ids": [row.get("category_id") for row in categories],
+            "target_case_ids": sorted({
+                str(case_id)
+                for row in categories or findings
+                for case_id in row.get("case_ids") or []
+            }),
+            "interventions": [dict(row.get("intervention") or {}) for row in categories],
             "status": status,
             "summary": "Editing run did not produce a publishable revision",
             "rationale": analysis.get("summary") or "",
@@ -1310,6 +2086,7 @@ class SkillEvolutionService:
             "scores": case.get("scores"),
             "prompt": prompt,
             "expected_output": expected_output,
+            "reference_paths": list((source.get("input") or {}).get("reference_paths") or []),
             "metadata": source.get("metadata"),
             "baseline_output": checkpoint or trace.get("output"),
             "judge_reasoning": trace.get("score_comments"),
@@ -1530,6 +2307,301 @@ class SkillEvolutionService:
             errors.append(f"SkillsLoader validation failed: {exc}")
         return {"valid": not errors, "errors": errors}
 
+    def _validate_revision_candidate(
+        self,
+        base: Path,
+        baseline: Path,
+        candidate: Path,
+        categories: list[dict[str, Any]],
+        evidence: dict[str, Any],
+        *,
+        task_id: str,
+    ) -> dict[str, Any]:
+        candidate_checks = self._validate_candidate(base, candidate, task_id=task_id)
+        intervention_checks = self._validate_interventions(
+            baseline,
+            candidate,
+            categories,
+            evidence,
+        )
+        errors = list(candidate_checks["errors"]) + list(intervention_checks["errors"])
+        return {
+            "valid": not errors,
+            "errors": errors,
+            "candidate": candidate_checks,
+            "interventions": intervention_checks,
+        }
+
+    def _validate_interventions(
+        self,
+        baseline: Path,
+        candidate: Path,
+        categories: list[dict[str, Any]],
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        errors: list[str] = []
+        probe_results: list[dict[str, Any]] = []
+        if not categories:
+            return {
+                "valid": False,
+                "errors": [
+                    "revision has no reason-category intervention contract; regenerate the candidate"
+                ],
+                "probe_results": [],
+            }
+        manifest_path = candidate / "references" / "evolution-interventions.json"
+        try:
+            manifest = InterventionManifest.model_validate_json(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except FileNotFoundError:
+            return {
+                "valid": False,
+                "errors": ["references/evolution-interventions.json is required"],
+                "probe_results": [],
+            }
+        except (OSError, ValidationError, ValueError) as exc:
+            return {
+                "valid": False,
+                "errors": [f"invalid intervention manifest: {exc}"],
+                "probe_results": [],
+            }
+        category_by_id = {str(row.get("category_id") or ""): row for row in categories}
+        implementation_by_id = {row.category_id: row for row in manifest.interventions}
+        if len(implementation_by_id) != len(manifest.interventions):
+            errors.append("intervention manifest contains duplicate category_id values")
+        if set(implementation_by_id) != set(category_by_id):
+            errors.append("intervention manifest must cover exactly the selected reason categories")
+        changed_paths = set(self._changed_paths(baseline, candidate))
+        skill_text = (candidate / "SKILL.md").read_text(encoding="utf-8")
+        for category_id, category in category_by_id.items():
+            implementation = implementation_by_id.get(category_id)
+            if implementation is None:
+                continue
+            contract = category.get("intervention") or {}
+            expected_mode = str(contract.get("repair_mode") or "")
+            if implementation.repair_mode != expected_mode:
+                errors.append(f"{category_id}: repair_mode does not match the approved contract")
+            missing_changes = set(implementation.changed_paths) - changed_paths
+            if missing_changes:
+                errors.append(
+                    f"{category_id}: manifest cites unchanged paths: "
+                    + ", ".join(sorted(missing_changes))
+                )
+            if implementation.skill_marker not in skill_text:
+                errors.append(f"{category_id}: SKILL.md is missing the declared activation marker")
+            if expected_mode == "workflow_required":
+                if implementation.entrypoint != "SKILL.md" or implementation.probe is not None:
+                    errors.append(
+                        f"{category_id}: workflow_required must use SKILL.md without a script probe"
+                    )
+                if "SKILL.md" not in changed_paths or "SKILL.md" not in implementation.changed_paths:
+                    errors.append(
+                        f"{category_id}: workflow_required must change and cite SKILL.md"
+                    )
+                continue
+            if expected_mode != "script_required":
+                errors.append(f"{category_id}: selected category is not Skill-repairable")
+                continue
+            entrypoint = implementation.entrypoint
+            if entrypoint != str(contract.get("entrypoint") or ""):
+                errors.append(f"{category_id}: script entrypoint differs from the approved contract")
+            if entrypoint not in skill_text:
+                errors.append(f"{category_id}: SKILL.md does not reference the declared entrypoint")
+            if not entrypoint.startswith("scripts/") or not entrypoint.endswith(".py"):
+                errors.append(f"{category_id}: script entrypoint must be a Python file under scripts/")
+                continue
+            if entrypoint not in changed_paths or not (candidate / entrypoint).is_file():
+                errors.append(f"{category_id}: script_required must add or modify {entrypoint}")
+                continue
+            probe = implementation.probe
+            if probe is None:
+                errors.append(f"{category_id}: script_required intervention is missing a probe")
+                continue
+            required_outputs = {str(value) for value in contract.get("required_outputs") or []}
+            if not required_outputs <= set(probe.required_json_fields):
+                errors.append(f"{category_id}: probe does not validate every required output field")
+                continue
+            category_evidence = [
+                row
+                for row in evidence.values()
+                if isinstance(row, dict)
+                and str(row.get("case_id") or "") in set(category.get("case_ids") or [])
+                and row.get("reference_paths")
+            ]
+            if not category_evidence:
+                errors.append(f"{category_id}: no frozen input assets are available for its probe")
+                continue
+            category_results, category_errors = self._run_intervention_probes(
+                candidate,
+                category_id,
+                entrypoint,
+                probe,
+                category_evidence,
+                mandatory_fields=self._mandatory_probe_fields(category),
+            )
+            probe_results.extend(category_results)
+            errors.extend(category_errors)
+        return {"valid": not errors, "errors": errors, "probe_results": probe_results}
+
+    def _run_intervention_probes(
+        self,
+        candidate: Path,
+        category_id: str,
+        entrypoint: str,
+        probe: InterventionProbe,
+        evidence_rows: list[dict[str, Any]],
+        *,
+        mandatory_fields: list[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        results: list[dict[str, Any]] = []
+        errors: list[str] = []
+        launcher = SandboxLauncher()
+        for evidence in evidence_rows:
+            source_paths = [
+                Path(str(value)).expanduser().resolve()
+                for value in evidence.get("reference_paths") or []
+                if Path(str(value)).expanduser().is_file()
+            ]
+            if not source_paths:
+                errors.append(
+                    f"{category_id}: Case {evidence.get('case_id')} has no readable frozen assets"
+                )
+                continue
+            with tempfile.TemporaryDirectory(prefix="nanobot-evolution-probe-") as temp_dir:
+                root = Path(temp_dir)
+                probe_candidate = root / "candidate"
+                shutil.copytree(candidate, probe_candidate)
+                assets_dir = root / "assets"
+                assets_dir.mkdir()
+                assets: list[Path] = []
+                for index, source in enumerate(source_paths, start=1):
+                    destination = assets_dir / f"{index}-{source.name}"
+                    shutil.copy2(source, destination)
+                    assets.append(destination)
+                invocations: list[list[str]] = []
+                if "{asset}" in probe.args:
+                    for asset in assets:
+                        invocations.append([
+                            str(asset) if value == "{asset}" else value
+                            for value in probe.args
+                        ])
+                else:
+                    expanded: list[str] = []
+                    for value in probe.args:
+                        if value == "{assets}":
+                            expanded.extend(str(asset) for asset in assets)
+                        else:
+                            expanded.append(value)
+                    if not any(value == "{assets}" for value in probe.args):
+                        errors.append(f"{category_id}: probe args must contain {{asset}} or {{assets}}")
+                        continue
+                    invocations.append(expanded)
+                for invocation in invocations:
+                    argv = (sys.executable, str(probe_candidate / entrypoint), *invocation)
+                    env = {
+                        "PATH": os.environ.get("PATH", ""),
+                        "PYTHONIOENCODING": "utf-8",
+                        "PYTHONDONTWRITEBYTECODE": "1",
+                    }
+                    try:
+                        launch = launcher.prepare_argv(
+                            argv=argv,
+                            command_text=None,
+                            workspace=root,
+                            cwd=probe_candidate,
+                            env=env,
+                            mode=SandboxMode.READ_ONLY,
+                        )
+                        completed = subprocess.run(
+                            launch.argv,
+                            cwd=launch.cwd,
+                            env=launch.env,
+                            capture_output=True,
+                            text=True,
+                            timeout=probe.timeout_seconds,
+                            check=False,
+                        )
+                    except (OSError, subprocess.TimeoutExpired, SandboxUnavailableError) as exc:
+                        errors.append(f"{category_id}: probe execution failed: {exc}")
+                        continue
+                    result = {
+                        "category_id": category_id,
+                        "case_id": str(evidence.get("case_id") or ""),
+                        "assets": [path.name for path in assets],
+                        "returncode": completed.returncode,
+                    }
+                    if completed.returncode:
+                        result["error"] = completed.stderr[-1000:]
+                        results.append(result)
+                        errors.append(
+                            f"{category_id}: probe exited {completed.returncode} for Case "
+                            f"{evidence.get('case_id')}"
+                        )
+                        continue
+                    try:
+                        payload = json.loads(completed.stdout)
+                    except json.JSONDecodeError as exc:
+                        result["error"] = f"stdout is not JSON: {exc}"
+                        results.append(result)
+                        errors.append(f"{category_id}: probe stdout must be one JSON value")
+                        continue
+                    missing = [
+                        field
+                        for field in probe.required_json_fields
+                        if not self._json_field_present(payload, field)
+                    ]
+                    semantic_errors = self._probe_semantic_errors(
+                        payload,
+                        mandatory_fields or [],
+                    )
+                    result.update({
+                        "valid": not missing and not semantic_errors,
+                        "missing_fields": missing,
+                        "semantic_errors": semantic_errors,
+                    })
+                    results.append(result)
+                    if missing:
+                        errors.append(
+                            f"{category_id}: probe missing JSON fields: " + ", ".join(missing)
+                        )
+                    if semantic_errors:
+                        errors.extend(
+                            f"{category_id}: {message}" for message in semantic_errors
+                        )
+        return results, errors
+
+    @staticmethod
+    def _json_field_present(payload: Any, field: str) -> bool:
+        current = payload
+        for part in field.split("."):
+            if not isinstance(current, dict) or part not in current:
+                return False
+            current = current[part]
+        return current not in (None, "", [], {})
+
+    @staticmethod
+    def _probe_semantic_errors(payload: Any, mandatory_fields: list[str]) -> list[str]:
+        errors: list[str] = []
+        required = set(mandatory_fields)
+        if {"requested_cells", "formulas"} <= required and isinstance(payload, dict):
+            requested = payload.get("requested_cells")
+            formulas = payload.get("formulas")
+            if not isinstance(requested, list) or not all(isinstance(value, str) for value in requested):
+                errors.append("requested_cells must be a list of cell addresses")
+            elif not isinstance(formulas, dict):
+                errors.append("formulas must map every requested cell to its effective formula")
+            else:
+                requested_set = set(requested)
+                if set(formulas) != requested_set:
+                    errors.append("formulas must cover exactly every requested cell")
+                if any(
+                    not isinstance(value, str) or not value.startswith("=")
+                    for value in formulas.values()
+                ):
+                    errors.append("every effective formula must be a non-empty formula string")
+        return errors
+
     @staticmethod
     def _candidate_diff(base: Path, candidate: Path, *, limit: int | None = 200_000) -> str:
         chunks: list[str] = []
@@ -1554,7 +2626,7 @@ class SkillEvolutionService:
         revision = self._require_revision(task, revision_id)
         candidate = self._candidate_path(task_id, revision_id)
         results: list[dict[str, Any]] = []
-        test_scope = list(revision.get("test_scope") or self._test_scope(task))
+        test_scope = list(revision.get("test_scope") or self._test_scope(task, revision))
         try:
             for index, case in enumerate(test_scope, start=1):
                 self._check_cancelled(task_id)
@@ -1567,6 +2639,7 @@ class SkillEvolutionService:
                     case_id=str(case.get("case_id") or ""),
                 )
                 progress = self.store.revision_root(task_id, revision_id) / f"test-{index}.jsonl"
+                progress.unlink(missing_ok=True)
                 state = self.store.revision_root(task_id, revision_id) / f"state-{index}.json"
                 token = f"evolve-{task_id}-{revision_id}-{index}"
                 _json_write(state, {"job_id": token, "resume_token": token, "resume_count": 0})
@@ -1636,6 +2709,16 @@ class SkillEvolutionService:
                     scores = self._wait_for_judge_scores(trace_url, scores)
                 evolved_score = _numeric_score({"scores": scores})
                 baseline_score = case.get("baseline_score")
+                test_payload = self._test_case_payload(task, token, case)
+                trace_evidence = self._trace_evidence(trace_url) if trace_url else {}
+                observations = self._deterministic_observations({"trace": trace_evidence})
+                candidate_output = str(test_payload.get("content") or trace_evidence.get("output") or "")
+                intervention_feedback = self._intervention_feedback(
+                    revision,
+                    case,
+                    trace_evidence,
+                    candidate_output,
+                )
                 evolved_usage = None
                 evolved_metrics = None
                 if progress.is_file():
@@ -1661,6 +2744,15 @@ class SkillEvolutionService:
                     "evolved_usage": evolved_usage,
                     "baseline_metrics": case.get("baseline_metrics"),
                     "evolved_metrics": evolved_metrics,
+                    "candidate_output": str(_redact(candidate_output))[:20_000],
+                    "judge_reasoning": [
+                        str(_redact(value))[:2000]
+                        for value in trace_evidence.get("score_comments") or []
+                    ][:20],
+                    "tool_sequence": observations.get("tool_sequence") or [],
+                    "tool_errors": observations.get("tool_errors") or [],
+                    "stop_reason": test_payload.get("stop_reason") or observations.get("stop_reason"),
+                    "intervention_feedback": intervention_feedback,
                     "error": completed.stderr[-1000:] if completed.returncode else None,
                 })
                 revision["test_results"] = results
@@ -1674,45 +2766,9 @@ class SkillEvolutionService:
                     case_id=str(case.get("case_id") or ""),
                     trace_url=trace_url,
                 )
-            selected_deltas = [
-                row["delta"]
-                for row in results
-                if row.get("scope") == "selected" and row.get("delta") is not None
-            ]
-            regression_deltas = [
-                row["delta"]
-                for row in results
-                if row.get("scope") == "regression" and row.get("delta") is not None
-            ]
-            cost_changes = []
-            for row in results:
-                baseline_tokens = self._metric_value(
-                    row.get("baseline_usage"), ("total_tokens", "tokens", "total")
-                )
-                evolved_tokens = self._metric_value(
-                    row.get("evolved_usage"), ("total_tokens", "tokens", "total")
-                )
-                if baseline_tokens is not None and evolved_tokens is not None:
-                    cost_changes.append(evolved_tokens - baseline_tokens)
-            revision["recommendation"] = {
-                "recommended": (
-                    bool(selected_deltas)
-                    and min(selected_deltas) >= 0
-                    and max(selected_deltas) > 0
-                    and (not regression_deltas or min(regression_deltas) >= 0)
-                ),
-                "no_selected_regressions": bool(selected_deltas) and min(selected_deltas) >= 0,
-                "no_fixed_regressions": not regression_deltas or min(regression_deltas) >= 0,
-                "at_least_one_improvement": bool(selected_deltas) and max(selected_deltas) > 0,
-                "mean_token_change": (
-                    round(sum(cost_changes) / len(cost_changes), 2) if cost_changes else None
-                ),
-                "disclaimer": (
-                    "Selected bad Cases plus a deterministic high-score regression subset were rerun; "
-                    "this is not a full no-regression guarantee."
-                ),
-            }
-            revision["status"] = "tested" if all(row["status"] == "completed" for row in results) else "test_failed"
+            revision["recommendation"] = self._test_recommendation(results)
+            all_scored = revision["recommendation"]["all_target_cases_scored"]
+            revision["status"] = "tested" if all_scored else "test_failed"
             task["status"] = "tested" if revision["status"] == "tested" else "test_failed"
             task["cancel_requested"] = False
             self._emit(
@@ -1725,6 +2781,7 @@ class SkillEvolutionService:
         except asyncio.CancelledError:
             revision["status"] = "test_failed"
             revision["test_error"] = "Cancelled by user"
+            self.store.write(task)
             self._finish_cancelled(task_id)
             return
         except Exception as exc:
@@ -1741,25 +2798,27 @@ class SkillEvolutionService:
             )
         self.store.write(task)
 
-    def _test_scope(self, task: dict[str, Any]) -> list[dict[str, Any]]:
-        selected = [{**row, "scope": "selected"} for row in task.get("selected_cases") or []]
+    def _test_scope(
+        self,
+        task: dict[str, Any],
+        revision: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        revision = revision or {}
+        target_case_ids = set(self._target_case_ids(task, revision))
+        if not target_case_ids:
+            raise ValueError("revision has no Finding-linked target Cases")
+        selected = [
+            {**row, "scope": "target"}
+            for row in task.get("selected_cases") or []
+            if str(row.get("case_id") or "") in target_case_ids
+        ]
+        category_ids_by_case = self._category_ids_by_case(task, revision)
+        for row in selected:
+            row["category_ids"] = category_ids_by_case.get(str(row.get("case_id") or ""), [])
         try:
             _run, cases = self._run_and_cases(str(task["source_run_id"]))
         except Exception:
             return selected
-        selected_keys = {str(row.get("case_key") or "") for row in selected}
-        regression = [
-            {
-                **self._case_summary(case),
-                "scope": "regression",
-                "baseline_usage": case.get("usage"),
-                "baseline_metrics": case.get("metrics"),
-            }
-            for case in sorted(cases, key=lambda row: str(row.get("case_id") or ""))
-            if _case_key(case) not in selected_keys
-            and str(case.get("model_preset") or "") == str(task.get("source_model_preset") or "")
-            and (_numeric_score(case) or 0) >= float(task.get("threshold") or 0.6)
-        ][:3]
         for row in selected:
             matching = next(
                 (case for case in cases if _case_key(case) == row.get("case_key")),
@@ -1768,7 +2827,274 @@ class SkillEvolutionService:
             if matching:
                 row["baseline_usage"] = matching.get("usage")
                 row["baseline_metrics"] = matching.get("metrics")
-        return selected + regression
+        if len(selected) != len(target_case_ids):
+            missing = sorted(target_case_ids - {str(row.get("case_id") or "") for row in selected})
+            raise ValueError("target Cases are no longer available: " + ", ".join(missing))
+        return selected
+
+    def _load_task_evidence(
+        self,
+        task_id: str,
+        analysis: dict[str, Any],
+    ) -> dict[str, Any]:
+        digest = str(analysis.get("evidence_digest") or "")[:16]
+        path = next(self.store.task_root(task_id).glob(f"evidence-{digest}*.json"), None)
+        if path is None:
+            raise ValueError("frozen Evidence is unavailable")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"frozen Evidence is unreadable: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("frozen Evidence must be an object")
+        return self._restore_frozen_reference_assets(task_id, analysis, payload)
+
+    def _restore_frozen_reference_assets(
+        self,
+        task_id: str,
+        analysis: dict[str, Any],
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        digest = str(analysis.get("evidence_digest") or "")[:16]
+        sidecar_path = self.store.task_root(task_id) / f"frozen-assets-{digest}.json"
+        if not sidecar_path.is_file():
+            return evidence
+        try:
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"frozen asset sidecar is unreadable: {exc}") from exc
+        if not isinstance(sidecar, dict) or not isinstance(sidecar.get("cases"), dict):
+            raise ValueError("frozen asset sidecar must contain a cases object")
+        if str(sidecar.get("evidence_digest") or "") != str(analysis.get("evidence_digest") or ""):
+            raise ValueError("frozen asset sidecar does not match the active Evidence digest")
+        for case in sidecar["cases"].values():
+            if not isinstance(case, dict):
+                continue
+            evidence_id = str(case.get("evidence_id") or "")
+            row = evidence.get(evidence_id)
+            if not isinstance(row, dict):
+                continue
+            paths = [Path(str(value)).expanduser().resolve() for value in case.get("reference_paths") or []]
+            hashes = [str(value) for value in case.get("reference_sha256") or []]
+            if len(paths) != len(hashes):
+                raise ValueError(f"frozen assets for {evidence_id} have mismatched paths and hashes")
+            for path, expected_hash in zip(paths, hashes, strict=True):
+                if not path.is_file() or _file_digest(path) != expected_hash:
+                    raise ValueError(f"frozen asset failed integrity validation: {path.name}")
+            if paths:
+                row["reference_paths"] = [str(path) for path in paths]
+                row["reference_sha256"] = hashes
+        return evidence
+
+    def _ensure_intervention_baseline(self, task_id: str, revision_id: str) -> Path:
+        baseline = (
+            self.store.revision_root(task_id, revision_id)
+            / "intervention-baseline"
+            / DERIVED_SKILL
+        )
+        if baseline.is_dir():
+            return baseline
+        baseline.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(
+            ROOT / "nanobot" / "skills" / BASE_SKILL,
+            baseline,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+        self._normalize_derived_metadata(baseline)
+        return baseline
+
+    @staticmethod
+    def _revision_categories(
+        analysis: dict[str, Any],
+        revision: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        category_ids = {str(value) for value in revision.get("category_ids") or []}
+        return [
+            row
+            for row in analysis.get("categories") or []
+            if str(row.get("category_id") or "") in category_ids
+        ]
+
+    def _target_case_ids(
+        self,
+        task: dict[str, Any],
+        revision: dict[str, Any],
+    ) -> list[str]:
+        stored = {str(value) for value in revision.get("target_case_ids") or [] if str(value)}
+        if stored:
+            return sorted(stored)
+        analysis_id = str(revision.get("analysis_id") or task.get("active_analysis_id") or "")
+        analysis = self._require_analysis(task, analysis_id)
+        categories = self._revision_categories(analysis, revision)
+        if categories:
+            return sorted({
+                str(case_id)
+                for category in categories
+                for case_id in category.get("case_ids") or []
+            })
+        finding_ids = {str(value) for value in revision.get("finding_ids") or []}
+        return sorted({
+            str(case_id)
+            for finding in analysis.get("findings") or []
+            if str(finding.get("finding_id") or "") in finding_ids
+            for case_id in finding.get("case_ids") or []
+        })
+
+    def _category_ids_by_case(
+        self,
+        task: dict[str, Any],
+        revision: dict[str, Any],
+    ) -> dict[str, list[str]]:
+        analysis_id = str(revision.get("analysis_id") or task.get("active_analysis_id") or "")
+        analysis = self._require_analysis(task, analysis_id)
+        result: dict[str, list[str]] = {}
+        for category in self._revision_categories(analysis, revision):
+            category_id = str(category.get("category_id") or "")
+            for case_id in category.get("case_ids") or []:
+                result.setdefault(str(case_id), []).append(category_id)
+        return {key: sorted(set(value)) for key, value in result.items()}
+
+    @staticmethod
+    def _category_test_summaries(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[str, list[float]] = {}
+        for row in results:
+            delta = row.get("delta")
+            if delta is None:
+                continue
+            for category_id in row.get("category_ids") or []:
+                grouped.setdefault(str(category_id), []).append(float(delta))
+        return [
+            {
+                "category_id": category_id,
+                "case_count": len(values),
+                "mean_delta": round(sum(values) / len(values), 6),
+                "improved_cases": sum(1 for value in values if value > 0),
+                "unchanged_cases": sum(1 for value in values if value == 0),
+                "regressed_cases": sum(1 for value in values if value < 0),
+            }
+            for category_id, values in sorted(grouped.items())
+        ]
+
+    def _test_recommendation(self, results: list[dict[str, Any]]) -> dict[str, Any]:
+        deltas = [float(row["delta"]) for row in results if row.get("delta") is not None]
+        all_scored = bool(results) and all(
+            row.get("status") == "completed" and row.get("delta") is not None
+            for row in results
+        )
+        cost_changes = []
+        for row in results:
+            baseline_tokens = self._metric_value(
+                row.get("baseline_usage"), ("total_tokens", "tokens", "total")
+            )
+            evolved_tokens = self._metric_value(
+                row.get("evolved_usage"), ("total_tokens", "tokens", "total")
+            )
+            if baseline_tokens is not None and evolved_tokens is not None:
+                cost_changes.append(evolved_tokens - baseline_tokens)
+        mean_delta = round(sum(deltas) / len(deltas), 6) if deltas else None
+        return {
+            "recommended": bool(all_scored and mean_delta is not None and mean_delta > 0),
+            "all_target_cases_scored": all_scored,
+            "mean_delta": mean_delta,
+            "improved_cases": sum(1 for value in deltas if value > 0),
+            "unchanged_cases": sum(1 for value in deltas if value == 0),
+            "regressed_cases": sum(1 for value in deltas if value < 0),
+            "category_summaries": self._category_test_summaries(results),
+            "mean_token_change": (
+                round(sum(cost_changes) / len(cost_changes), 2) if cost_changes else None
+            ),
+            "disclaimer": (
+                "Only Finding-linked target Cases were rerun once against historical baseline "
+                "scores; this is directional evidence, not paired A/B or a no-regression guarantee."
+            ),
+        }
+
+    @staticmethod
+    def _test_case_payload(
+        task: dict[str, Any],
+        token: str,
+        case: dict[str, Any],
+    ) -> dict[str, Any]:
+        root = (
+            benchmark_cache_root()
+            / "runs"
+            / str(task.get("source_profile") or "")
+            / "jobs"
+            / token
+            / "case-results"
+            / str(case.get("benchmark") or "")
+            / DERIVED_SKILL
+            / str(case.get("model_preset") or "")
+        )
+        for path in root.glob("*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if str(payload.get("case_id") or "") == str(case.get("case_id") or ""):
+                return payload
+        return {}
+
+    def _intervention_feedback(
+        self,
+        revision: dict[str, Any],
+        case: dict[str, Any],
+        trace: dict[str, Any],
+        candidate_output: str,
+    ) -> list[dict[str, Any]]:
+        category_ids = {str(value) for value in case.get("category_ids") or []}
+        contracts = {
+            str(category_id): intervention
+            for category_id, intervention in zip(
+                revision.get("category_ids") or [],
+                revision.get("interventions") or [],
+                strict=False,
+            )
+        }
+        trace_text = json.dumps(trace, ensure_ascii=False).lower()
+        output_text = candidate_output.lower()
+        rows = []
+        for category_id in sorted(category_ids):
+            contract = contracts.get(category_id) or {}
+            entrypoint = str(contract.get("entrypoint") or "")
+            required_outputs = [str(value) for value in contract.get("required_outputs") or []]
+            rows.append({
+                "category_id": category_id,
+                "repair_mode": contract.get("repair_mode"),
+                "entrypoint": entrypoint,
+                "entrypoint_observed": bool(entrypoint and entrypoint.lower() in trace_text),
+                "required_outputs": required_outputs,
+                "required_outputs_observed": [
+                    value
+                    for value in required_outputs
+                    if value.lower() in trace_text or value.lower() in output_text
+                ],
+                "final_answer_check": contract.get("final_answer_check") or [],
+            })
+        return rows
+
+    @staticmethod
+    def _revision_feedback_rows(revision: dict[str, Any]) -> list[dict[str, Any]]:
+        rows = []
+        for result in revision.get("test_results") or []:
+            if result.get("status") == "completed" and (result.get("delta") or 0) > 0:
+                continue
+            case_id = str(result.get("case_id") or "")
+            rows.append({
+                "feedback_id": f"test-{revision.get('revision_id')}-{case_id}",
+                "case_id": case_id,
+                "baseline_score": result.get("baseline_score"),
+                "candidate_score": result.get("evolved_score"),
+                "delta": result.get("delta"),
+                "candidate_output": result.get("candidate_output"),
+                "judge_reasoning": result.get("judge_reasoning") or [],
+                "tool_sequence": result.get("tool_sequence") or [],
+                "tool_errors": result.get("tool_errors") or [],
+                "stop_reason": result.get("stop_reason"),
+                "intervention_feedback": result.get("intervention_feedback") or [],
+                "trace_url": result.get("trace_url"),
+            })
+        return rows
 
     def _wait_for_judge_scores(
         self,
