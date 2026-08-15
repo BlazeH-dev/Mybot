@@ -34,6 +34,7 @@ import type {
   ChatSummary,
   SettingsPayload,
   SlashCommand,
+  ToolCallingMode,
   UIMessage,
   WorkspaceScopePayload,
   WorkspacesPayload,
@@ -289,6 +290,7 @@ export function ThreadShell({
     selectItems: installedMcpPresetsFromPayload,
   });
   const [settings, setSettings] = useState<SettingsPayload | null>(settingsSnapshot);
+  const [toolModeChanging, setToolModeChanging] = useState(false);
   const [heroGreetingKey, setHeroGreetingKey] = useState(randomHeroGreetingKey);
   const [scrollToBottomSignal, setScrollToBottomSignal] = useState(0);
   const [filePreviewPath, setFilePreviewPath] = useState<string | null>(null);
@@ -626,6 +628,23 @@ export function ThreadShell({
     [onSettingsChange, refreshModelSettings, token],
   );
 
+  const handleToolModeSelect = useCallback(
+    async (mode: ToolCallingMode) => {
+      if (toolModeChanging || mode === (settings?.tools?.mode ?? "native")) return;
+      setToolModeChanging(true);
+      try {
+        const payload = await updateSettings(token, { toolMode: mode });
+        setSettings(payload);
+        onSettingsChange?.(payload);
+      } catch {
+        await refreshModelSettings();
+      } finally {
+        setToolModeChanging(false);
+      }
+    },
+    [onSettingsChange, refreshModelSettings, settings?.tools?.mode, token, toolModeChanging],
+  );
+
   const handleOpenFilePreview = useCallback((path: string) => {
     if (filePreviewCloseTimerRef.current !== null) {
       window.clearTimeout(filePreviewCloseTimerRef.current);
@@ -753,6 +772,9 @@ export function ThreadShell({
           onManageModels={onOpenModelSettings}
           modelPresets={settings?.model_presets ?? []}
           onModelPresetSelect={handleModelPresetSelect}
+          toolMode={settings?.tools?.mode ?? "native"}
+          toolModeChanging={toolModeChanging}
+          onToolModeSelect={handleToolModeSelect}
           variant={showHeroComposer ? "hero" : "thread"}
           slashCommands={slashCommands}
           cliApps={cliApps}
@@ -788,6 +810,9 @@ export function ThreadShell({
           onManageModels={onOpenModelSettings}
           modelPresets={settings?.model_presets ?? []}
           onModelPresetSelect={handleModelPresetSelect}
+          toolMode={settings?.tools?.mode ?? "native"}
+          toolModeChanging={toolModeChanging}
+          onToolModeSelect={handleToolModeSelect}
           variant="hero"
           slashCommands={slashCommands}
           cliApps={cliApps}

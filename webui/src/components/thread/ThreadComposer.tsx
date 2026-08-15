@@ -27,6 +27,7 @@ import {
   ChevronDown,
   ChevronUp,
   CircleHelp,
+  Code2,
   CornerDownRight,
   FileText,
   GripVertical,
@@ -87,6 +88,7 @@ import type {
   OutboundMcpPresetMention,
   SlashCommand,
   SettingsPayload,
+  ToolCallingMode,
   WorkspaceScopePayload,
   WorkspacesPayload,
 } from "@/lib/types";
@@ -175,6 +177,9 @@ interface ThreadComposerProps {
   onManageModels?: () => void;
   modelPresets?: SettingsPayload["model_presets"];
   onModelPresetSelect?: (presetName: string) => void;
+  toolMode?: ToolCallingMode;
+  toolModeChanging?: boolean;
+  onToolModeSelect?: (mode: ToolCallingMode) => void;
   variant?: "thread" | "hero";
   slashCommands?: SlashCommand[];
   cliApps?: CliAppInfo[];
@@ -779,6 +784,9 @@ export function ThreadComposer({
   onManageModels,
   modelPresets = [],
   onModelPresetSelect,
+  toolMode = "native",
+  toolModeChanging = false,
+  onToolModeSelect,
   variant = "thread",
   slashCommands = [],
   cliApps = [],
@@ -1769,7 +1777,7 @@ export function ThreadComposer({
               aria-label={t("thread.composer.attachFile", { defaultValue: "Add files" })}
               onClick={() => fileInputRef.current?.click()}
               className={cn(
-                "rounded-full text-muted-foreground hover:text-foreground",
+                "shrink-0 rounded-full text-muted-foreground hover:text-foreground",
                 isHero
                   ? "h-8 w-8 border border-border/55 bg-card shadow-[0_2px_8px_rgba(15,23,42,0.05)] hover:bg-card"
                   : "h-9 w-9 border border-border/55 bg-card shadow-[0_2px_8px_rgba(15,23,42,0.05)] hover:bg-card",
@@ -1789,14 +1797,15 @@ export function ThreadComposer({
                       disabled={disabled || isStreaming}
                       onClick={() => setPlanOnly((enabled) => !enabled)}
                       className={cn(
-                        "h-8 rounded-full border px-2.5 text-xs font-medium transition-colors",
+                        "h-8 w-8 shrink-0 rounded-full border px-0 text-xs font-medium transition-colors",
+                        "sm:w-auto sm:px-2.5",
                         planOnly
                           ? "border-blue-400/60 bg-blue-500/10 text-blue-700 hover:bg-blue-500/15 dark:text-blue-300"
                           : "border-border/55 bg-card text-muted-foreground hover:bg-muted/60 hover:text-foreground",
                       )}
                     >
-                      <ListTodo className="mr-1.5 h-3.5 w-3.5" aria-hidden />
-                      {t("thread.composer.planMode.label")}
+                      <ListTodo className="h-3.5 w-3.5 sm:mr-1.5" aria-hidden />
+                      <span className="hidden sm:inline">{t("thread.composer.planMode.label")}</span>
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent side="top" align="center">
@@ -1804,6 +1813,75 @@ export function ThreadComposer({
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
+            ) : null}
+            {!voiceRecorder.isRecording && onToolModeSelect ? (
+              <DropdownMenu modal={false}>
+                <TooltipProvider delayDuration={220} skipDelayDuration={80}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={disabled || toolModeChanging}
+                          aria-label={t("thread.composer.toolMode.toggle", {
+                            mode: t(`thread.composer.toolMode.options.${toolMode}.label`),
+                          })}
+                          aria-busy={toolModeChanging}
+                          className={cn(
+                            "h-8 w-8 shrink-0 rounded-full border border-border/55 bg-card px-0",
+                            "sm:w-auto sm:px-2.5",
+                            "text-xs font-medium text-muted-foreground transition-colors",
+                            "hover:bg-muted/60 hover:text-foreground",
+                          )}
+                        >
+                          {toolModeChanging ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin sm:mr-1.5" aria-hidden />
+                          ) : (
+                            <Code2 className="h-3.5 w-3.5 sm:mr-1.5" aria-hidden />
+                          )}
+                          <span className="hidden sm:inline">
+                            {t(`thread.composer.toolMode.options.${toolMode}.label`)}
+                          </span>
+                          <ChevronDown className="ml-1 hidden h-3 w-3 sm:block" aria-hidden />
+                        </Button>
+                      </DropdownMenuTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" align="center">
+                      {t("thread.composer.toolMode.hint")}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <DropdownMenuContent
+                  align="start"
+                  side="top"
+                  className="w-[min(20rem,calc(100vw-2rem))]"
+                >
+                  {(["native", "code", "both"] as const).map((mode) => (
+                    <DropdownMenuItem
+                      key={mode}
+                      onSelect={() => onToolModeSelect(mode)}
+                      className="justify-between gap-3"
+                    >
+                      <span className="min-w-0">
+                        <span className="block font-medium">
+                          {t(`thread.composer.toolMode.options.${mode}.label`)}
+                        </span>
+                        <span className="block text-[12px] text-muted-foreground">
+                          {t(`thread.composer.toolMode.options.${mode}.description`)}
+                        </span>
+                      </span>
+                      <Check
+                        className={cn(
+                          "h-4 w-4 shrink-0",
+                          mode === toolMode ? "opacity-100" : "opacity-0",
+                        )}
+                        aria-hidden
+                      />
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
             ) : null}
             {voiceRecorder.isRecording ? (
               <VoiceRecordingMeter
@@ -2149,11 +2227,13 @@ function ComposerModelBadge({
   useEffect(() => setLogoIndex(0), [inferredProvider]);
 
   const badgeClassName = cn(
-    "inline-flex min-w-0 items-center rounded-full border border-border/55 bg-card font-medium text-foreground/82",
+    "inline-flex min-w-0 shrink-0 items-center justify-center rounded-full border border-border/55 bg-card font-medium text-foreground/82",
     "shadow-[0_2px_8px_rgba(15,23,42,0.045)]",
     interactive ? "cursor-pointer hover:bg-accent/55 hover:text-foreground" : "cursor-default",
     needsSetup && "border-amber-500/35 bg-amber-50/70 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200",
-    isHero ? "h-8 max-w-[12.5rem] gap-1.5 px-2 text-[11.5px]" : "h-9 max-w-[12rem] gap-2 px-2.5 text-[12px]",
+    isHero
+      ? "h-8 w-8 gap-0 px-0 text-[11.5px] sm:w-auto sm:max-w-[12.5rem] sm:gap-1.5 sm:px-2"
+      : "h-9 w-9 gap-0 px-0 text-[12px] sm:w-auto sm:max-w-[12rem] sm:gap-2 sm:px-2.5",
   );
 
   const badgeContent = (
@@ -2196,9 +2276,14 @@ function ComposerModelBadge({
           <Sparkles className={cn("text-muted-foreground/65", isHero ? "h-3 w-3" : "h-3 w-3")} />
         )}
       </span>
-      <span className="truncate">{label}</span>
+      <span className="hidden truncate sm:inline">{label}</span>
       {canChoosePreset ? (
-        <ChevronDown className={cn("shrink-0 text-muted-foreground", isHero ? "h-3 w-3" : "h-3.5 w-3.5")} />
+        <ChevronDown
+          className={cn(
+            "hidden shrink-0 text-muted-foreground sm:block",
+            isHero ? "h-3 w-3" : "h-3.5 w-3.5",
+          )}
+        />
       ) : null}
     </>
   );

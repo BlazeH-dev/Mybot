@@ -781,6 +781,15 @@
         "toggle": "Activer le mode plan uniquement",
         "hint": "Créer un plan sans l’exécuter"
       },
+      "toolMode": {
+        "toggle": "Mode d’appel d’outils : {{mode}}",
+        "hint": "Choisir l’interface d’outils du prochain message",
+        "options": {
+          "native": { "label": "Native", "description": "Utiliser les appels d’outils natifs" },
+          "code": { "label": "PTC", "description": "Composer les appels dans un programme Python" },
+          "both": { "label": "Both", "description": "Exposer les outils natifs et PTC" }
+        }
+      },
       "sendHint": "Entrée pour envoyer · Maj+Entrée pour un retour à la ligne",
       "runRuntimeTitle": "Exécution · {{elapsed}}",
       "goalStateStrip": "Objectif · {{label}}",

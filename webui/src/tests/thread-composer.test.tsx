@@ -347,6 +347,26 @@ describe("ThreadComposer", () => {
     expect(onModelPresetSelect).toHaveBeenCalledWith("deepseek-v4-flash");
   });
 
+  it("switches tool calling mode from the composer without sending", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    const onToolModeSelect = vi.fn();
+    render(
+      <ThreadComposer
+        onSend={onSend}
+        toolMode="native"
+        onToolModeSelect={onToolModeSelect}
+        placeholder="Type your message..."
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Tool calling mode: Native" }));
+    await user.click(await screen.findByRole("menuitem", { name: /^PTC Compose/i }));
+
+    expect(onToolModeSelect).toHaveBeenCalledWith("code");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("transcribes voice input into the composer without sending", async () => {
     mockVoiceRecorder();
     const onSend = vi.fn();

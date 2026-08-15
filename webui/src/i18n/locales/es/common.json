@@ -781,6 +781,15 @@
         "toggle": "Alternar modo solo plan",
         "hint": "Crear un plan sin ejecutarlo"
       },
+      "toolMode": {
+        "toggle": "Modo de herramientas: {{mode}}",
+        "hint": "Elige la interfaz de herramientas para el siguiente mensaje",
+        "options": {
+          "native": { "label": "Native", "description": "Usar llamadas de herramientas nativas" },
+          "code": { "label": "PTC", "description": "Combinar llamadas en un programa Python" },
+          "both": { "label": "Both", "description": "Exponer herramientas nativas y PTC" }
+        }
+      },
       "sendHint": "Enter para enviar · Shift+Enter para nueva línea",
       "runRuntimeTitle": "En ejecución · {{elapsed}}",
       "goalStateStrip": "Objetivo · {{label}}",

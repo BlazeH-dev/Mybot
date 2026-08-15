@@ -344,22 +344,22 @@ export function WorkspaceAccessMenu({
           variant="ghost"
           aria-label={t("thread.composer.workspace.accessAria")}
           className={cn(
-            "max-w-[12.5rem] rounded-[10px] border border-transparent font-semibold shadow-none",
-            isHero ? "h-8 px-2.5 text-[12px]" : "h-9 px-3 text-[12.5px]",
+            "w-8 shrink-0 rounded-[10px] border border-transparent px-0 font-semibold shadow-none sm:w-auto sm:max-w-[12.5rem]",
+            isHero ? "h-8 text-[12px] sm:px-2.5" : "h-9 text-[12.5px] sm:px-3",
             isFull
               ? "bg-transparent text-orange-600 hover:bg-orange-500/8 dark:text-orange-300 dark:hover:bg-orange-400/10"
               : "bg-transparent text-muted-foreground hover:bg-foreground/[0.045] hover:text-foreground dark:hover:bg-white/[0.06]",
           )}
         >
           {isFull ? (
-            <AlertTriangle className={cn("mr-1.5 shrink-0", isHero ? "h-3.5 w-3.5" : "h-3.5 w-3.5")} />
+            <AlertTriangle className={cn("shrink-0 sm:mr-1.5", isHero ? "h-3.5 w-3.5" : "h-3.5 w-3.5")} />
           ) : (
-            <Hand className={cn("mr-1.5 shrink-0", isHero ? "h-3.5 w-3.5" : "h-3.5 w-3.5")} />
+            <Hand className={cn("shrink-0 sm:mr-1.5", isHero ? "h-3.5 w-3.5" : "h-3.5 w-3.5")} />
           )}
-          <span className="truncate">
+          <span className="hidden truncate sm:inline">
             {t(isFull ? "thread.composer.workspace.full" : "thread.composer.workspace.default")}
           </span>
-          <ChevronDown className={cn("ml-1.5 shrink-0", isHero ? "h-3 w-3" : "h-3 w-3")} />
+          <ChevronDown className={cn("ml-1.5 hidden shrink-0 sm:block", isHero ? "h-3 w-3" : "h-3 w-3")} />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">

@@ -781,6 +781,15 @@
         "toggle": "Bật chế độ chỉ lập kế hoạch",
         "hint": "Tạo kế hoạch mà chưa thực thi"
       },
+      "toolMode": {
+        "toggle": "Chế độ gọi công cụ: {{mode}}",
+        "hint": "Chọn giao diện công cụ cho tin nhắn tiếp theo",
+        "options": {
+          "native": { "label": "Native", "description": "Dùng lệnh gọi công cụ gốc của mô hình" },
+          "code": { "label": "PTC", "description": "Kết hợp lệnh gọi trong một chương trình Python" },
+          "both": { "label": "Both", "description": "Cung cấp cả công cụ gốc và PTC" }
+        }
+      },
       "sendHint": "Enter để gửi · Shift+Enter để xuống dòng",
       "runRuntimeTitle": "Đang chạy · {{elapsed}}",
       "goalStateStrip": "Mục tiêu · {{label}}",

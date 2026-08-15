@@ -781,6 +781,15 @@
         "toggle": "Alihkan mode hanya rencana",
         "hint": "Buat rencana tanpa menjalankannya"
       },
+      "toolMode": {
+        "toggle": "Mode pemanggilan alat: {{mode}}",
+        "hint": "Pilih antarmuka alat untuk pesan berikutnya",
+        "options": {
+          "native": { "label": "Native", "description": "Gunakan pemanggilan alat native model" },
+          "code": { "label": "PTC", "description": "Gabungkan pemanggilan alat dalam program Python" },
+          "both": { "label": "Both", "description": "Tampilkan alat native dan PTC" }
+        }
+      },
       "sendHint": "Enter untuk kirim · Shift+Enter untuk baris baru",
       "runRuntimeTitle": "Berjalan · {{elapsed}}",
       "goalStateStrip": "Tujuan · {{label}}",

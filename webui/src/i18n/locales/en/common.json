@@ -812,6 +812,15 @@
         "toggle": "Toggle plan-only mode",
         "hint": "Create a plan without executing it"
       },
+      "toolMode": {
+        "toggle": "Tool calling mode: {{mode}}",
+        "hint": "Choose the tool interface for the next message",
+        "options": {
+          "native": { "label": "Native", "description": "Use direct model tool calls" },
+          "code": { "label": "PTC", "description": "Compose tool calls in one Python program" },
+          "both": { "label": "Both", "description": "Expose native tools and PTC together" }
+        }
+      },
       "sendHint": "Enter to send · Shift+Enter for newline",
       "runRuntimeTitle": "Running · {{elapsed}}",
       "goalStateStrip": "Goal · {{label}}",

@@ -524,6 +524,62 @@ describe("ThreadShell", () => {
     expect(onOpenModelSettings).toHaveBeenCalledTimes(1);
   });
 
+  it("switches composer PTC mode through settings without restarting or sending chat", async () => {
+    const user = userEvent.setup();
+    const client = makeClient();
+    const settings = modelSettings("deepseek-v4-pro", "deepseek");
+    settings.tools = {
+      mode: "native",
+      ptc: {
+        max_parallel_sub_calls: 10,
+        compute_timeout_seconds: 60,
+        wall_timeout_seconds: 600,
+        max_output_chars: 65536,
+        sandbox: "auto",
+      },
+    };
+    const nextSettings: SettingsPayload = {
+      ...settings,
+      tools: { ...settings.tools, mode: "code" },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/settings" && init?.method === "PATCH") {
+        return httpJson(nextSettings);
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("ptc-switch")}
+          title="PTC switch"
+          onToggleSidebar={() => {}}
+          settingsSnapshot={settings}
+        />,
+        "deepseek-v4-pro",
+      ),
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Tool calling mode: Native" }));
+    await user.click(await screen.findByRole("menuitem", { name: /^PTC Compose/i }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/settings",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ tool_mode: "code" }),
+          headers: expect.objectContaining({ Authorization: "Bearer tok" }),
+        }),
+      ),
+    );
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(await screen.findByRole("button", { name: "Tool calling mode: PTC" })).toBeInTheDocument();
+  });
+
   it("keeps image generation controls out of the composer", async () => {
     const client = makeClient();
     const disabledSettings = modelSettings("deepseek-v4-pro", "deepseek");

@@ -812,6 +812,15 @@
         "toggle": "切换仅规划模式",
         "hint": "只创建计划，不立即执行"
       },
+      "toolMode": {
+        "toggle": "工具调用模式：{{mode}}",
+        "hint": "选择下一条消息使用的工具调用接口",
+        "options": {
+          "native": { "label": "Native", "description": "使用模型原生工具调用" },
+          "code": { "label": "PTC", "description": "用一个 Python 程序组合多次工具调用" },
+          "both": { "label": "Both", "description": "同时向模型提供原生工具和 PTC" }
+        }
+      },
       "sendHint": "Enter 发送 · Shift+Enter 换行",
       "runRuntimeTitle": "运行中 · {{elapsed}}",
       "goalStateStrip": "目标 · {{label}}",

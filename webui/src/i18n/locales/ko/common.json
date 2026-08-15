@@ -781,6 +781,15 @@
         "toggle": "계획 전용 모드 전환",
         "hint": "실행하지 않고 계획만 만듭니다"
       },
+      "toolMode": {
+        "toggle": "도구 호출 모드: {{mode}}",
+        "hint": "다음 메시지에서 사용할 도구 방식을 선택하세요",
+        "options": {
+          "native": { "label": "Native", "description": "모델의 기본 도구 호출 사용" },
+          "code": { "label": "PTC", "description": "하나의 Python 프로그램으로 도구 호출 구성" },
+          "both": { "label": "Both", "description": "Native 도구와 PTC를 함께 제공" }
+        }
+      },
       "sendHint": "Enter로 전송 · Shift+Enter로 줄바꿈",
       "runRuntimeTitle": "실행 중 · {{elapsed}}",
       "goalStateStrip": "목표 · {{label}}",

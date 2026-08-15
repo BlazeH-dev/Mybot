@@ -37,15 +37,8 @@ Mode 只向模型暴露 `run_code` 和按当前工具注册表生成的 Python S
 
 `run_code` 参数固定为 `code` 和 `description`。`code` 是 async 函数体，不是完整模块；运行时
 注入 `tools`、`ToolCallError`、只提供 `gather`/`sleep` 的 `asyncio` facade，以及安全的
-`math`、`json`、单参数 `type()` 和有界结构摘要 `shape()`。SDK 从 `Tool.to_schema()` 稳定排序
-生成；工具可额外提供只进入 PTC SDK、不进入 Provider 原生工具协议的 `output_schema`，把返回
+`math`、`json`、单参数 `type()` 和有界结构摘要 `shape()`。SDK 从 `Tool.to_schema()` 稳定排序生成；工具可额外提供只进入 PTC SDK、不进入 Provider 原生工具协议的 `output_schema`，把返回
 对象生成为嵌套 `TypedDict`。不合法的 Python 工具名通过 `tools["name"](...)` 调用。
-
-WebUI 在“设置 → 系统 → 工具调用”提供 Native / Code / Both 三态切换。保存仍走统一的
-`PATCH /api/settings`，后端在写配置前校验枚举值；切到 Code 或 Both 时还会预检当前主机能否
-构造隔离 worker 的 `LaunchSpec`。预检失败则不落盘。AgentLoop 在每条新消息开始前只刷新
-`mode + ptc` 工具呈现快照，因此保存后从下一轮模型请求生效，无需重启，也不重建工具注册表。
-正在执行的轮次继续使用启动时快照，避免中途改变工具协议；已存在的会话数据不需要迁移。
 
 ## 3. 调用链
 
@@ -63,14 +56,9 @@ AgentRunner
   -> 仅 logs + returned 成为外层 run_code tool result
 ```
 
-子调用 ID 为 `<outer_call_id>:ptc:<sequence>`。每个子调用形成 `ptc_subcall` 工具事件，携带父子
-ID、参数、状态、耗时、结果摘要和 `cache_hit`；事件通过 WebSocket 实时发送并进入 Trace，但
+子调用 ID 为 `<outer_call_id>:ptc:<sequence>`。每个子调用形成 `ptc_subcall` 工具事件，携带父子ID、参数、状态、耗时、结果摘要和 `cache_hit`；事件通过 WebSocket 实时发送并进入 Trace，但
 不会形成 `role=tool` 模型历史。外层事件附带逻辑/实际子调用数、同轮缓存命中、并发峰值、输出
 字符和失败类型。
-
-主 Agent 的 `sandbox: auto` 会继承本轮有效的 read-only、workspace-write 或 full-access 模式；
-子 Agent 继续按原治理约束收紧为 workspace-write。配置为 `sandbox: none` 时才显式跳过 OS
-sandbox，该选项只面向测试和受信环境。
 
 ## 4. 并发、审批和恢复
 
@@ -78,50 +66,9 @@ sandbox，该选项只面向测试和受信环境。
 barrier。`policy_gate` 仍对每个子调用独立执行，但不会仅因 gate 存在就把已声明并发安全的读取
 退化为串行；写入、exclusive 和需要审批的调用仍通过 barrier/中止语义收口。
 
-一次 `AgentRunner.run()` 内，成功的“同工具名 + 完全相同 JSON 参数”只读并发安全调用可以跨
-多个 `run_code` 重试复用。缓存不跨 Agent 运行，不缓存失败、写入或 exclusive 调用；任何写入或
-exclusive 调用一提交就推进 mutation epoch 并清空已有读取缓存；即使 barrier 前已启动的读稍后
-完成，也只能写入旧 epoch，不能被后续调用命中。它减少程序生成失败后的重复 I/O，不改变 worker
-无状态和审批后重新生成程序的契约。
-
-程序正常提前 `return` 时，未启动的排队调用被取消，已启动调用会在外层 `run_code` 返回前完成；
-墙钟超时、任务取消、审批中断或 worker 异常时，排队及活跃宿主调用都会取消，并终止、等待整个
-worker 进程组。这样不会在模型已经看到 PTC 失败后继续补执行旧程序中的写操作。
-
 工具返回 `ask` 或 `ToolSuspensionResult` 时，PTC 本轮结算为 `approval_required`，沿用现有
 `awaiting_*` checkpoint 和 InteractionRequest。首版不序列化 Python 栈或局部变量；批准后由
 模型重新提交程序。这避免不可重放的持久 kernel，也明确不承诺程序级 exactly-once。
-
-## 5. 隔离与安全边界
-
-每次运行使用新 Python 进程、`-I` isolated mode、最小环境变量、独立进程组、CPU/墙钟/输出
-上限。AST 只兼容白名单 `math/json` import，并改写为预注入模块引用；其他 import、动态执行、
-直接文件入口、private/dunder 访问继续拒绝。`sandbox: auto` 通过现有 `SandboxLauncher` 请求
-`workspace_write` Seatbelt；不可用时 Code Mode 启动失败，不回退到进程内 `exec`。
-`sandbox: none` 只用于测试或明确受信环境。
-
-这些措施是 containment，不是强多租户安全边界。Python 对象模型不是能力安全 VM；对不可信
-租户需要容器或 microVM 后端，并同时覆盖 Bash、MCP 等其他执行面。
-
-## 6. 失败分类
-
-运行时区分 `syntax_error`、`exception`、`timeout`、`cancelled`、`output_limit`、`worker_exit`、
-`invalid_json` 和 `approval_required`。参数、子调用参数/结果和最终返回值必须是 lossless JSON；
-tuple、非字符串字典键、NaN、对象实例或其他会被 Python JSON 编码器强制转换或无法精确编码的
-值都会失败关闭。`print()` 使用独立的小日志预算，超长内容会带标记截断，让紧凑最终结果仍可
-返回；超大的顶层 `return` 仍以 `output_limit` 失败，并返回有界 `Return shape` 提示模型在同一
-程序内聚合。最终渲染文本也受 `maxOutputChars` 硬上限约束。
-
-## 7. 测试证据
-
-- `test_ptc_sdk.py`：三态配置、稳定 SDK、特殊工具名、保留名和输出 `TypedDict`。
-- `test_ptc_runtime.py`：async/RPC、null 返回、白名单 import、`type/shape`、print 截断、return
-  上限、超时和 sandbox launch。
-- `test_ptc_runner.py`：投影、防直呼绕过、并发读取、写 barrier、取消传播、单一模型可见结果、
-  同轮读取缓存、策略检查下并发、嵌套事件和内容无关 Trace 摘要。
-- `test_settings_api.py`、`test_runtime_refresh.py` 与 `settings-view.test.tsx`：WebUI 三态投影、保存、
-  非法值、runtime 预检、下一轮热刷新和无障碍选中状态。
-- 原 Runner、ToolRegistry、配置和 WebUI activity 测试继续通过，证明 native 默认行为未回归。
 
 ## 8. 真实模型回归
 
@@ -129,10 +76,7 @@ tuple、非字符串字典键、NaN、对象实例或其他会被 Python JSON �
 
 模型必须先发现所有日志文件，再读取全部记录并完成确定性聚合。实际提示词约束为：
 
-> 使用工具发现所有 service log，共 8 个服务、640 条请求。对每个服务计算
-> `error_rate_pct = status >= 500 的数量 / 请求数 * 100`，并计算 nearest-rank P95：将延迟排序，
-> 取一基索引 `ceil(0.95 * n)`。只保留 `error_rate_pct >= 5` 且 `p95_ms >= 300` 的服务，按错误率
-> 降序、服务名升序排列。只返回包含 `total_requests` 和 `services` 的紧凑 JSON，不要解释文字。
+> 使用工具发现所有 service log，共 8 个服务、640 条请求。对每个服务计算`error_rate_pct = status >= 500 的数量 / 请求数 * 100`，并计算 nearest-rank P95：将延迟排序，取一基索引 `ceil(0.95 * n)`。只保留 `error_rate_pct >= 5` 且 `p95_ms >= 300` 的服务，按错误率降序、服务名升序排列。只返回包含 `total_requests` 和 `services` 的紧凑 JSON，不要解释文字。
 
 固定数据如下，每个服务 80 条记录；前 `errors` 条状态为 503，最后 5 条延迟为 `p95_ms`，其余
 延迟使用稳定的低位基线序列：
@@ -215,21 +159,6 @@ tuple、非字符串字典键、NaN、对象实例或其他会被 Python JSON �
 - 正确性：最终文本解析为 JSON 后与上述期望对象做精确相等比较，不以包含关键词代替。
 - 统计：墙钟、LLM 轮次、prompt/completion/total token、模型可见 tool result 字符、外层工具数、PTC 逻辑/实际子调用、缓存命中、并发峰值和失败类型。
 
-### 8.5 三轮原始结果
-
-| Mode | Run | 正确 | Wall | LLM rounds | Prompt | Completion | Total token | 可见工具字符 | 调用结构 | Peak |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |
-| Native | 1 | 是 | 48.913s | 4 | 21,564 | 8,455 | 30,019 | 23,295 | 9 native | - |
-| Native | 2 | 是 | 25.653s | 3 | 11,429 | 3,925 | 15,354 | 23,295 | 9 native | - |
-| Native | 3 | 是 | 21.394s | 3 | 11,444 | 3,065 | 14,509 | 23,295 | 9 native | - |
-| PTC | 1 | 是 | 6.157s | 2 | 3,335 | 789 | 4,124 | 291 | 1 outer / 9 executed | 8 |
-| PTC | 2 | 是 | 4.708s | 2 | 3,226 | 551 | 3,777 | 408 | 1 outer / 9 executed | 8 |
-| PTC | 3 | 是 | 5.800s | 2 | 3,116 | 539 | 3,655 | 291 | 1 outer / 9 executed | 1 |
-
-Native 第一次出现一次 Provider 空响应恢复，因此范围明显更大。报告中保留该值，不删除“难看”的
-样本；中位数可以降低单次异常的影响，但仍同时给出范围。PTC 第三次模型选择顺序读取，峰值并发
-只有 1，说明 PTC 的核心收益不只来自并发，还来自少一次 LLM round-trip 和不回传原始日志。
-
 ### 8.6 中位数对比
 
 | 指标 | Native 中位数（范围） | PTC 中位数（范围） | 中位数变化 |
@@ -243,10 +172,8 @@ Native 第一次出现一次 Provider 空响应恢复，因此范围明显更大
 | 模型可见工具结果 | 23,295 chars | 291 chars（291-408） | -98.8% |
 | 实际工具执行 | 9 | 9 | 相同 |
 | 外层工具调用 | 9 native | 1 `run_code` | 模型工具轮次收敛 |
-| PTC 程序失败 | - | 0 | 三轮均一次成功 |
 
-与修复前 PTC 的 20.07 秒、6 轮、5 个 outer/25 个 subcall 相比，修复后 PTC 中位数为 5.80 秒、
-2 轮、1 个 outer/9 个实际 subcall，墙钟下降约 71%。但修复前后来自不同采样时段，Provider 延迟、缓存 token 和早期 fixture 序列化长度存在波动；严格性能结论应优先使用同一时段交替运行的正式
+与修复前 PTC 的 20.07 秒、6 轮、5 个 outer/25 个 subcall 相比，修复后 PTC 中位数为 5.80 秒、2 轮、1 个 outer/9 个实际 subcall，墙钟下降约 71%。但修复前后来自不同采样时段，Provider 延迟、缓存 token 和早期 fixture 序列化长度存在波动；严格性能结论应优先使用同一时段交替运行的正式
 Native/PTC 三轮，而把修复前数据用于证明失败链和调用收敛。
 
 ### 8.7 结论与边界
@@ -272,8 +199,6 @@ Native/PTC 三轮，而把修复前数据用于证明失败链和调用收敛。
 | 每次新建 worker | 状态隔离、易取消和回收 | 有进程启动成本，不能恢复 Python 栈 |
 | 子调用回到 Runner | 复用原生 Policy/HITL/workspace/OCC | RPC 和调度逻辑更复杂 |
 | 只返回 print/return | 压缩模型上下文 | 模型不再自然看到每个中间结果 |
-| lossless JSON | 避免跨进程类型静默变化 | 不支持 tuple、NaN 和任意 Python 对象 |
-| 审批后重新提交程序 | 避免持久化不可重放的 kernel 状态 | 审批前的纯计算可能重做 |
 
 ## 10. 与 Native、Plan DAG 和 Subagent 的边界
 
@@ -289,15 +214,6 @@ PTC 解决“一次模型决策内如何高效组合多个工具调用”；Plan
 | 跨审批、跨进程、需要产物闸门的长任务 | Plan DAG + Checkpoint |
 | 可分解且需要独立推理上下文的并行工作 | Subagent |
 
-## 11. 调度器不变量
-
-调度器不是简单 semaphore。它要同时保证：子调用按提交顺序入队；连续安全读最多并发
-`maxParallelSubCalls`；写入/exclusive 等待前面读取完成并单独执行；barrier 后的调用不得
-越过它；程序结束、审批、超时或取消时，队列与活跃任务必须收口。
-
-这些语义必须与 Native Runner 一致。否则同一工具在 `native` 安全、在 `code` 下却竞态，会让
-工具 Schema 的 `concurrency_safe`/exclusive 声明失去意义。
-
 ## 12. 性能模型与面试表达
 
 PTC 的理论收益主要来自两处：多个工具之间少了 LLM round-trip，大量中间结果不再重复进入
@@ -306,14 +222,28 @@ PTC 的理论收益主要来自两处：多个工具之间少了 LLM round-trip�
 
 30 秒讲法：
 
-> 我把模型多轮工具循环压缩成一次 `run_code`：根据当前工具 Schema 生成稳定 Python SDK，程序在
-> 每次新建的受限子进程中执行，子调用通过 RPC 回到 Runner 复用原有 Policy/HITL/OCC。读调用
-> 有界并发，写入形成 barrier，中间结果不进模型历史。它是性能优化和 containment，不是权限旁路或强多租户沙箱。
+> 我把模型多轮工具循环压缩成一次 `run_code`：根据当前工具 Schema 生成稳定 Python SDK，程序在每次新建的受限子进程中执行，子调用通过 RPC 回到 Runner 复用原有 Policy/HITL/OCC。读调用有界并发，写入形成 barrier，中间结果不进模型历史。
 
 ## 13. 自测
 
 1. 为什么 PTC 子调用必须回到 Runner，而不能在 worker 里直接实例化工具？
 2. 为什么调度器不能只用一个 semaphore？
-3. 审批后为什么不恢复旧 Python 状态？这带来什么重放风险？
 4. PTC 和 Plan DAG、Subagent 各自管理哪一层编排？
 5. 什么任务不适合 Code Mode？怎样用评测证明选择？
+
+### 参考答案
+
+1. **为什么子调用必须回到 Runner？** Runner 已经统一实现参数校验、Policy、HITL、Sandbox、Trace、Artifact 和取消语义。worker 直接实例化工具会形成旁路，让 Code Mode 获得比 Native 调用更大的权限。
+2. **为什么不能只有一个 semaphore？** 既要限制单个 PTC 程序的 fan-out，也要限制整个 Runtime 的总并发，并处理公平性、取消和资源类别；单一 semaphore 无法同时防止局部爆炸和全局垄断。
+4. **三种编排各管什么？** PTC 管一次模型回合内的数据密集型工具程序；Plan DAG 管可持久、可确认、
+   可恢复的任务节点；Subagent 管上下文与权限隔离的独立执行主体。它们可以组合但不能互相冒充。
+5. **什么任务不适合？** 需要用户逐步确认、长时间等待、不可重放副作用、开放式探索或上下文隔离的任务不适合。应与 Native/Plan/Subagent 做固定 Case 对比，报告成功率、调用轮次、token、时延和错误率。
+
+### 进阶面试题
+
+1. **PTC 为什么可能节省 token？** 多轮工具结果在 worker 内被程序筛选、聚合，只把结构化摘要返回
+   模型，减少每次 tool round-trip 和大结果反复进入上下文的成本。
+2. **生成 SDK 的价值是什么？** 它把可用工具、参数 schema 和返回协议暴露为受控 API，使模型写的
+   程序在运行前可检查名称/参数，并避免自由拼接底层 RPC。
+5. **PTC 比 Native 更快是否足以默认启用？** 不足。还要比较正确率、失败可解释性、审批体验、
+   资源峰值和适用任务比例；真实结果若只在特定批处理 Case 有收益，就应由路由条件选择而非全局替换。

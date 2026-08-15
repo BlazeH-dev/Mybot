@@ -781,6 +781,15 @@
         "toggle": "計画のみモードを切り替える",
         "hint": "実行せずに計画だけを作成します"
       },
+      "toolMode": {
+        "toggle": "ツール呼び出しモード: {{mode}}",
+        "hint": "次のメッセージで使うツール方式を選択",
+        "options": {
+          "native": { "label": "Native", "description": "モデルのネイティブツール呼び出しを使用" },
+          "code": { "label": "PTC", "description": "1つの Python プログラムでツール呼び出しを構成" },
+          "both": { "label": "Both", "description": "Native と PTC を同時に公開" }
+        }
+      },
       "sendHint": "Enter で送信 · Shift+Enter で改行",
       "runRuntimeTitle": "実行中 · {{elapsed}}",
       "goalStateStrip": "目標 · {{label}}",

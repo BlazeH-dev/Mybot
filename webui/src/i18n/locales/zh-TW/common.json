@@ -781,6 +781,15 @@
         "toggle": "切換僅規劃模式",
         "hint": "只建立計畫，不立即執行"
       },
+      "toolMode": {
+        "toggle": "工具呼叫模式：{{mode}}",
+        "hint": "選擇下一則訊息使用的工具呼叫介面",
+        "options": {
+          "native": { "label": "Native", "description": "使用模型原生工具呼叫" },
+          "code": { "label": "PTC", "description": "用一個 Python 程式組合多次工具呼叫" },
+          "both": { "label": "Both", "description": "同時提供原生工具和 PTC" }
+        }
+      },
       "sendHint": "Enter 送出 · Shift+Enter 換行",
       "runRuntimeTitle": "執行中 · {{elapsed}}",
       "goalStateStrip": "目標 · {{label}}",

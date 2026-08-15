@@ -2,7 +2,7 @@
 
 > 面向秋招 Agent / AI 应用开发岗位。这里不按开发阶段记流水账，而是按“可以写进简历并经得住追问
 > 的工程亮点”组织。每篇都以当前代码和测试为事实源，讲清问题、架构、调用链、难点、取舍、证据、
-> 边界和面试表达。
+> 边界和面试表达。01-13 每篇都提供自测参考答案和进阶面试题，第 14 篇集中训练跨模块系统设计追问。
 
 ## 1. 先建立正确的项目认知
 
@@ -56,22 +56,22 @@ Mybot 不是“接一个模型、加几个工具”的聊天项目。它在 nano
 
 ## 3. 亮点与证据矩阵
 
-| 专题 | 简历关键词 | 主要代码 | 核心测试 |
-| --- | --- | --- | --- |
-| [01 Runtime 架构](./01-从nanobot到可治理AgentRuntime.md) | 增量二开、状态机、控制面/执行面分离 | `nanobot/agent/loop.py`、`runner.py`、`nanobot/runtime/` | loop/runner integration、runtime tests |
-| [02 Skill 治理](./02-SkillManifest与运行时治理.md) | typed manifest、fail closed、热刷新、显式路由 | `skill_manifest.py`、`skills.py` | `test_skill_manifest.py`、`test_skill_selection.py` |
-| [03 OfficeCLI](./03-OfficeCLI办公自动化SkillPack.md) | 固定供应链、DSL 编译、OpenXML、verified facts | `skills/officecli/`、`officecli_runtime.py` | `test_officecli_runtime.py` |
-| [04 Plan/DAG](./04-PlanMode与DAG任务编排.md) | plan-only、hash、DAG、失败重派、完成闸门 | `tools/plan.py`、`plan_scheduler.py` | `test_plan_dag.py`、`test_plan_tool.py` |
-| [05 安全治理](./05-Sandbox-Policy-HITL与文件OCC.md) | macOS Seatbelt 沙箱、Policy、参数绑定审批、OCC | `runtime/policy.py`、`security/sandbox/` | sandbox/policy/OCC、interaction、redteam tests |
-| [06 恢复](./06-Artifact血缘与Checkpoint恢复.md) | snapshot、lineage、state hash、uncertain | `artifacts.py`、`checkpoint.py` | `test_artifacts_checkpoint.py` |
-| [07 多 Agent](./07-受控多Agent协作.md) | 权限收紧、上下文隔离、后台调度、父子 Trace | `subagent.py`、`plan_scheduler.py` | `test_subagent_governance.py` |
-| [08 观测评测](./08-Trace-Langfuse与评测闭环.md) | semantic trace、cassette、Dataset Run、Judge、resume | `trace.py`、`langfuse*.py`、`evaluations/` | trace/eval/benchmark contract tests |
-| [09 Skill 自进化](./09-评测驱动的Skill自进化.md) | Bad Case、派生 Skill、diff/digest、隔离 A/B | `evaluations/skill_evolution.py` | `test_skill_evolution.py` |
-| [10 长任务](./10-长任务目标与跨回合续跑.md) | sustained goal、内部续回合、预算边界 | `goal_state.py`、`turn_continuation.py` | goal/continuation/runner tests |
-| [11 WebUI 控制面](./11-WebUI运行时控制面.md) | 实时投影、刷新恢复、计划/HITL/Trace/评测工作台 | `webui/src/components/` | `webui/src/tests/` |
-| [12 测试交付](./12-测试体系与工程交付.md) | hard gate、红队、fake provider、可复现 benchmark | `tests/`、`benchmarks/`、`cli/benchmark.py` | CI + deterministic suites |
-| [13 PTC Code Mode](./13-PTC-CodeMode程序化工具调用.md) | 程序化工具编排、生成 SDK、子进程 RPC、有界并发、上下文裁剪 | `nanobot/agent/ptc/`、`runner.py` | `test_ptc_*.py`、Runner/WebUI activity tests |
-| [14 融会贯通](./14-全链路融会贯通与Agent面试手册.md) | 真相源、跨模块不变量、故障推演、设计取舍 | 串联 `loop.py`、`runner.py`、`runtime/` | 按专题追踪集成/故障测试 |
+| 专题                                                | 简历关键词                                            | 主要代码                                                   | 核心测试                                               |
+| ------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------ | -------------------------------------------------- |
+| [01 Runtime 架构](./01-从nanobot到可治理AgentRuntime.md) | 增量二开、状态机、控制面/执行面分离                               | `nanobot/agent/loop.py`、`runner.py`、`nanobot/runtime/` | loop/runner integration、runtime tests              |
+| [02 Skill 治理](./02-SkillManifest与运行时治理.md)        | typed manifest、fail closed、热刷新、显式路由              | `skill_manifest.py`、`skills.py`                        | `test_skill_manifest.py`、`test_skill_selection.py` |
+| [03 OfficeCLI](./03-OfficeCLI办公自动化SkillPack.md)   | 固定供应链、DSL 编译、OpenXML、verified facts              | `skills/officecli/`、`officecli_runtime.py`             | `test_officecli_runtime.py`                        |
+| [04 Plan/DAG](./04-PlanMode与DAG任务编排.md)           | plan-only、hash、DAG、失败重派、完成闸门                     | `tools/plan.py`、`plan_scheduler.py`                    | `test_plan_dag.py`、`test_plan_tool.py`             |
+| [05 安全治理](./05-Sandbox-Policy-HITL与文件OCC.md)      | macOS Seatbelt 沙箱、Policy、参数绑定审批、OCC              | `runtime/policy.py`、`security/sandbox/`                | sandbox/policy/OCC、interaction、redteam tests       |
+| [06 恢复](./06-Artifact血缘与Checkpoint恢复.md)          | snapshot、lineage、state hash、uncertain            | `artifacts.py`、`checkpoint.py`                         | `test_artifacts_checkpoint.py`                     |
+| [07 多 Agent](./07-受控多Agent协作.md)                  | 权限收紧、上下文隔离、后台调度、父子 Trace                         | `subagent.py`、`plan_scheduler.py`                      | `test_subagent_governance.py`                      |
+| [08 观测评测](./08-Trace-Langfuse与评测闭环.md)            | semantic trace、cassette、Dataset Run、Judge、resume | `trace.py`、`langfuse*.py`、`evaluations/`               | trace/eval/benchmark contract tests                |
+| [09 Skill 自进化](./09-评测驱动的Skill自进化.md)             | Bad Case、派生 Skill、diff/digest、隔离 A/B             | `evaluations/skill_evolution.py`                       | `test_skill_evolution.py`                          |
+| [10 长任务](./10-长任务目标与跨回合续跑.md)                     | sustained goal、内部续回合、预算边界                        | `goal_state.py`、`turn_continuation.py`                 | goal/continuation/runner tests                     |
+| [11 WebUI 控制面](./11-WebUI运行时控制面.md)               | 实时投影、刷新恢复、计划/HITL/Trace/评测工作台                    | `webui/src/components/`                                | `webui/src/tests/`                                 |
+| [12 测试交付](./12-测试体系与工程交付.md)                      | hard gate、红队、fake provider、可复现 benchmark         | `tests/`、`benchmarks/`、`cli/benchmark.py`              | CI + deterministic suites                          |
+| [13 PTC Code Mode](./13-PTC-CodeMode程序化工具调用.md)   | 程序化工具编排、生成 SDK、子进程 RPC、有界并发、上下文裁剪                | `nanobot/agent/ptc/`、`runner.py`                       | `test_ptc_*.py`、Runner/WebUI activity tests        |
+| [14 融会贯通](./14-全链路融会贯通与Agent面试手册.md)              | 真相源、跨模块不变量、故障推演、设计取舍                             | 串联 `loop.py`、`runner.py`、`runtime/`                    | 按专题追踪集成/故障测试                                       |
 
 Skill 自进化的真实运行证据见 [r18 重测报告](../Skill自进化-r18重测报告.md)：记录 27 个目标
 Case 的分类 delta、提分机制、持平/下降原因，以及测试后继续迭代的当前能力边界。
@@ -171,6 +171,15 @@ Case 的分类 delta、提分机制、持平/下降原因，以及测试后继�
 1. 不看笔记，画出一次请求的调用链和关键状态。
 2. 找到至少两个对应测试，解释它们在防什么回归。
 3. 用“为什么不用更简单方案”反问自己，必须能说出取舍而不是只背实现。
+
+自测和面试题建议分三轮使用：
+
+1. **闭卷回答**：先只看题目，用 30-90 秒口述，强制说出真相源、状态转换和失败边界。
+2. **对照答案**：参考答案用于查漏，不是逐字背诵；把答案里的模块名替换成你亲自看过的代码位置。
+3. **故障追问**：继续追问“如果崩溃、重复回调、参数变化或评分缺失会怎样”，并用测试或 Trace 证明。
+
+01-13 合计包含 130 道带答案的专题自测/进阶题；第 14 篇另有自我验收框架和 30 道综合题，适合
+按 3 分钟项目介绍、单模块深挖、跨模块系统设计三个层次反复练习。
 
 建议在本地实际运行：
 
