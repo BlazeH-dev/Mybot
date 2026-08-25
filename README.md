@@ -6,7 +6,7 @@
 
 - **后端**: Python 3.11+ / nanobot 0.2.1
 - **前端**: React 18 + TypeScript + Vite + Tailwind CSS
-- **模型**: 内置 DeepSeek V4 与中转站 GPT-5.6 Sol/Terra/Luna 预设，可运行时切换
+- **模型**: 内置 DeepSeek V4 与 GPT-5.6 Sol/Terra/Luna 预设，可运行时切换
 - **交互**: WebSocket + WebUI
 
 ## 快速开始
